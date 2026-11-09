@@ -82,7 +82,7 @@ def process_inventory():
         raise RuntimeError("Cannot inspect running agents; refusing to risk duplicate sessions.") from exc
 
 
-def running_agents(processes, commands):
+def running_agents(processes, commands, unrelated=None):
     running = set()
     for process in processes:
         executable = (process.get("Name") or "").lower()
@@ -100,9 +100,30 @@ def running_agents(processes, commands):
                         re.search(r'/(?:' + re.escape(cli) + r')(?:/bin/[^\s"]+|\.(?:js|cjs|mjs))(?:"|\s|$)', line))
             if name == "claude" and executable == "node.exe":
                 node_cli = node_cli or re.search(r'/@anthropic-ai/claude-code/cli\.js(?:"|\s|$)', line)
-            if wrapper or native or node_cli:
+            # Executable names alone also match Desktop, IDE, and unrelated CLI sessions.
+            attached = False
+            if name == "codex":
+                attached = bool(re.search(r'(?<![\w.])mcp_servers\.agentchattr\.url\s*=', line))
+            elif name == "claude":
+                attached = bool(re.search(
+                    r'--mcp-config(?:=|\s+)(?:"[^"\r\n]*agentchattr/[^"\r\n]*\.json"|'
+                    r'[^\s"]*agentchattr/[^\s"]*\.json(?:\s|$))', line))
+            # Agy uses a settings file without CLI arguments: only its wrapper proves membership.
+            if wrapper or ((native or node_cli) and attached):
                 running.add(name)
+            elif (native or node_cli) and unrelated is not None:
+                unrelated.add(name)
     return running
+
+
+def inspect_agents(commands):
+    unrelated = set()
+    active = running_agents(process_inventory(), commands, unrelated)
+    for name in AGENTS:
+        if name in unrelated - active:
+            print(f"{LABELS[name]}: another app or CLI session was found outside the team; "
+                  "it will not block team startup.")
+    return active
 
 
 @contextmanager
@@ -128,7 +149,7 @@ def startup_lock():
 
 def server_ready(url):
     try:
-        # The public page identifies agentchattr without exposing its session token.
+        # Identify the agentchattr page by its token marker; never print the page or token.
         with urllib.request.urlopen(url, timeout=1) as response:
             return b"window.__SESSION_TOKEN__=" in response.read()
     except (OSError, urllib.error.URLError):
@@ -170,7 +191,7 @@ def main():
     url = f"http://127.0.0.1:{port}"
     check_updates(commands, env)
     if args.check:
-        active = running_agents(process_inventory(), commands)
+        active = inspect_agents(commands)
         for name in AGENTS:
             print(f"{LABELS[name]}: {'already running' if name in active else 'ready to start'}.")
         print(f"Setup OK: {url}; Codex, Claude, Agy. No sessions started.")
@@ -182,7 +203,7 @@ def main():
 
 def start_team(url, env, commands):
     # Fail closed before starting the server if process inspection is unavailable.
-    running_agents(process_inventory(), commands)
+    inspect_agents(commands)
 
     if not server_ready(url):
         log_path = ROOT / "team-server.log"
@@ -215,7 +236,7 @@ def start_team(url, env, commands):
         while name not in running_agents(process_inventory(), commands):
             if console.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError(f"Cannot confirm {LABELS[name]} startup. Check its terminal before retrying.")
-            time.sleep(0.25)
+            time.sleep(1)
         print(f"{LABELS[name]}: started; its wrapper registers it with agentchattr.")
     webbrowser.open(url)
     print("Use @mentions in chat to invite the agents into a conversation.")

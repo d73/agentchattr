@@ -17,17 +17,69 @@ class TeamLauncherTests(unittest.TestCase):
     def test_process_detection_covers_wrappers_native_and_node_shims(self):
         processes = [
             {"Name": "python.exe", "CommandLine": 'python "C:/a path/wrapper.py" codex'},
-            {"Name": "node.exe", "CommandLine": 'node "C:/npm/@anthropic-ai/claude-code/cli.js"'},
-            {"Name": "agy.exe", "CommandLine": None},
+            {"Name": "node.exe", "CommandLine": 'node "C:/npm/@anthropic-ai/claude-code/cli.js" --mcp-config "C:/agentchattr/data/provider-config/claude-mcp.json"'},
+            {"Name": "python.exe", "CommandLine": 'python wrapper.py antigravity'},
         ]
         self.assertEqual(team.running_agents(processes, COMMANDS), set(COMMANDS))
         processes.append({"Name": "claude.exe"})
         self.assertEqual(team.running_agents(processes, COMMANDS), set(COMMANDS))
 
     def test_node_codex_and_claude_entry_points(self):
-        processes = [{"Name": "node.exe", "CommandLine": 'node C:/npm/@openai/codex/bin/codex.js'},
-                     {"Name": "node.exe", "CommandLine": 'node C:/npm/claude.js'}]
+        processes = [{"Name": "node.exe", "CommandLine": 'node C:/npm/@openai/codex/bin/codex.js -c mcp_servers.agentchattr.url="http://localhost:8200/mcp"'},
+                     {"Name": "node.exe", "CommandLine": 'node C:/npm/claude.js --mcp-config C:/agentchattr/data/claude.json'}]
         self.assertEqual(team.running_agents(processes, COMMANDS), {"codex", "claude"})
+
+    def test_desktop_ide_and_unrelated_clis_do_not_block_team(self):
+        processes = [
+            {"Name": "Claude.exe", "CommandLine": 'C:/Programs/Claude/Claude.exe'},
+            {"Name": "claude.exe", "CommandLine": 'claude.exe --ide --mcp-config C:/other/mcp.json'},
+            {"Name": "codex.exe", "CommandLine": 'C:/Programs/OpenAI/Codex/bin/codex.exe'},
+            {"Name": "codex.exe", "CommandLine": 'codex.exe -c mcp_servers.other.url=http://localhost:1234'},
+            {"Name": "agy.exe", "CommandLine": None},
+            {"Name": "node.exe", "CommandLine": 'node C:/npm/@anthropic-ai/claude-code/cli.js'},
+            {"Name": "node.exe", "CommandLine": 'node C:/npm/@openai/codex/bin/codex.js'},
+        ]
+        unrelated = set()
+        self.assertEqual(team.running_agents(processes, COMMANDS, unrelated), set())
+        self.assertEqual(unrelated, set(COMMANDS))
+
+    def test_native_clis_require_explicit_chat_mcp_arguments(self):
+        processes = [
+            {"Name": "claude.exe", "CommandLine": 'claude.exe --mcp-config "C:\\a path\\agentchattr\\data\\provider-config\\claude-mcp.json"'},
+            {"Name": "codex.exe", "CommandLine": 'codex.exe -c mcp_servers.agentchattr.url="http://127.0.0.1:1234/mcp"'},
+            {"Name": "agy.exe", "CommandLine": 'agy.exe'},
+        ]
+        self.assertEqual(team.running_agents(processes, COMMANDS), {"claude", "codex"})
+
+    def test_unrelated_warning_is_once_per_family_and_suppressed_for_team_child(self):
+        processes = [{"Name": "claude.exe"}, {"Name": "Claude.exe"},
+                     {"Name": "agy.exe"},
+                     {"Name": "python.exe", "CommandLine": 'python wrapper.py antigravity'}]
+        with patch.object(team, "process_inventory", return_value=processes), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(team.inspect_agents(COMMANDS), {"antigravity"})
+        self.assertEqual(output.getvalue().count("will not block"), 1)
+        self.assertIn("Claude", output.getvalue())
+        self.assertNotIn("Agy", output.getvalue())
+
+    def test_unrelated_sessions_allow_all_missing_team_wrappers_to_start(self):
+        processes = [{"Name": "Claude.exe"}, {"Name": "codex.exe"}, {"Name": "agy.exe"}]
+        started = []
+
+        def launch(command, **kwargs):
+            name = team.AGENTS[len(started)]
+            started.append(name)
+            processes.append({"Name": "python.exe", "CommandLine": f'python wrapper.py {name}'})
+            return Mock(poll=lambda: None)
+
+        with patch.object(team, "process_inventory", side_effect=lambda: list(processes)), \
+             patch.object(team, "server_ready", return_value=True), \
+             patch.object(team.subprocess, "Popen", side_effect=launch), \
+             patch.object(team.webbrowser, "open"), contextlib.redirect_stdout(io.StringIO()):
+            team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
+            # A second run should reuse the wrappers, despite unrelated apps still running.
+            team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
+        self.assertEqual(started, list(team.AGENTS))
 
     def test_ignores_shell_history_and_similar_agent_names(self):
         processes = [{"Name": "cmd.exe", "CommandLine": 'cmd /k python wrapper.py codex'},
