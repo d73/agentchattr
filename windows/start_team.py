@@ -242,7 +242,10 @@ def start_team(url, env, commands):
             print(f"{LABELS[name]}: already running; skipped.")
             continue
         # cmd /k keeps errors visible; each interactive CLI needs its own console.
-        command = subprocess.list2cmdline([sys.executable, str(ROOT / "wrapper.py"), name])
+        wrapper_args = [sys.executable, str(ROOT / "wrapper.py"), name]
+        if name == "codex":
+            wrapper_args += ["--", "--no-daemon"]  # run Codex without the shared background server
+        command = subprocess.list2cmdline(wrapper_args)
         shell = subprocess.list2cmdline([env.get("COMSPEC", "cmd.exe")])
         inner = f'{shell} /d /s /k "{command}"'
         if conemu:
