@@ -373,29 +373,22 @@ header h1 {
 
 /* --- Settings bar --- */
 
-#settings-bar {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 10px 16px;
-    background: var(--bg-header);
-    border-bottom: 1px solid var(--border);
+/* Settings, Pinned, Jobs, Rules and Scheduled tasks all slide out from the right. */
+.side-panel {
+    width: 320px;
+    min-width: 220px;
+    max-width: 50vw;
     flex-shrink: 0;
-    flex-wrap: wrap;
-    overflow: hidden;
-    max-height: 500px;
-    opacity: 1;
-    transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.25s ease;
+    background: var(--bg-header);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
-
-#settings-bar.hidden {
-    max-height: 0;
-    opacity: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-    border-bottom: none;
-    pointer-events: none;
-}
+.side-panel.hidden { display: none; }
+#settings-bar { padding: 0 0 12px; gap: 10px; align-items: stretch; }
+#settings-bar > .settings-field { padding: 0 16px; flex-wrap: wrap; justify-content: space-between; }
 
 .settings-field {
     display: flex;
@@ -1177,24 +1170,6 @@ main#timeline {
 }
 
 /* --- Todos panel --- */
-
-#pins-panel {
-    background: var(--bg-header);
-    border-bottom: 1px solid var(--border);
-    max-height: 300px;
-    overflow-y: auto;
-    flex-shrink: 0;
-    opacity: 1;
-    transition: max-height 0.25s ease, opacity 0.2s ease;
-}
-
-#pins-panel.hidden {
-    max-height: 0;
-    opacity: 0;
-    border-bottom: none;
-    pointer-events: none;
-    overflow: hidden;
-}
 
 .pins-header {
     display: flex;
@@ -3751,6 +3726,7 @@ a.file-attachment:hover { border-color: var(--accent); }
 
 @media (max-width: 700px) {
     #content-area { position: relative; }
+    .side-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
     #schedules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
 }
 

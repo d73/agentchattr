@@ -367,7 +367,7 @@ function toggleJobsPanel() {
         document.getElementById('jobs-toggle').classList.toggle('active', !panel.classList.contains('hidden'));
         if (!panel.classList.contains('hidden')) {
             // Return to list view if we were in conversation view
-            window.closeSchedulesPanel?.();
+            window.closeSidePanels?.('jobs');
             showJobsListView();
             renderJobsList();
         }
