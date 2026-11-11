@@ -107,16 +107,6 @@ function setupUserColorSetting() {
     applyUserColor();
 }
 
-// Sound for your own sent messages (default: none).
-function playOwnSendSound() {
-    const soundName = soundPrefs['you'] || 'none';
-    if (soundName === 'none') return;
-    if (!soundCache[soundName]) soundCache[soundName] = new Audio(`/static/sounds/${soundName}.mp3`);
-    const audio = soundCache[soundName];
-    audio.currentTime = 0;
-    audio.play().catch(() => {});
-}
-
 // Audio is only for messages that @mention you directly (never your own messages, never @all).
 function mentionsUser(text) {
     if (!username || typeof text !== 'string') return false;
@@ -155,7 +145,7 @@ function buildSoundSettings() {
     container.innerHTML = '';
 
     // Default sound + cross-channel sound + per-agent rows
-    const agents = ['default', 'cross-channel', 'you', ...Object.keys(agentConfig)];
+    const agents = ['default', 'cross-channel', ...Object.keys(agentConfig)];
     for (const name of agents) {
         const row = document.createElement('div');
         row.className = 'sound-row';
@@ -163,13 +153,12 @@ function buildSoundSettings() {
         label.className = 'sound-label';
         label.textContent = name === 'default' ? 'Default sound'
             : name === 'cross-channel' ? 'Background alerts'
-            : name === 'you' ? 'You (your messages)'
             : (agentConfig[name]?.label || name);
         const select = document.createElement('select');
         select.className = 'sound-select';
         select.dataset.agent = name;
         const currentVal = soundPrefs[name]
-            || (name === 'default' ? DEFAULT_SOUND : name === 'cross-channel' ? CROSS_CHANNEL_SOUND : name === 'you' ? 'none' : '');
+            || (name === 'default' ? DEFAULT_SOUND : name === 'cross-channel' ? CROSS_CHANNEL_SOUND : '');
         for (const opt of SOUND_OPTIONS) {
             const o = document.createElement('option');
             o.value = opt.value;
@@ -178,7 +167,7 @@ function buildSoundSettings() {
             select.appendChild(o);
         }
         // Add "Use default" option for per-agent rows (not default or cross-channel)
-        if (name !== 'default' && name !== 'cross-channel' && name !== 'you') {
+        if (name !== 'default' && name !== 'cross-channel') {
             const o = document.createElement('option');
             o.value = '';
             o.textContent = 'Use default';
@@ -508,9 +497,6 @@ function handleServerEvent(event) {
         // The mention preference owns sound for opted-in mention alerts.
         if (!mentionAlert && soundEnabled && mentionsUser(event.data.text) && (document.hidden || !document.hasFocus()) && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.type !== 'summary' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
             playNotificationSound(event.data.sender);
-        }
-        if (soundEnabled && event.data.type === 'chat' && event.data.sender && event.data.sender.toLowerCase() === username.toLowerCase()) {
-            playOwnSendSound();
         }
         appendMessage(event.data);
     } else if (event.type === 'agent_renamed') {

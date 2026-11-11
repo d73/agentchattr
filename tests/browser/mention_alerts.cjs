@@ -131,6 +131,32 @@ test('unmentioned messages never play a sound (legacy path; opt-in alerts treat 
     assert.deepEqual(s.sounds, []);
 });
 
+test('opt-in alert sound: direct @you plays, @all notifies silently', () => {
+    const s = setup('sound');
+    assert.equal(s.api.notify(msg({ id: 1, text: '@all hello' }), true, 'Derek'), true);
+    assert.equal(s.alerts.length, 1);
+    assert.deepEqual(s.sounds, []);
+    assert.equal(s.api.notify(msg({ id: 2, text: '@Derek hello' }), true, 'Derek'), true);
+    assert.equal(s.alerts.length, 2);
+    assert.deepEqual(s.sounds, ['Claude']);
+});
+
+test('your own messages never play audio, even with a saved You sound preference', () => {
+    const s = setup('sound');
+    Object.assign(s.context, { historyLoading: false, pendingLiveEvents: [], pendingHistory: [],
+        scheduleHistoryRender() {}, Hub: { emit() {} }, soundEnabled: true, username: 'Derek',
+        appendMessage() {}, playNotificationSound: s.window.playNotificationSound,
+        playCrossChannelSound() { s.sounds.push('cross'); },
+        soundPrefs: { you: 'warm-bell' } });
+    loadMentionsUser(s.context);
+    const chat = fs.readFileSync(path.join(root, 'static/chat.js'), 'utf8');
+    const start = chat.indexOf('function handleServerEvent(event) {');
+    vm.runInContext(chat.slice(start, chat.indexOf('\nfunction ', start + 1)), s.context);
+    s.context.event = { type: 'message', data: msg({ id: 7, sender: 'Derek', text: '@claude hello' }) };
+    vm.runInContext('handleServerEvent(event)', s.context);
+    assert.deepEqual(s.sounds, []);
+});
+
 test('actual message dispatcher keeps history silent and avoids duplicate alert audio', () => {
     const s = setup('sound');
     const chat = fs.readFileSync(path.join(root, 'static/chat.js'), 'utf8');
