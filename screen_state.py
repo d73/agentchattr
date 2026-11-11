@@ -41,6 +41,11 @@ _YES_PROCEED_LINE = re.compile(
 _ALLOW_LINE = re.compile(
     r"^[\s│|╭╰─❯>›•●]*[12]\.\s+allow(?:\s+for\s+this\s+session)?(?:\s*\((?:y|a|enter)\))?[\s│|╮╯─]*$", re.I)
 
+# "2. Yes, and don't ask again" (Codex adds " for commands that start with `x` (p)"). Whole line only.
+_DONT_ASK_LINE = re.compile(
+    r"^[\s│|╭╰─❯>›•●]*2\.\s+yes,?\s+and\s+don['’]t\s+ask\s+again"
+    r"(?:\s+for\s+commands\s+that\s+start\s+with\s+`[^`\n]+`)?(?:\s*\([a-z]\))?[\s│|╮╯─]*$", re.I)
+
 
 def _tail(rows, n):
     """Last n physical rows first, then drop blanks (so old text can't slide in)."""
@@ -77,7 +82,8 @@ def agent_idle_by_marker(rows) -> bool:
 
 def needs_user_input(rows) -> bool:
     live = _tail(rows, INPUT_ROWS)
-    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) or _YES_PROCEED_LINE.match(r) or _ALLOW_LINE.match(r) for r in live):
+    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) or _YES_PROCEED_LINE.match(r) or _ALLOW_LINE.match(r)
+           or _DONT_ASK_LINE.match(r) for r in live):
         return True
     return (any(_QUESTION_LINE.match(r) for r in live)
             and any(_OPTION_ROW.match(r) for r in live))
