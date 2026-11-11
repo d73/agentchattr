@@ -38,6 +38,16 @@ class NeedsInputTests(unittest.TestCase):
                      "Press enter to confirm or esc to cancel"):
             self.assertTrue(needs_user_input(text), text)
 
+    def test_codex_style_prompts(self):
+        edits = ["Would you like to make the following edits?", "", "  src/app.py (+3 -1)", "",
+                 "› 1. Yes, proceed (y)", "  2. No, and tell Codex what to do differently (esc)"]
+        self.assertTrue(needs_user_input(edits + ["> "]))
+        approve = ["Allow Codex to run `git push`?", "› 1. Yes, proceed (y)", "  2. No (esc)"]
+        self.assertTrue(needs_user_input(approve))
+
+    def test_question_without_options_is_not_input(self):
+        self.assertFalse(needs_user_input(["Would you like to make the following edits? I can do that.", "> "]))
+
     def test_normal_screen_is_not_input(self):
         self.assertFalse(needs_user_input("Done.\n\n› Ask Codex to do anything"))
 
