@@ -5,7 +5,6 @@ cd /d "%~dp0.."
 REM Auto-create venv and install deps on first run
 call "%~dp0ensure_venv.bat"
 if errorlevel 1 exit /b 1
-call .venv\Scripts\activate.bat
 
 REM Pre-flight: check that codex CLI is installed
 where codex >nul 2>&1
@@ -19,15 +18,15 @@ if %errorlevel% neq 0 (
 )
 
 REM Start server if not already running, then wait for it
-python -c "import socket; socket.create_connection(('127.0.0.1', 8300), 1)" >nul 2>&1
+"%VENV_PY%" -c "import socket; socket.create_connection(('127.0.0.1', 8300), 1)" >nul 2>&1
 if %errorlevel% neq 0 (
-    start "agentchattr server" cmd /c "python run.py"
+    start "agentchattr server" "%VENV_PY%" run.py
 )
 :wait_server
-python -c "import socket; socket.create_connection(('127.0.0.1', 8300), 1)" >nul 2>&1
+"%VENV_PY%" -c "import socket; socket.create_connection(('127.0.0.1', 8300), 1)" >nul 2>&1
 if %errorlevel% neq 0 (
     timeout /t 1 /nobreak >nul
     goto :wait_server
 )
 
-python wrapper.py codex -- --dangerously-bypass-approvals-and-sandbox
+"%VENV_PY%" wrapper.py codex -- --dangerously-bypass-approvals-and-sandbox

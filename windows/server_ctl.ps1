@@ -55,7 +55,10 @@ function Start-Server {
     if (Get-ServerPid) { Write-Error "Port $port is already in use; not starting."; exit 4 }
     if (-not (Test-Path $venvPy)) {
         & python -m venv .venv; if ($LASTEXITCODE -ne 0) { Write-Error "venv creation failed."; exit 5 }
-        & $venvPy -m pip install -q -r requirements.txt; if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed."; exit 5 }
+    }
+    & $venvPy -c "import fastapi, uvicorn, mcp" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        & $venvPy -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed."; exit 5 }
     }
     $p = Start-Process -FilePath $venvPy -ArgumentList ('"' + (Join-Path $root 'run.py') + '"') -WorkingDirectory $root -WindowStyle Hidden -PassThru
     $deadline = (Get-Date).AddSeconds(30)
