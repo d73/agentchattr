@@ -367,6 +367,7 @@ function toggleJobsPanel() {
         document.getElementById('jobs-toggle').classList.toggle('active', !panel.classList.contains('hidden'));
         if (!panel.classList.contains('hidden')) {
             // Return to list view if we were in conversation view
+            window.closeSchedulesPanel?.();
             showJobsListView();
             renderJobsList();
         }
@@ -1748,6 +1749,7 @@ async function requestChangesProposal(msgId) {
 async function openJobFromBreadcrumb(jobId) {
     const job = jobsData.find(a => a.id === jobId);
     if (!job) return;
+    window.closeSchedulesPanel?.();
     const panel = document.getElementById('jobs-panel');
     if (panel.classList.contains('hidden')) {
         // Force browser to compute the hidden state BEFORE removing class

@@ -3535,6 +3535,14 @@ function toggleSchedulesPanel(forceOpen) {
     if (!panel) return;
     const opening = typeof forceOpen === 'boolean' ? forceOpen : panel.classList.contains('hidden');
     window._preserveScroll(() => {
+        if (opening) {
+            // Avoid stacked sidebars on desktop and hidden controls beneath the
+            // scheduled-task overlay on narrow screens.
+            for (const name of ['jobs', 'rules']) {
+                document.getElementById(name + '-panel')?.classList.add('hidden');
+                document.getElementById(name + '-toggle')?.classList.remove('active');
+            }
+        }
         panel.classList.toggle('hidden', !opening);
         const button = document.getElementById('schedules-toggle');
         button.classList.toggle('active', opening);
@@ -3543,6 +3551,14 @@ function toggleSchedulesPanel(forceOpen) {
         else button.focus();
     });
 }
+
+function closeSchedulesPanel() {
+    document.getElementById('schedules-panel')?.classList.add('hidden');
+    const button = document.getElementById('schedules-toggle');
+    button?.classList.remove('active');
+    button?.setAttribute('aria-expanded', 'false');
+}
+window.closeSchedulesPanel = closeSchedulesPanel;
 
 function scheduleNextLabel(schedule) {
     if (schedule.active === false) return 'Paused';
