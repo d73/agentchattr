@@ -107,6 +107,8 @@ function collectUiPrefs() {
     }
     return out;
 }
+let _seededUiPrefs = false;
+let _seededColors = false;
 let _uiPrefsTimer = null;
 let _serverUiPrefs = {};          // last state received from the server
 const _dirtyUiPrefs = new Set();  // keys edited locally but not yet sent
@@ -2078,16 +2080,20 @@ function applySettings(data) {
     }
     if (data.ui_prefs && typeof data.ui_prefs === 'object') {
         applyUiPrefs(data.ui_prefs);
-    } else {
-        saveUiPrefs();  // never initialized: seed once from this browser (may be empty)
+    } else if (!_seededUiPrefs) {
+        // Never initialized: seed once per page load from this browser (may be empty). The guard
+        // stops a send/broadcast loop if the server doesn't store ui_prefs (e.g. not restarted).
+        _seededUiPrefs = true;
+        saveUiPrefs();
     }
     if (data.agent_colors && typeof data.agent_colors === 'object') {
         // Server-owned and authoritative (an empty map is an explicit Reset).
         colorOverrides = Object.assign({}, data.agent_colors);
         try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
         refreshAgentColors();
-    } else {
-        // Server never initialized: seed it once from this browser's legacy overrides (may be {}).
+    } else if (!_seededColors) {
+        // Server never initialized: seed once per page load from this browser's legacy overrides.
+        _seededColors = true;
         saveColorOverrides();
     }
     if (data.max_agent_hops !== undefined) {
