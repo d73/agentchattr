@@ -115,6 +115,7 @@ function toggleRulesPanel() {
         document.getElementById('rules-toggle').classList.toggle('active', !panel.classList.contains('hidden'));
         if (!panel.classList.contains('hidden')) {
             // Mark all current drafts as seen
+            window.closeSchedulesPanel?.();
             for (const r of window.rules) {
                 if (r.status === 'proposed' || r.status === 'draft') _seenRuleIds.add(r.id);
             }

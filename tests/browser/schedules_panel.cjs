@@ -11,6 +11,8 @@ class Element {
     constructor() { this.children = []; this.dataset = {}; this.attributes = {}; this.className = ''; this.textContent = ''; }
     get classList() {
         return {
+            add: name => { if (!this.className.split(' ').includes(name)) this.className += ' ' + name; },
+            remove: name => { this.className = this.className.split(' ').filter(value => value !== name).join(' '); },
             contains: name => this.className.split(' ').includes(name),
             toggle: (name, force) => {
                 const values = new Set(this.className.split(' ').filter(Boolean));
@@ -30,7 +32,7 @@ class Element {
 }
 
 function harness() {
-    const ids = Object.fromEntries(['schedules-panel', 'schedules-list', 'schedules-badge', 'schedules-toggle', 'schedules-feedback'].map(id => [id, new Element()]));
+    const ids = Object.fromEntries(['schedules-panel', 'schedules-list', 'schedules-badge', 'schedules-toggle', 'schedules-feedback', 'jobs-panel', 'jobs-toggle', 'rules-panel', 'rules-toggle'].map(id => [id, new Element()]));
     ids['schedules-panel'].className = 'hidden';
     const calls = [];
     const ctx = vm.createContext({
@@ -63,6 +65,8 @@ test('incoming tasks update badge without opening the panel; pause-only tasks re
 test('panel toggle and create confirmation expose tasks, with accessible button state and empty state', () => {
     const { ctx, ids } = harness();
     ctx.showScheduleConfirmation();
+    assert.equal(ids['jobs-panel'].classList.contains('hidden'), true);
+    assert.equal(ids['rules-panel'].classList.contains('hidden'), true);
     assert.equal(ids['schedules-panel'].classList.contains('hidden'), false);
     assert.equal(ids['schedules-toggle'].attributes['aria-expanded'], 'true');
     assert.match(ids['schedules-list'].children[0].textContent, /No scheduled tasks/);
