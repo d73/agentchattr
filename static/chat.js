@@ -106,6 +106,24 @@ function setupUserColorSetting() {
     applyUserColor();
 }
 
+// How a pill signals "needs attention": 'highlight' (default, soft pulse) or 'flash' (hard blink). Per browser.
+function applyAttentionStyle() {
+    let v = '';
+    try { v = localStorage.getItem('agentchattr-attention-style') || ''; } catch (e) {}
+    if (v !== 'flash') v = 'highlight';
+    document.documentElement.dataset.attention = v;
+    const select = document.getElementById('setting-attention-style');
+    if (select) select.value = v;
+}
+function setupAttentionStyleSetting() {
+    const select = document.getElementById('setting-attention-style');
+    if (select) select.addEventListener('change', () => {
+        try { localStorage.setItem('agentchattr-attention-style', select.value); } catch (e) {}
+        applyAttentionStyle();
+    });
+    applyAttentionStyle();
+}
+
 // Audio is only for messages that @mention you directly (never your own messages, never @all).
 function mentionsUser(text) {
     if (!username || typeof text !== 'string') return false;
@@ -263,6 +281,7 @@ function init() {
     setupScroll();
     setupSettingsKeys();
     setupUserColorSetting();
+    setupAttentionStyleSetting();
     setupKeyboardShortcuts();
     RulesPanel.init();
     Jobs.init();

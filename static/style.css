@@ -4597,6 +4597,15 @@ a.file-attachment:hover { border-color: var(--accent); }
         background-color: color-mix(in srgb, var(--agent-color, #fbbf24) 30%, transparent);
     }
 }
+/* "Flash" option (Settings > Needs attention): a hard on/off blink instead of the soft highlight pulse. */
+:root[data-attention="flash"] .status-pill.needs-input {
+    animation: needs-input-blink 0.7s steps(1, end) infinite;
+}
+@keyframes needs-input-blink {
+    0%, 100% { box-shadow: 0 0 12px 3px var(--agent-color, #fbbf24); background-color: color-mix(in srgb, var(--agent-color, #fbbf24) 55%, transparent); }
+    50% { box-shadow: none; background-color: transparent; }
+}
 @media (prefers-reduced-motion: reduce) {
-    .status-pill.needs-input { animation: none; box-shadow: 0 0 8px 2px var(--agent-color, #fbbf24); }
+    .status-pill.needs-input,
+    :root[data-attention="flash"] .status-pill.needs-input { animation: none; box-shadow: 0 0 8px 2px var(--agent-color, #fbbf24); }
 }
