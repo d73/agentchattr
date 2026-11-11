@@ -1859,6 +1859,7 @@ function updateStatus(data) {
         if (!pill) continue;
 
         pill.classList.remove('available', 'working', 'offline');
+        pill.classList.toggle('needs-input', !!(info.needs_input && info.available));
         // Pending pills keep their pending animation (set in buildStatusPills)
         if (!pill.classList.contains('pending')) {
             if (info.busy && info.available) {
