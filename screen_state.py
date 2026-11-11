@@ -46,6 +46,28 @@ def has_busy_marker(rows) -> bool:
     return any(_BUSY_LINE.match(r.strip()) for r in _tail(rows, BUSY_ROWS))
 
 
+# "Turn finished" summary lines, shown when the agent stops working:
+#   Claude: "✻ Worked for 1m 3s" / "✻ Baked for 2m 5s" / "done 1:03"
+#   Codex:  "─ Worked for 2m 14s ────────"
+# Whole line only: optional glyph/box decoration, the phrase, a duration, nothing else.
+_DURATION = r"(?:\d+\s*[hms]\b\s*)+|\d{1,2}:\d{2}(?::\d{2})?"
+_DONE_LINE = re.compile(
+    r"^[\s─━│┃✻✽✳✢✶✷●•⏺◆✓·*]*(?:[a-z]+ed for|done(?: in)?)\s+(?:" + _DURATION + r")[\s─━]*$",
+    re.I,
+)
+DONE_ROWS = 8
+
+
+def has_done_marker(rows) -> bool:
+    """True when a finished-turn summary line is among the last few live rows."""
+    return any(_DONE_LINE.match(r.strip()) for r in _tail(rows, DONE_ROWS))
+
+
+def agent_idle_by_marker(rows) -> bool:
+    """A done summary is visible and no live busy status is: the agent is definitely not working."""
+    return has_done_marker(rows) and not has_busy_marker(rows)
+
+
 def needs_user_input(rows) -> bool:
     live = _tail(rows, INPUT_ROWS)
     if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) for r in live):
