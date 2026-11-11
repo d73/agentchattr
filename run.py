@@ -36,8 +36,9 @@ def _log_level() -> int:
     """Console log level. Quiet (WARNING) by default; set AGENTCHATTR_LOG_LEVEL=info|debug to see more."""
     import os
     name = os.environ.get("AGENTCHATTR_LOG_LEVEL", "warning").strip().upper()
-    level = logging.getLevelName(name)
-    return level if isinstance(level, int) else logging.WARNING
+    levels = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
+              "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL}
+    return levels.get(name, logging.WARNING)
 
 
 def main():
