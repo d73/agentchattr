@@ -182,6 +182,7 @@ def get_activity_checker(session_name, trigger_flag=None, *, provider=""):
             last_hash[0] = h
             return changed
         except Exception:
+            _needs_input[0] = False
             return False
 
     check.needs_input = lambda: _needs_input[0]

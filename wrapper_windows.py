@@ -293,12 +293,14 @@ def get_activity_checker(pid_holder, agent_name="unknown", trigger_flag=None):
         # Get buffer dimensions
         csbi = _CONSOLE_SCREEN_BUFFER_INFO()
         if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(csbi)):
+            _needs_input[0] = False
             return _is_active[0]
 
         rect = csbi.srWindow
         width = rect.Right - rect.Left + 1
         height = rect.Bottom - rect.Top + 1
         if width <= 0 or height <= 0:
+            _needs_input[0] = False
             return _is_active[0]
 
         # Read visible window
@@ -312,6 +314,7 @@ def get_activity_checker(pid_holder, agent_name="unknown", trigger_flag=None):
             ctypes.byref(read_rect),
         )
         if not ok:
+            _needs_input[0] = False
             return _is_active[0]
 
         # Extract visible characters only (skip attributes)
@@ -337,7 +340,7 @@ def get_activity_checker(pid_holder, agent_name="unknown", trigger_flag=None):
             if not significant:
                 significant = screen_state.has_busy_marker(rows)
         except Exception:
-            pass
+            _needs_input[0] = False
 
         # Hysteresis: active immediately on significant change or trigger,
         # idle only after IDLE_COOLDOWN consecutive quiet polls
