@@ -117,6 +117,14 @@ function playOwnSendSound() {
     audio.play().catch(() => {});
 }
 
+// Audio is only for messages that @mention you directly (never your own messages, never @all).
+function mentionsUser(text) {
+    if (!username || typeof text !== 'string') return false;
+    const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^\\p{L}\\p{N}_@-])@' + escaped + '(?![\\p{L}\\p{N}_-])', 'iu').test(text);
+}
+window.mentionsUser = mentionsUser;
+
 function playNotificationSound(sender) {
     const key = sender.toLowerCase();
     const soundName = soundPrefs[key] || soundPrefs['default'] || DEFAULT_SOUND;
@@ -498,7 +506,7 @@ function handleServerEvent(event) {
         if (document.getElementById(`message-${event.data.id}`)) return;
         const mentionAlert = window.MentionAlerts.notify(event.data, soundEnabled, username);
         // The mention preference owns sound for opted-in mention alerts.
-        if (!mentionAlert && soundEnabled && (document.hidden || !document.hasFocus()) && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.type !== 'summary' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
+        if (!mentionAlert && soundEnabled && mentionsUser(event.data.text) && (document.hidden || !document.hasFocus()) && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.type !== 'summary' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
             playNotificationSound(event.data.sender);
         }
         if (soundEnabled && event.data.type === 'chat' && event.data.sender && event.data.sender.toLowerCase() === username.toLowerCase()) {
@@ -1033,7 +1041,7 @@ function appendMessage(msg, options = {}) {
             channelUnread[msgChannel] = (channelUnread[msgChannel] || 0) + 1;
             renderChannelTabs();
             // Play soft pluck for cross-channel chat messages from others (only when focused)
-            if (document.hasFocus() && msg.type === 'chat' && msg.sender && msg.sender.toLowerCase() !== username.toLowerCase()) {
+            if (document.hasFocus() && msg.type === 'chat' && msg.sender && msg.sender.toLowerCase() !== username.toLowerCase() && mentionsUser(msg.text)) {
                 playCrossChannelSound();
             }
         }
