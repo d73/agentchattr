@@ -1080,7 +1080,10 @@ window.appendMessage = appendMessage;
 
 function updateScrollAnchor() {
     const anchor = document.getElementById('scroll-anchor');
-    if (autoScroll) {
+    // Only offer the down arrow when more than one screenful of content is below the viewport.
+    const tl = document.getElementById('timeline');
+    const moreThanScreenBelow = tl && (tl.scrollHeight - tl.scrollTop - tl.clientHeight) > tl.clientHeight;
+    if (autoScroll || !moreThanScreenBelow) {
         anchor.classList.add('hidden');
     } else {
         anchor.classList.remove('hidden');
@@ -2676,9 +2679,12 @@ function setupScroll() {
     const resizeObserver = new ResizeObserver(() => {
         if (autoScroll && !historyLoading) {
             scrollToBottom();
+        } else {
+            updateScrollAnchor();  // content grew/shrank while scrolled up: re-check the one-screen threshold
         }
     });
     resizeObserver.observe(messages);
+    resizeObserver.observe(timeline);  // viewport height changes also move the one-screen threshold
 
     // Reposition scroll-anchor when window resizes or sidebars toggle
     window.addEventListener('resize', repositionScrollAnchor);
@@ -4498,6 +4504,25 @@ function openHelp() {
 
     document.addEventListener('keydown', _helpKeyHandler);
     window.addEventListener('resize', _helpResizeHandler);
+    _showHelpVersion();
+}
+
+// Build string (local date-time) in the corner of the help overlay.
+var _buildVersion = null;
+function _showHelpVersion() {
+    var render = function(v) {
+        var host = document.getElementById('help-guide');
+        if (!host || !v || host.querySelector('.hg-version')) return;
+        var el = document.createElement('div');
+        el.className = 'hg-version';
+        el.textContent = 'Version ' + v;
+        host.appendChild(el);
+    };
+    if (_buildVersion) { render(_buildVersion); return; }
+    fetch('/api/build').then(function(r) { return r.json(); }).then(function(d) {
+        _buildVersion = d.build || '';
+        render(_buildVersion);
+    }).catch(function() {});
 }
 
 function closeHelp() {
