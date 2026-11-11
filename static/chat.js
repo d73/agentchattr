@@ -324,7 +324,7 @@ function linkifyUrls(html) {
         }
         // Markdown links ([text](https://...)) render as bare <a href>: make outbound ones open in a new tab.
         return match.replace(/^<a\b([^>]*)>/i, (tag, attrs) => {
-            if (!/\bhref\s*=\s*["']https?:\/\//i.test(attrs)) return tag;
+            if (!/\bhref\s*=\s*["'](?:https?:)?\/\//i.test(attrs)) return tag;
             attrs = attrs.replace(/\s(?:target|rel)\s*=\s*("[^"]*"|'[^']*'|\S+)/gi, '');
             return `<a${attrs} target="_blank" rel="noopener noreferrer">`;
         });
