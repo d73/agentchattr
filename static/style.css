@@ -231,12 +231,13 @@ header h1 {
     display: flex;
     gap: 12px;
     overflow-x: auto;
-    max-width: calc(60vw + 32px);  /* + the horizontal padding below, so the net width stays 60vw */
+    max-width: 60vw;
     scrollbar-width: none;
     /* overflow clips box-shadow: pad the scroller so the needs-attention glow isn't cut off around the
-       rounded pill, and pull the padding back with a negative margin so layout is unchanged. */
+       rounded pill. Vertical padding is cancelled by a negative margin; horizontal padding is kept
+       (no negative horizontal margin) so scrolling pills can't run into the neighbouring button. */
     padding: 14px 16px;
-    margin: -14px -16px;
+    margin: -14px 0;
 }
 #agent-status::-webkit-scrollbar { display: none; }
 
