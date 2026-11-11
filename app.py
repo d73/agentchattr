@@ -59,8 +59,12 @@ room_settings: dict = {
     "contrast": "normal",
     "custom_roles": [],
 }
+# "agent_colors" ({name: "#rrggbb"}) is deliberately absent until a client first
+# sets it. Absent = never initialized (a client may seed it from its legacy
+# localStorage); present, even as {}, = authoritative (an explicit Reset).
 
 # Channel validation
+_HEX_COLOR_RE = _re.compile(r'#[0-9a-fA-F]{6}')  # module-level: a later local `import re as _re` shadows _re inside websocket_endpoint
 _CHANNEL_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9\-]{0,19}$')
 
 # Agent hats (persisted to data/hats.json)
@@ -1348,6 +1352,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         pass
                 if "contrast" in new and new["contrast"] in ("normal", "high"):
                     room_settings["contrast"] = new["contrast"]
+                if isinstance(new.get("agent_colors"), dict):
+                    room_settings["agent_colors"] = {
+                        str(k)[:64]: v for k, v in new["agent_colors"].items()
+                        if isinstance(v, str) and _HEX_COLOR_RE.fullmatch(v)
+                    }
                 if "rules_refresh_interval" in new:
                     try:
                         ri = int(new["rules_refresh_interval"])

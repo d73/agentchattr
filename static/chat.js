@@ -26,7 +26,16 @@ let channelList = ['general'];
 let channelUnread = {};  // { channelName: count }
 let agentHats = {};  // { agent_name: svg_string }
 window.customRoles = [];  // saved custom roles from settings
-let colorOverrides = JSON.parse(localStorage.getItem('agentchattr-color-overrides') || '{}');
+let colorOverrides = {};
+try { colorOverrides = JSON.parse(localStorage.getItem('agentchattr-color-overrides') || '{}') || {}; } catch (e) {}
+
+// Persist overrides locally (cache) and on the server (survives origin/browser changes).
+function saveColorOverrides() {
+    try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
+    if (typeof ws !== 'undefined' && ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'update_settings', data: { agent_colors: colorOverrides } }));
+    }
+}
 let schedulesList = [];  // array of schedule objects from server
 
 // Expose globals that extracted modules (sessions.js, jobs.js) read via window.*
@@ -1183,6 +1192,20 @@ function applyAgentConfig(data) {
     updateJobReplyTargetUI();
 }
 
+// Re-apply overrides to messages, status pills and mention buttons (e.g. after a remote change).
+function refreshAgentColors() {
+    for (const [name, cfg] of Object.entries(agentConfig || {})) {
+        const c = colorOverrides[name] || cfg.color;
+        if (!c) continue;
+        const pill = document.getElementById(`status-${name}`);
+        if (pill) pill.style.setProperty('--agent-color', c);
+        document.querySelectorAll('.mention-toggle').forEach(b => {
+            if (b.dataset.agent === name) b.style.setProperty('--agent-color', c);
+        });
+    }
+    if (typeof recolorMessages === 'function') recolorMessages();
+}
+
 function recolorMessages() {
     const msgs = document.querySelectorAll('.message[data-id]');
     for (const el of msgs) {
@@ -1661,7 +1684,7 @@ function showPillPopover(pillEl, opts) {
     // --- Color picker handlers ---
     const applyColorOverride = (color) => {
         colorOverrides[opts.name] = color;
-        localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides));
+        saveColorOverrides();
         // Update pill color
         const pillToUpdate = document.getElementById(`status-${opts.name}`);
         if (pillToUpdate) pillToUpdate.style.setProperty('--agent-color', color);
@@ -1704,7 +1727,7 @@ function showPillPopover(pillEl, opts) {
         resetBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             delete colorOverrides[opts.name];
-            localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides));
+            saveColorOverrides();
             const defaultColor = opts.color || '#888';
             const pillToUpdate = document.getElementById(`status-${opts.name}`);
             if (pillToUpdate) pillToUpdate.style.setProperty('--agent-color', defaultColor);
@@ -1938,7 +1961,7 @@ function updateStatus(data) {
         }
 
         // Keep agent color in sync
-        if (info.color) pill.style.setProperty('--agent-color', info.color);
+        if (info.color) pill.style.setProperty('--agent-color', colorOverrides[name] || info.color);
 
         // Track role (displayed on bubbles, not on pill)
         if (info.role !== undefined) {
@@ -1984,6 +2007,15 @@ function applySettings(data) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
         document.body.classList.add('font-' + data.font);
         document.getElementById('setting-font').value = data.font;
+    }
+    if (data.agent_colors && typeof data.agent_colors === 'object') {
+        // Server-owned and authoritative (an empty map is an explicit Reset).
+        colorOverrides = Object.assign({}, data.agent_colors);
+        try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
+        refreshAgentColors();
+    } else {
+        // Server never initialized: seed it once from this browser's legacy overrides (may be {}).
+        saveColorOverrides();
     }
     if (data.max_agent_hops !== undefined) {
         document.getElementById('setting-hops').value = data.max_agent_hops;
