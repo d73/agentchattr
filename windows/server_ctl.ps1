@@ -5,6 +5,7 @@ param([Parameter(Mandatory)][ValidateSet('stop', 'start', 'restart')][string]$Ac
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+. "$PSScriptRoot\server_ctl_lib.ps1"
 $venvPy = Join-Path $root '.venv\Scripts\python.exe'
 $py = if (Test-Path $venvPy) { $venvPy } else { 'python' }
 
@@ -17,12 +18,24 @@ function Get-ServerPid {
     if ($c) { $c.OwningProcess } else { $null }
 }
 
+function Get-Chain([int]$ProcId) {
+    # the process and up to 3 ancestors (venv launcher -> interpreter), as @{ExecutablePath; CommandLine}
+    $chain = @(); $cur = $ProcId
+    for ($i = 0; $i -lt 4 -and $cur; $i++) {
+        $p = Get-CimInstance Win32_Process -Filter "ProcessId=$cur" -ErrorAction SilentlyContinue
+        if (-not $p) { break }
+        $chain += @{ ExecutablePath = $p.ExecutablePath; CommandLine = $p.CommandLine }
+        $cur = $p.ParentProcessId
+    }
+    return $chain
+}
+
 function Stop-Server {
     $srvPid = Get-ServerPid
     if (-not $srvPid) { Write-Host "No server listening on port $port."; return }
-    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$srvPid"
-    if (-not $proc -or $proc.CommandLine -notmatch 'run\.py') {
-        Write-Error "Port $port is held by PID $srvPid ($($proc.CommandLine)), which is not agentchattr's run.py. Not stopping it."
+    $chain = Get-Chain $srvPid
+    if (-not (Test-ChainOwnsServer $chain $root)) {
+        Write-Error "Port $port is held by PID $srvPid ($($chain[0].CommandLine)), which cannot be verified as this checkout's run.py ($root). Not stopping it."
         exit 2
     }
     # the process tree too: the venv python launcher can sit in front of the real interpreter
@@ -44,11 +57,18 @@ function Start-Server {
         & python -m venv .venv; if ($LASTEXITCODE -ne 0) { Write-Error "venv creation failed."; exit 5 }
         & $venvPy -m pip install -q -r requirements.txt; if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed."; exit 5 }
     }
-    $p = Start-Process -FilePath $venvPy -ArgumentList 'run.py' -WorkingDirectory $root -WindowStyle Hidden -PassThru
+    $p = Start-Process -FilePath $venvPy -ArgumentList ('"' + (Join-Path $root 'run.py') + '"') -WorkingDirectory $root -WindowStyle Hidden -PassThru
     $deadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $deadline) {
         if ($p.HasExited) { Write-Error "Server exited during startup (code $($p.ExitCode)). Run `python run.py` to see the error."; exit 6 }
-        if (Get-ServerPid) { Write-Host "Server running on port $port (PID $($p.Id))."; return }
+        $lp = Get-ServerPid
+        if ($lp) {
+            $parentOf = @{}
+            Get-CimInstance Win32_Process | ForEach-Object { $parentOf[[int]$_.ProcessId] = [int]$_.ParentProcessId }
+            if (Test-InTree ([int]$lp) $p.Id $parentOf) { Write-Host "Server running on port $port (PID $lp)."; return }
+            Write-Error "Port $port is now held by PID $lp, which is not the server I launched (PID $($p.Id))."
+            exit 8
+        }
         Start-Sleep -Milliseconds 300
     }
     Write-Error "Server did not start listening on port $port within 30s."

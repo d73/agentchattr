@@ -1,0 +1,25 @@
+# Run: powershell -NoProfile -File windows\test_server_ctl.ps1
+. "$PSScriptRoot\server_ctl_lib.ps1"
+$root = 'C:\Apps\agentchattr'
+$fail = 0
+function Check($name, $got, $want) { if ($got -ne $want) { Write-Host "FAIL $name (got $got, want $want)"; $script:fail++ } else { Write-Host "ok   $name" } }
+function P($exe, $cmd) { @{ ExecutablePath = $exe; CommandLine = $cmd } }
+$venvPy = "$root\.venv\Scripts\python.exe"
+
+Check 'abs run.py of this checkout'      (Test-OwnsServer (P 'C:\Python\python.exe' "python $root\run.py") $root) $true
+Check 'abs quoted run.py of this checkout' (Test-OwnsServer (P 'C:\Python\python.exe' "python `"$root\run.py`" --port 8300") $root) $true
+Check 'relative run.py via our venv'     (Test-OwnsServer (P $venvPy 'python run.py') $root) $true
+Check 'unrelated abs run.py'             (Test-OwnsServer (P 'C:\Python\python.exe' 'python C:\OtherApp\run.py') $root) $false
+Check 'other_run.py'                     (Test-OwnsServer (P $venvPy 'python other_run.py') $root) $false
+Check 'relative run.py, system python'   (Test-OwnsServer (P 'C:\Python\python.exe' 'python run.py') $root) $false
+Check 'relative run.py, other venv'      (Test-OwnsServer (P 'C:\OtherApp\.venv\Scripts\python.exe' 'python run.py') $root) $false
+Check 'sibling dir prefix (agentchattr2)' (Test-OwnsServer (P 'C:\Apps\agentchattr2\.venv\Scripts\python.exe' 'python run.py') $root) $false
+Check 'no run.py'                        (Test-OwnsServer (P $venvPy 'python -m http.server 8300') $root) $false
+Check 'chain: child base python, parent venv launcher' (Test-ChainOwnsServer @((P 'C:\Python\python.exe' 'python run.py'), (P $venvPy 'python run.py')) $root) $true
+Check 'chain: unrelated'                 (Test-ChainOwnsServer @((P 'C:\Python\python.exe' 'python C:\OtherApp\run.py')) $root) $false
+
+$parents = @{ 300 = 200; 200 = 100; 999 = 1 }
+Check 'listener is launched pid'         (Test-InTree 100 100 $parents) $true
+Check 'listener is grandchild'           (Test-InTree 300 100 $parents) $true
+Check 'unexpected listener'              (Test-InTree 999 100 $parents) $false
+if ($fail) { Write-Host "$fail failed"; exit 1 } else { Write-Host 'all passed' }
