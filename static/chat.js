@@ -606,7 +606,7 @@ function handleServerEvent(event) {
         updateAllHats();
     } else if (event.type === 'schedules') {
         schedulesList = event.data || [];
-        renderSchedulesBar();
+        renderSchedulesPanel();
     } else if (event.type === 'schedule') {
         handleScheduleEvent(event.action, event.data);
     } else if (event.type === 'pending_instance') {
@@ -3516,7 +3516,7 @@ function escapeHtml(text) {
 }
 window.escapeHtml = escapeHtml;
 
-// --- Schedules strip ---
+// --- Scheduled tasks panel ---
 
 function handleScheduleEvent(action, schedule) {
     if (action === 'create') {
@@ -3527,123 +3527,96 @@ function handleScheduleEvent(action, schedule) {
     } else if (action === 'delete') {
         schedulesList = schedulesList.filter(s => s.id !== schedule.id);
     }
-    renderSchedulesBar();
+    renderSchedulesPanel();
 }
 
-function renderSchedulesBar() {
-    const bar = document.getElementById('schedules-bar');
-    if (!bar) return;
+function toggleSchedulesPanel(forceOpen) {
+    const panel = document.getElementById('schedules-panel');
+    if (!panel) return;
+    const opening = typeof forceOpen === 'boolean' ? forceOpen : panel.classList.contains('hidden');
+    window._preserveScroll(() => {
+        panel.classList.toggle('hidden', !opening);
+        const button = document.getElementById('schedules-toggle');
+        button.classList.toggle('active', opening);
+        button.setAttribute('aria-expanded', String(opening));
+        if (opening) renderSchedulesPanel();
+        else button.focus();
+    });
+}
 
-    const active = schedulesList.filter(s => s.active !== false);
-    if (schedulesList.length === 0) {
-        bar.classList.add('hidden');
-        bar.classList.remove('expanded');
-        document.getElementById('schedules-list')?.classList.add('hidden');
-        repositionScrollAnchor();
+function scheduleNextLabel(schedule) {
+    if (schedule.active === false) return 'Paused';
+    if (!schedule.next_run) return 'Next run pending';
+    const remaining = formatScheduleTime(schedule.next_run);
+    return remaining ? 'Next in ' + remaining : 'Due now';
+}
+
+function renderSchedulesPanel() {
+    const list = document.getElementById('schedules-list');
+    if (!list) return;
+    const badge = document.getElementById('schedules-badge');
+    badge.textContent = String(schedulesList.length);
+    badge.classList.toggle('hidden', schedulesList.length === 0);
+    document.getElementById('schedules-toggle').title = `Scheduled tasks (${schedulesList.length})`;
+    list.replaceChildren();
+    if (!schedulesList.length) {
+        const empty = document.createElement('div');
+        empty.className = 'jobs-empty';
+        empty.textContent = 'No scheduled tasks. Write a message, choose agents, then use the clock next to Send.';
+        list.appendChild(empty);
         return;
     }
-
-    bar.classList.remove('hidden');
-
-    // Summary line -- Slack-style: describe the next firing
-    const countEl = document.getElementById('schedules-count');
-    const nextEl = document.getElementById('schedules-next');
-
-    // Clean up inline controls from previous render
-    const summaryDiv = bar.querySelector('.schedules-bar-summary');
-    summaryDiv.querySelector('.schedule-toggle-inline')?.remove();
-    summaryDiv.querySelector('.schedule-delete-inline')?.remove();
-
-    if (schedulesList.length === 1) {
-        const s = schedulesList[0];
-        const isPaused = s.active === false;
-        const targetStr = (s.targets || []).map(t => '@' + t).join(', ');
-        countEl.textContent = `${targetStr} "${s.prompt}"` + (isPaused ? ' (paused)' : '');
-        const nextStr = (!isPaused && s.next_run) ? formatScheduleTime(s.next_run) : '';
-        nextEl.textContent = nextStr
-            ? formatScheduleInterval(s) + ' -- next in ' + nextStr
-            : formatScheduleInterval(s);
-    } else if (active.length > 0) {
-        const paused = schedulesList.length - active.length;
-        const parts = [`${active.length} active`];
-        if (paused > 0) parts.push(`${paused} paused`);
-        countEl.textContent = parts.join(', ');
-        const futureRuns = active.filter(s => s.next_run && s.next_run * 1000 > Date.now()).map(s => s.next_run);
-        const nextTimeStr = futureRuns.length > 0 ? formatScheduleTime(Math.min(...futureRuns)) : '';
-        nextEl.textContent = nextTimeStr ? 'next in ' + nextTimeStr : '';
-    } else {
-        const paused = schedulesList.length;
-        countEl.textContent = `${paused} paused schedule${paused !== 1 ? 's' : ''}`;
-        nextEl.textContent = '';
-    }
-
-    // Inline pause + trash when only 1 schedule; hide "See all" link
-    const seeAllLink = summaryDiv.querySelector('.schedules-see-all');
-    if (schedulesList.length === 1) {
-        const s = schedulesList[0];
-        const isPaused = s.active === false;
-
-        const pauseBtn = document.createElement('button');
-        pauseBtn.className = 'schedule-toggle-inline' + (isPaused ? ' paused' : '');
-        pauseBtn.innerHTML = isPaused
-            ? '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M5 3l8 5-8 5V3z" fill="currentColor"/></svg>'
-            : '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="4" y="3" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="9" y="3" width="3" height="10" rx="0.5" fill="currentColor"/></svg>';
-        pauseBtn.title = isPaused ? 'Resume' : 'Pause';
-        pauseBtn.onclick = () => toggleSchedule(s.id);
-
-        const trashBtn = document.createElement('button');
-        trashBtn.className = 'schedule-delete-inline';
-        trashBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v5M10 7v5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4 4l.5 9a1 1 0 001 1h5a1 1 0 001-1L12 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        trashBtn.title = 'Delete';
-        trashBtn.onclick = () => deleteSchedule(s.id);
-
-        summaryDiv.append(pauseBtn, trashBtn);
-        if (seeAllLink) seeAllLink.style.display = 'none';
-        // Collapse expanded list — summary has everything
-        bar.classList.remove('expanded');
-        document.getElementById('schedules-list')?.classList.add('hidden');
-        if (seeAllLink) seeAllLink.textContent = 'See all';
-    } else {
-        if (seeAllLink) seeAllLink.style.display = '';
-    }
-
-    // Adjust scroll-anchor so it sits above the footer
-    repositionScrollAnchor();
-
-    // Expanded list
-    const list = document.getElementById('schedules-list');
-    list.innerHTML = '';
-    for (const s of schedulesList) {
-        const row = document.createElement('div');
-        row.className = 'schedule-row' + (s.active === false ? ' paused' : '');
-
-        const targets = document.createElement('span');
-        targets.className = 'schedule-targets';
-        targets.textContent = (s.targets || []).map(t => '@' + t).join(' ');
-
-        const prompt = document.createElement('span');
+    // Active tasks first, then paused tasks; keep the soonest run at the top.
+    const sorted = [...schedulesList].sort((a, b) =>
+        Number(a.active === false) - Number(b.active === false) || (a.next_run || Infinity) - (b.next_run || Infinity));
+    for (const schedule of sorted) {
+        const row = document.createElement('article');
+        row.className = 'schedule-card' + (schedule.active === false ? ' paused' : '');
+        row.dataset.id = schedule.id;
+        const meta = document.createElement('div');
+        meta.className = 'schedule-meta';
+        const channel = document.createElement('span');
+        channel.textContent = '#' + (schedule.channel || 'general');
+        const state = document.createElement('span');
+        state.className = 'schedule-state';
+        state.textContent = schedule.active === false ? 'Paused' : 'Active';
+        meta.append(channel, state);
+        const prompt = document.createElement('div');
         prompt.className = 'schedule-prompt';
-        prompt.textContent = s.prompt || '';
-        prompt.title = s.prompt || '';
-
-        const interval = document.createElement('span');
-        interval.className = 'schedule-interval';
-        interval.textContent = formatScheduleInterval(s);
-
-        const toggleBtn = document.createElement('button');
-        toggleBtn.className = 'schedule-toggle';
-        toggleBtn.textContent = s.active === false ? '▶' : '⏸';
-        toggleBtn.title = s.active === false ? 'Resume' : 'Pause';
-        toggleBtn.onclick = () => toggleSchedule(s.id);
-
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'schedule-delete';
-        deleteBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v5M10 7v5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4 4l.5 9a1 1 0 001 1h5a1 1 0 001-1L12 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        deleteBtn.title = 'Delete';
-        deleteBtn.onclick = () => deleteSchedule(s.id);
-
-        row.append(targets, prompt, interval, toggleBtn, deleteBtn);
+        prompt.textContent = schedule.prompt || '';
+        const targets = document.createElement('div');
+        targets.className = 'schedule-targets';
+        targets.textContent = (schedule.targets || []).map(t => '@' + t).join(' ');
+        const timing = document.createElement('div');
+        timing.className = 'schedule-interval';
+        timing.textContent = formatScheduleInterval(schedule);
+        const next = document.createElement('div');
+        next.className = 'schedule-next';
+        next.textContent = scheduleNextLabel(schedule);
+        if (schedule.next_run) next.title = new Date(schedule.next_run * 1000).toLocaleString();
+        const actions = document.createElement('div');
+        actions.className = 'schedule-actions';
+        const toggle = document.createElement('button');
+        toggle.className = 'schedule-toggle';
+        toggle.textContent = schedule.active === false ? 'Resume' : 'Pause';
+        toggle.onclick = () => toggleSchedule(schedule.id);
+        const remove = document.createElement('button');
+        remove.className = 'schedule-delete';
+        remove.textContent = 'Delete';
+        remove.onclick = () => deleteSchedule(schedule.id);
+        actions.append(toggle, remove);
+        row.append(meta, prompt, targets, timing, next, actions);
         list.appendChild(row);
+    }
+}
+
+// Countdown refreshes must not replace a focused pause/delete button.
+function refreshScheduleCountdowns() {
+    const panel = document.getElementById('schedules-panel');
+    if (!panel || panel.classList.contains('hidden')) return;
+    for (const row of document.querySelectorAll('#schedules-list .schedule-card')) {
+        const schedule = schedulesList.find(s => s.id === row.dataset.id);
+        if (schedule) row.querySelector('.schedule-next').textContent = scheduleNextLabel(schedule);
     }
 }
 
@@ -3685,45 +3658,47 @@ function formatScheduleInterval(s) {
     return 'every ' + Math.round(sec / 86400) + 'd';
 }
 
-function toggleSchedulesExpand() {
-    const bar = document.getElementById('schedules-bar');
-    const list = document.getElementById('schedules-list');
-    if (!bar || !list) return;
-    const expanded = bar.classList.toggle('expanded');
-    list.classList.toggle('hidden', !expanded);
-    const link = bar.querySelector('.schedules-see-all');
-    if (link) link.textContent = expanded ? 'Hide' : 'See all';
+function showScheduleFeedback(message, isError = false) {
+    const feedback = document.getElementById('schedules-feedback');
+    feedback.textContent = message;
+    feedback.classList.toggle('error', isError);
+    feedback.classList.toggle('hidden', !message);
+}
+
+const pendingScheduleActions = new Set();
+
+async function changeSchedule(id, method) {
+    if (pendingScheduleActions.has(id)) return;
+    pendingScheduleActions.add(id);
+    showScheduleFeedback('');
+    try {
+        const response = await fetch(`/api/schedules/${encodeURIComponent(id)}${method === 'PATCH' ? '/toggle' : ''}`, {
+            method,
+            headers: { 'X-Session-Token': SESSION_TOKEN },
+        });
+        if (!response.ok) throw new Error('Schedule request failed');
+        // WebSocket events keep other clients in sync; update this view from the
+        // response as well, so controls work even if the socket is reconnecting.
+        if (method === 'DELETE') handleScheduleEvent('delete', { id });
+        else handleScheduleEvent('update', await response.json());
+    } catch (error) {
+        showScheduleFeedback('Could not ' + (method === 'DELETE' ? 'delete' : 'pause or resume') + ' this task. Try again.', true);
+    } finally {
+        pendingScheduleActions.delete(id);
+    }
 }
 
 async function toggleSchedule(id) {
-    try {
-        await fetch(`/api/schedules/${id}/toggle`, {
-            method: 'PATCH',
-            headers: { 'X-Session-Token': SESSION_TOKEN },
-        });
-    } catch (e) {
-        console.error('Failed to toggle schedule:', e);
-    }
+    return changeSchedule(id, 'PATCH');
 }
 
 async function deleteSchedule(id) {
-    try {
-        await fetch(`/api/schedules/${id}`, {
-            method: 'DELETE',
-            headers: { 'X-Session-Token': SESSION_TOKEN },
-        });
-    } catch (e) {
-        console.error('Failed to delete schedule:', e);
-    }
+    return changeSchedule(id, 'DELETE');
 }
 
 function showScheduleConfirmation() {
-    const bar = document.getElementById('schedules-bar');
-    if (!bar) return;
-    bar.classList.remove('hidden');
-    // Flash the bar green for 2s then transition back
-    bar.classList.add('sched-flash');
-    setTimeout(() => bar.classList.remove('sched-flash'), 2000);
+    toggleSchedulesPanel(true);
+    showScheduleFeedback('Scheduled task created.');
 }
 
 // --- Schedule popover ---
@@ -4048,6 +4023,7 @@ async function submitSchedulePopover() {
             restartVoiceAfterEdit();
             input.style.height = 'auto';
             updateSendButton();
+            handleScheduleEvent('create', await resp.json());
             showScheduleConfirmation();
         } else {
             const err = await resp.json().catch(() => ({}));
@@ -4077,10 +4053,8 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// Refresh "next: Xm" countdowns every 30s
-setInterval(() => {
-    if (schedulesList.length > 0) renderSchedulesBar();
-}, 10000);
+// Refresh visible countdowns without rebuilding the task cards.
+setInterval(refreshScheduleCountdowns, 10000);
 
 // --- Decision card resolve (with fade animation) ---
 async function resolveDecision(msgId, choice) {
@@ -4286,7 +4260,7 @@ function _helpCardDefs() {
                 '<span class="hg-sched-time">Tomorrow 9 AM</span>' +
                 '<span style="flex:1;color:var(--text)">@claude summarise overnight changes</span>' +
             '</div>' +
-            '<p class="hg-module-tip">Click the <strong>&#9201; clock button</strong> next to Send to schedule a one-time or recurring message.</p>'
+            '<p class="hg-module-tip">Click the <strong>&#9201; clock button</strong> next to Send to schedule a one-time or recurring message. Manage tasks from the header clock beside Jobs.</p>'
         }
     ];
 }
