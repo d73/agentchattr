@@ -1098,8 +1098,10 @@ function getColor(sender) {
 }
 
 function colorMentions(textHtml) {
-    // Match any @word — we'll resolve color per match
-    return textHtml.replace(/@(\w[\w-]*)/gi, (match, name) => {
+    // Match any @word — we'll resolve color per match. Skip HTML tags/anchors (an email autolinks to
+    // <a href="mailto:a@b.com">) and require a non-word char before '@' so emails are never treated as mentions.
+    return textHtml.replace(/<a\b[^>]*>.*?<\/a>|<[^>]*>|(?<![\w.+-])@(\w[\w-]*)/gis, (match, name) => {
+        if (!name) return match;
         const lower = name.toLowerCase();
         if (lower === 'both' || lower === 'all') {
             return `<span class="mention" style="color: var(--accent)">@${name}</span>`;
