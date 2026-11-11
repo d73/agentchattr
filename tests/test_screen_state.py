@@ -78,6 +78,18 @@ class NeedsInputTests(unittest.TestCase):
         for line in ("› 1. Allow", "  2. Allow for this session", "│ ❯ 1. Allow │", "> 2. Allow for this session"):
             self.assertTrue(needs_user_input(["some output", line, "  3. Deny", "> "]), line)
 
+    def test_dont_ask_again_options_need_input(self):
+        for line in ("› 1. Yes, proceed (y)", "  2. Yes, and don't ask again", "2. Yes, and don’t ask again (p)",
+                     "  2. Yes, and don't ask again for commands that start with `git push` (p)",
+                     "│ ❯ 2. Yes, and don't ask again │"):
+            self.assertTrue(needs_user_input(["some output", line, "  3. No", "> "]), line)
+
+    def test_quoted_dont_ask_again_is_not_input(self):
+        for line in ("2. Yes, and don't ask again is the option you should select.",
+                     "He chose \"2. Yes, and don't ask again\" earlier", "- text 2. Yes, and don't ask again",
+                     "`2. Yes, and don't ask again`"):
+            self.assertFalse(needs_user_input([line, "> "]), line)
+
     def test_quoted_allow_is_not_input(self):
         for line in ("1. Allow is the option you should select.", 'He chose "1. Allow" earlier',
                      "2. Allow for this session is quoted here", "- text 1. Allow", "`1. Allow`"):
