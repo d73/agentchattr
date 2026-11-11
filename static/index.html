@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>agentchattr</title>
-    <link rel="stylesheet" href="/static/style.css?v=259">
+    <link rel="stylesheet" href="/static/style.css?v=260">
     <link rel="stylesheet" href="/static/sessions.css?v=223">
     <link rel="stylesheet" href="/static/jobs.css?v=225">
     <link rel="icon" href="/static/favicon.ico">
@@ -29,6 +29,13 @@
                         <path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
                     </svg>
                     <span class="jobs-badge hidden" id="jobs-badge">0</span>
+                </button>
+                <button class="settings-btn" id="schedules-toggle" onclick="toggleSchedulesPanel()" title="Scheduled tasks" aria-label="Scheduled tasks" aria-controls="schedules-panel" aria-expanded="false">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.2"/>
+                        <path d="M8 4v4.5l3 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                    </svg>
+                    <span class="jobs-badge hidden" id="schedules-badge">0</span>
                 </button>
                 <button class="settings-btn" id="rules-toggle" onclick="toggleRulesPanel()" title="Rules">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -246,6 +253,15 @@
                     </div>
                 </div>
             </aside>
+            <aside id="schedules-panel" class="hidden" aria-labelledby="schedules-title">
+                <div class="jobs-header">
+                    <span id="schedules-title">Scheduled tasks</span>
+                    <button class="jobs-create-btn" onclick="toggleSchedulePopover(event); document.getElementById('input').focus()" title="Schedule a message" aria-label="Schedule a message">+</button>
+                    <button class="schedule-close" onclick="toggleSchedulesPanel(false)" title="Close scheduled tasks" aria-label="Close scheduled tasks">&times;</button>
+                </div>
+                <p id="schedules-feedback" class="hidden" role="status"></p>
+                <div id="schedules-list"></div>
+            </aside>
             <aside id="rules-panel" class="hidden">
                 <div class="rules-grip" id="rules-grip"></div>
                 <div class="rules-header">
@@ -261,18 +277,6 @@
         <div id="scroll-anchor" class="hidden" onclick="scrollToBottom()"><span class="unread-badge">0</span><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
 
         <footer>
-            <div id="schedules-bar" class="hidden">
-                <div class="schedules-bar-summary">
-                    <svg class="schedules-icon" width="14" height="14" viewBox="0 0 16 16" fill="none">
-                        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.2"/>
-                        <path d="M8 4v4.5l3 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                    <span class="schedules-count" id="schedules-count"></span>
-                    <span class="schedules-next" id="schedules-next"></span>
-                    <a class="schedules-see-all" onclick="toggleSchedulesExpand()">See all</a>
-                </div>
-                <div class="schedules-bar-list hidden" id="schedules-list"></div>
-            </div>
             <div id="mention-toggles-row">
                 <div id="mention-toggles"></div>
                 <button id="clear-chat-btn" class="ghost-btn" onclick="clearChat()" title="Clear chat in this channel">Clear Chat</button>
@@ -399,6 +403,6 @@
     <script src="/static/channels.js?v=226"></script>
     <script src="/static/rules-panel.js?v=224"></script>
     <script src="/static/mention-alerts.js?v=1"></script>
-    <script src="/static/chat.js?v=276"></script>
+    <script src="/static/chat.js?v=277"></script>
 </body>
 </html>
