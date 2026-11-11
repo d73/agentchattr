@@ -147,6 +147,20 @@ def startup_lock():
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def find_conemu(env):
+    """Return the ConEmu executable path, or None to fall back to plain consoles."""
+    override = env.get("AGENTCHATTR_CONEMU")
+    if override:
+        return override if Path(override).is_file() else None
+    for base in (env.get("ProgramFiles"), env.get("ProgramFiles(x86)")):
+        if base:
+            for exe in ("ConEmu64.exe", "ConEmu.exe"):
+                candidate = Path(base) / "ConEmu" / exe
+                if candidate.is_file():
+                    return str(candidate)
+    return shutil.which("ConEmu64.exe", path=env.get("PATH")) or shutil.which("ConEmu.exe", path=env.get("PATH"))
+
+
 def server_ready(url):
     try:
         # Identify the agentchattr page by its token marker; never print the page or token.
@@ -221,6 +235,8 @@ def start_team(url, env, commands):
     else:
         print(f"Reusing the server at {url}")
 
+    conemu = find_conemu(env)
+    print(f"Opening agent terminals in {'ConEmu' if conemu else 'separate console windows'}.")
     for name in AGENTS:
         if name in running_agents(process_inventory(), commands):
             print(f"{LABELS[name]}: already running; skipped.")
@@ -228,13 +244,20 @@ def start_team(url, env, commands):
         # cmd /k keeps errors visible; each interactive CLI needs its own console.
         command = subprocess.list2cmdline([sys.executable, str(ROOT / "wrapper.py"), name])
         shell = subprocess.list2cmdline([env.get("COMSPEC", "cmd.exe")])
-        console = subprocess.Popen(
-            f'{shell} /d /s /k "{command}"',
-            cwd=ROOT, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE,
-        )
+        inner = f'{shell} /d /s /k "{command}"'
+        if conemu:
+            # -Single hands the tab to the running ConEmu window, so this launcher exits
+            # immediately; startup is confirmed by the process check below.
+            console = subprocess.Popen(
+                f'"{conemu}" -Single -run {inner} -new_console:d:"{ROOT.as_posix()}":t:"{LABELS[name]}"',
+                cwd=ROOT, env=env,
+            )
+        else:
+            console = subprocess.Popen(inner, cwd=ROOT, env=env,
+                                       creationflags=subprocess.CREATE_NEW_CONSOLE)
         deadline = time.monotonic() + 15
         while name not in running_agents(process_inventory(), commands):
-            if console.poll() is not None or time.monotonic() >= deadline:
+            if (console.poll() is not None and not conemu) or time.monotonic() >= deadline:
                 raise RuntimeError(f"Cannot confirm {LABELS[name]} startup. Check its terminal before retrying.")
             time.sleep(1)
         print(f"{LABELS[name]}: started; its wrapper registers it with agentchattr.")
