@@ -2009,19 +2009,13 @@ function applySettings(data) {
         document.getElementById('setting-font').value = data.font;
     }
     if (data.agent_colors && typeof data.agent_colors === 'object') {
-        // Server is authoritative. Seed it from this browser's overrides only once (first
-        // connect to a server with none); afterwards an empty map means "reset" and wins.
-        let migrated = false;
-        try { migrated = localStorage.getItem('agentchattr-colors-migrated') === '1'; } catch (e) {}
-        const serverHas = Object.keys(data.agent_colors).length > 0;
-        if (serverHas || migrated) {
-            colorOverrides = Object.assign({}, data.agent_colors);
-            try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
-            refreshAgentColors();
-        } else if (Object.keys(colorOverrides).length) {
-            saveColorOverrides();
-        }
-        try { localStorage.setItem('agentchattr-colors-migrated', '1'); } catch (e) {}
+        // Server-owned and authoritative (an empty map is an explicit Reset).
+        colorOverrides = Object.assign({}, data.agent_colors);
+        try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
+        refreshAgentColors();
+    } else {
+        // Server never initialized: seed it once from this browser's legacy overrides (may be {}).
+        saveColorOverrides();
     }
     if (data.max_agent_hops !== undefined) {
         document.getElementById('setting-hops').value = data.max_agent_hops;

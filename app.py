@@ -58,10 +58,10 @@ room_settings: dict = {
     "history_limit": "all",
     "contrast": "normal",
     "custom_roles": [],
-    # Per-agent color overrides {name: "#rrggbb"}; server-side so they survive
-    # a changed port/origin or a different browser (localStorage does not).
-    "agent_colors": {},
 }
+# "agent_colors" ({name: "#rrggbb"}) is deliberately absent until a client first
+# sets it. Absent = never initialized (a client may seed it from its legacy
+# localStorage); present, even as {}, = authoritative (an explicit Reset).
 
 # Channel validation
 _HEX_COLOR_RE = _re.compile(r'#[0-9a-fA-F]{6}')  # module-level: a later local `import re as _re` shadows _re inside websocket_endpoint
