@@ -32,8 +32,6 @@ function Get-PythonScript([string]$CommandLine) {
 function Test-OwnsServer($Proc, $Root) {
     # $Proc: @{ ExecutablePath; CommandLine }. True only for a Python interpreter whose script is this checkout's run.py:
     #  - an absolute script path that resolves to <Root>\run.py, or
-    #  - a bare/relative run.py launched by this checkout's own .venv interpreter (the interpreter identifies the
-    #    checkout; the working directory of a running process is not readable, so this is the strongest proof available).
     $script = Get-PythonScript $Proc.CommandLine
     if (-not $script) { return $false }
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -41,9 +39,8 @@ function Test-OwnsServer($Proc, $Root) {
     if ([IO.Path]::IsPathRooted($script)) {
         return [string]::Equals([IO.Path]::GetFullPath($script), $want, 'OrdinalIgnoreCase')
     }
-    if ($script -ne 'run.py' -and $script -ne '.\run.py' -and $script -ne './run.py') { return $false }
-    $venv = Join-Path $rootFull '.venv\'
-    return [bool]($Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($venv, 'OrdinalIgnoreCase'))
+    # A bare/relative run.py cannot be tied to a checkout (a running process's cwd is not readable): refuse.
+    return $false
 }
 
 function Test-ChainOwnsServer($Chain, $Root) {

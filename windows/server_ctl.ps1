@@ -35,7 +35,7 @@ function Stop-Server {
     if (-not $srvPid) { Write-Host "No server listening on port $port."; return }
     $chain = Get-Chain $srvPid
     if (-not (Test-ChainOwnsServer $chain $root)) {
-        Write-Error "Port $port is held by PID $srvPid ($($chain[0].CommandLine)), which cannot be verified as this checkout's run.py ($root). Not stopping it."
+        Write-Error "Port $port is held by PID $srvPid ($($chain[0].CommandLine)), which cannot be verified as this checkout's run.py ($root). Not stopping it. (A server started with a relative `python run.py` can't be identified: stop it manually once and relaunch with windows\start.bat.)"
         exit 2
     }
     # the process tree too: the venv python launcher can sit in front of the real interpreter

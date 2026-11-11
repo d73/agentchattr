@@ -8,7 +8,7 @@ $venvPy = "$root\.venv\Scripts\python.exe"
 
 Check 'abs run.py of this checkout'      (Test-OwnsServer (P 'C:\Python\python.exe' "python $root\run.py") $root) $true
 Check 'abs quoted run.py of this checkout' (Test-OwnsServer (P 'C:\Python\python.exe' "python `"$root\run.py`" --port 8300") $root) $true
-Check 'relative run.py via our venv'     (Test-OwnsServer (P $venvPy 'python run.py') $root) $true
+Check 'relative run.py via our venv (legacy launch, refused)' (Test-OwnsServer (P $venvPy 'python run.py') $root) $false
 Check 'unrelated abs run.py'             (Test-OwnsServer (P 'C:\Python\python.exe' 'python C:\OtherApp\run.py') $root) $false
 Check 'other_run.py'                     (Test-OwnsServer (P $venvPy 'python other_run.py') $root) $false
 Check 'relative run.py, system python'   (Test-OwnsServer (P 'C:\Python\python.exe' 'python run.py') $root) $false
@@ -22,7 +22,8 @@ Check 'non-python exe with abs run.py'   (Test-OwnsServer (P 'C:\Tools\node.exe'
 Check 'python flags before script'       (Test-OwnsServer (P 'C:\Python\python.exe' "python -u -X utf8 $root\run.py") $root) $true
 Check 'pythonw quoted abs run.py'        (Test-OwnsServer (P 'C:\Python\pythonw.exe' "`"C:\Python\pythonw.exe`" `"$root\run.py`"") $root) $true
 Check 'no run.py'                      (Test-OwnsServer (P $venvPy 'python -m http.server 8300') $root) $false
-Check 'chain: child base python, parent venv launcher' (Test-ChainOwnsServer @((P 'C:\Python\python.exe' 'python run.py'), (P $venvPy 'python run.py')) $root) $true
+Check 'chain: child base python, parent venv launcher (abs)' (Test-ChainOwnsServer @((P 'C:\Python\python.exe' "python $root\run.py"), (P $venvPy "python $root\run.py")) $root) $true
+Check 'chain: legacy bare run.py refused' (Test-ChainOwnsServer @((P 'C:\Python\python.exe' 'python run.py'), (P $venvPy 'python run.py')) $root) $false
 Check 'chain: unrelated'                 (Test-ChainOwnsServer @((P 'C:\Python\python.exe' 'python C:\OtherApp\run.py')) $root) $false
 
 $parents = @{ 300 = 200; 200 = 100; 999 = 1 }
