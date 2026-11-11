@@ -3,10 +3,8 @@ REM agentchattr — starts server (if not running) + Kimi wrapper
 cd /d "%~dp0.."
 
 REM Auto-create venv and install deps on first run
-if not exist ".venv" (
-    python -m venv .venv
-    .venv\Scripts\pip install -q -r requirements.txt >nul 2>nul
-)
+call "%~dp0ensure_venv.bat"
+if errorlevel 1 exit /b 1
 call .venv\Scripts\activate.bat
 
 REM Pre-flight: check that kimi CLI is installed

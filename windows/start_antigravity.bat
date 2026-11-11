@@ -11,10 +11,8 @@ REM inherits a stale PATH and won't find agy. Prepend it so this always works.
 if exist "%LOCALAPPDATA%\agy\bin\agy.exe" set "PATH=%LOCALAPPDATA%\agy\bin;%PATH%"
 
 REM Auto-create venv and install deps on first run
-if not exist ".venv" (
-    python -m venv .venv
-    .venv\Scripts\pip install -q -r requirements.txt >nul 2>nul
-)
+call "%~dp0ensure_venv.bat"
+if errorlevel 1 exit /b 1
 call .venv\Scripts\activate.bat
 
 REM Pre-flight: check that the agy CLI is installed

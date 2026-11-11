@@ -5,10 +5,8 @@ REM Requires MINIMAX_API_KEY environment variable.
 cd /d "%~dp0.."
 
 REM Auto-create venv and install deps on first run
-if not exist ".venv" (
-    python -m venv .venv
-    .venv\Scripts\pip install -q -r requirements.txt >nul 2>nul
-)
+call "%~dp0ensure_venv.bat"
+if errorlevel 1 exit /b 1
 call .venv\Scripts\activate.bat
 
 REM Check API key
