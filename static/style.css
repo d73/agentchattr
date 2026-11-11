@@ -3737,8 +3737,9 @@ a.file-attachment:hover { border-color: var(--accent); }
 
 @media (max-width: 700px) {
     #content-area { position: relative; }
-    #jobs-panel, #rules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; margin-right: 0; }
-    #jobs-panel.hidden, #rules-panel.hidden { display: none; }
+    /* #content-area prefix: beats jobs.css (loaded later) at equal id specificity */
+    #content-area #jobs-panel, #content-area #rules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; margin-right: 0; }
+    #content-area #jobs-panel.hidden, #content-area #rules-panel.hidden { display: none; }
     .side-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
     #schedules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
 }
