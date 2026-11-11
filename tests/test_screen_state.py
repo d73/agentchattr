@@ -75,7 +75,10 @@ class NeedsInputTests(unittest.TestCase):
             self.assertTrue(needs_user_input([line]), line)
 
     def test_quoted_yes_proceed_is_not_input(self):
-        for line in ('He chose "1. Yes, proceed" earlier', "Option 1. Yes, proceed is quoted here",
+        for line in ("1. Yes, proceed is the option you should select.",
+                     "1. Yes, proceed-with-caution is just an example.",
+                     "1. Yes, proceed (y) is what you press", "1. Yes, proceed.",
+                     'He chose "1. Yes, proceed" earlier', "Option 1. Yes, proceed is quoted here",
                      "- text 1. Yes, proceed", "`1. Yes, proceed`", '"1. Yes, proceed"'):
             self.assertFalse(needs_user_input([line, "> "]), line)
         stale = ["› 1. Yes, proceed (y)"] + ["later output"] * 25

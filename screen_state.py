@@ -35,7 +35,8 @@ _YN_LINE = re.compile(r"[\[(]y/n[\])]\??\s*$", re.I)
 _ENTER_LINE = re.compile(r"^[\s│|]*(?:press )?enter to confirm", re.I)
 # The first option of an approval menu ("› 1. Yes, proceed (y)", "1. Yes, proceed"). Line-anchored
 # with only menu decoration before it, so quoted/inline text never matches.
-_YES_PROCEED_LINE = re.compile(r"^[\s│|╭╰─❯>›•●]*1\.\s+yes,?\s+proceed\b", re.I)
+_YES_PROCEED_LINE = re.compile(
+    r"^[\s│|╭╰─❯>›•●]*1\.\s+yes,?\s+proceed(?:\s*\((?:y|enter)\))?[\s│|╮╯─]*$", re.I)
 
 
 def _tail(rows, n):
