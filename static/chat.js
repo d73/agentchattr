@@ -1320,7 +1320,9 @@ document.addEventListener('keydown', (e) => {
 function buildStatusPills() {
     const container = document.getElementById('agent-status');
     container.innerHTML = '';
-    for (const [name, cfg] of Object.entries(agentConfig)) {
+    const byLabel = ([an, ac], [bn, bc]) =>
+        (ac.label || an).localeCompare(bc.label || bn, undefined, { sensitivity: 'base' });
+    for (const [name, cfg] of Object.entries(agentConfig).sort(byLabel)) {
         const pill = document.createElement('div');
         pill.className = 'status-pill';
         if (cfg.state === 'pending') pill.classList.add('pending');
