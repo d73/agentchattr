@@ -64,6 +64,7 @@ room_settings: dict = {
 }
 
 # Channel validation
+_HEX_COLOR_RE = _re.compile(r'#[0-9a-fA-F]{6}')  # module-level: a later local `import re as _re` shadows _re inside websocket_endpoint
 _CHANNEL_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9\-]{0,19}$')
 
 # Agent hats (persisted to data/hats.json)
@@ -1354,7 +1355,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if isinstance(new.get("agent_colors"), dict):
                     room_settings["agent_colors"] = {
                         str(k)[:64]: v for k, v in new["agent_colors"].items()
-                        if isinstance(v, str) and _re.fullmatch(r"#[0-9a-fA-F]{6}", v)
+                        if isinstance(v, str) and _HEX_COLOR_RE.fullmatch(v)
                     }
                 if "rules_refresh_interval" in new:
                     try:

@@ -1192,6 +1192,20 @@ function applyAgentConfig(data) {
     updateJobReplyTargetUI();
 }
 
+// Re-apply overrides to messages, status pills and mention buttons (e.g. after a remote change).
+function refreshAgentColors() {
+    for (const [name, cfg] of Object.entries(agentConfig || {})) {
+        const c = colorOverrides[name] || cfg.color;
+        if (!c) continue;
+        const pill = document.getElementById(`status-${name}`);
+        if (pill) pill.style.setProperty('--agent-color', c);
+        document.querySelectorAll('.mention-toggle').forEach(b => {
+            if (b.dataset.agent === name) b.style.setProperty('--agent-color', c);
+        });
+    }
+    if (typeof recolorMessages === 'function') recolorMessages();
+}
+
 function recolorMessages() {
     const msgs = document.querySelectorAll('.message[data-id]');
     for (const el of msgs) {
@@ -1947,7 +1961,7 @@ function updateStatus(data) {
         }
 
         // Keep agent color in sync
-        if (info.color) pill.style.setProperty('--agent-color', info.color);
+        if (info.color) pill.style.setProperty('--agent-color', colorOverrides[name] || info.color);
 
         // Track role (displayed on bubbles, not on pill)
         if (info.role !== undefined) {
@@ -1995,14 +2009,19 @@ function applySettings(data) {
         document.getElementById('setting-font').value = data.font;
     }
     if (data.agent_colors && typeof data.agent_colors === 'object') {
-        // Server is authoritative; an empty server map seeds from this browser's overrides.
-        if (Object.keys(data.agent_colors).length) {
+        // Server is authoritative. Seed it from this browser's overrides only once (first
+        // connect to a server with none); afterwards an empty map means "reset" and wins.
+        let migrated = false;
+        try { migrated = localStorage.getItem('agentchattr-colors-migrated') === '1'; } catch (e) {}
+        const serverHas = Object.keys(data.agent_colors).length > 0;
+        if (serverHas || migrated) {
             colorOverrides = Object.assign({}, data.agent_colors);
             try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
-            if (typeof recolorMessages === 'function') recolorMessages();
+            refreshAgentColors();
         } else if (Object.keys(colorOverrides).length) {
             saveColorOverrides();
         }
+        try { localStorage.setItem('agentchattr-colors-migrated', '1'); } catch (e) {}
     }
     if (data.max_agent_hops !== undefined) {
         document.getElementById('setting-hops').value = data.max_agent_hops;
