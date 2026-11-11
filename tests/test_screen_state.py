@@ -39,7 +39,9 @@ class DoneMarkerTests(unittest.TestCase):
 
     def test_quoted_or_partial_text_is_not_done(self):
         for line in ("I worked for 5m on it", "He said Worked for 5m yesterday", "worked for a long time",
-                     "done", "The job is done 5 times", "Worked for 2 minutes"):
+                     "done", "The job is done 5 times", "Worked for 2 minutes",
+                     '"Worked for 2m 14s"', "`Worked for 2m 14s`", "> Worked for 2m 14s",
+                     "'done 1:03'", "- Worked for 2m 14s", "# Worked for 2m 14s", "(Worked for 2m 14s)"):
             self.assertFalse(has_done_marker([line, "> "]), line)
 
     def test_old_done_line_scrolled_away_is_ignored(self):

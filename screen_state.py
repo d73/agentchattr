@@ -52,7 +52,7 @@ def has_busy_marker(rows) -> bool:
 # Whole line only: optional glyph/box decoration, the phrase, a duration, nothing else.
 _DURATION = r"(?:\d+\s*[hms]\b\s*)+|\d{1,2}:\d{2}(?::\d{2})?"
 _DONE_LINE = re.compile(
-    r"^[^\w]*(?:[a-z]+ed for|done(?: in)?)\s+(?:" + _DURATION + r")[^\w]*$",
+    r"^[\s─━│┃✻✽✳✢✶✷●•⏺◆✓·*]*(?:[a-z]+ed for|done(?: in)?)\s+(?:" + _DURATION + r")[\s─━]*$",
     re.I,
 )
 DONE_ROWS = 8
