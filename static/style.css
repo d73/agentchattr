@@ -390,6 +390,7 @@ header h1 {
 #settings-bar { padding: 0 0 12px; gap: 10px; align-items: stretch; }
 #settings-bar > .settings-field { padding: 0 16px; flex-wrap: wrap; justify-content: space-between; }
 /* Labels take the free space so every control (dropdowns included) sits flush right. */
+#settings-bar > .jobs-header .schedule-close { margin-left: auto; }
 #settings-bar .settings-field label { flex: 1 1 auto; }
 #settings-bar .settings-field select { width: 150px; margin-left: auto; text-align: right; text-align-last: right; }
 #settings-bar .settings-field input { margin-left: auto; }
