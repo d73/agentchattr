@@ -69,6 +69,18 @@ class NeedsInputTests(unittest.TestCase):
         approve = ["Allow Codex to run `git push`?", "› 1. Yes, proceed (y)", "  2. No (esc)"]
         self.assertTrue(needs_user_input(approve))
 
+    def test_yes_proceed_option_alone_needs_input(self):
+        for line in ("› 1. Yes, proceed (y)", "  1. Yes, proceed", "│ ❯ 1. Yes, proceed │", "> 1. Yes proceed"):
+            self.assertTrue(needs_user_input(["some output", line, "  2. No", "> "]), line)
+            self.assertTrue(needs_user_input([line]), line)
+
+    def test_quoted_yes_proceed_is_not_input(self):
+        for line in ('He chose "1. Yes, proceed" earlier', "Option 1. Yes, proceed is quoted here",
+                     "- text 1. Yes, proceed", "`1. Yes, proceed`", '"1. Yes, proceed"'):
+            self.assertFalse(needs_user_input([line, "> "]), line)
+        stale = ["› 1. Yes, proceed (y)"] + ["later output"] * 25
+        self.assertFalse(needs_user_input(stale))
+
     def test_question_without_options_is_not_input(self):
         self.assertFalse(needs_user_input(["Would you like to make the following edits? I can do that.", "> "]))
 

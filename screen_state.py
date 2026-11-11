@@ -33,6 +33,9 @@ _QUESTION_LINE = re.compile(
 )
 _YN_LINE = re.compile(r"[\[(]y/n[\])]\??\s*$", re.I)
 _ENTER_LINE = re.compile(r"^[\s│|]*(?:press )?enter to confirm", re.I)
+# The first option of an approval menu ("› 1. Yes, proceed (y)", "1. Yes, proceed"). Line-anchored
+# with only menu decoration before it, so quoted/inline text never matches.
+_YES_PROCEED_LINE = re.compile(r"^[\s│|╭╰─❯>›•●]*1\.\s+yes,?\s+proceed\b", re.I)
 
 
 def _tail(rows, n):
@@ -70,7 +73,7 @@ def agent_idle_by_marker(rows) -> bool:
 
 def needs_user_input(rows) -> bool:
     live = _tail(rows, INPUT_ROWS)
-    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) for r in live):
+    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) or _YES_PROCEED_LINE.match(r) for r in live):
         return True
     return (any(_QUESTION_LINE.match(r) for r in live)
             and any(_OPTION_ROW.match(r) for r in live))
