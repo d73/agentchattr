@@ -6,6 +6,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../../static/chat.js'), 'utf8');
 const panelCode = source.slice(source.indexOf('function handleScheduleEvent('), source.indexOf('// --- Schedule popover ---'));
+// Shared helper that keeps the five right-hand slide-out panels mutually exclusive.
+const sidePanelCode = source.slice(source.indexOf('// All right-hand slide-out panels'), source.indexOf('function toggleSettings()'));
 
 class Element {
     constructor() { this.children = []; this.dataset = {}; this.attributes = {}; this.className = ''; this.textContent = ''; }
@@ -32,8 +34,9 @@ class Element {
 }
 
 function harness() {
-    const ids = Object.fromEntries(['schedules-panel', 'schedules-list', 'schedules-badge', 'schedules-toggle', 'schedules-feedback', 'jobs-panel', 'jobs-toggle', 'rules-panel', 'rules-toggle'].map(id => [id, new Element()]));
+    const ids = Object.fromEntries(['schedules-panel', 'schedules-list', 'schedules-badge', 'schedules-toggle', 'schedules-feedback', 'jobs-panel', 'jobs-toggle', 'rules-panel', 'rules-toggle', 'settings-bar', 'settings-toggle', 'pins-panel', 'pins-toggle'].map(id => [id, new Element()]));
     ids['schedules-panel'].className = 'hidden';
+    for (const id of ['jobs-panel', 'rules-panel', 'settings-bar', 'pins-panel']) ids[id].className = '';
     const calls = [];
     const ctx = vm.createContext({
         document: {
@@ -45,7 +48,7 @@ function harness() {
         SESSION_TOKEN: 'test-token',
         fetch: async (url, options) => { calls.push({ url, ...options }); return { ok: false }; },
     });
-    vm.runInContext('let schedulesList = [];\n' + panelCode, ctx);
+    vm.runInContext('let schedulesList = [];\n' + sidePanelCode + panelCode, ctx);
     const task = (id, extra = {}) => ({ id, prompt: 'Daily summary', targets: ['codex'], channel: 'stocks', daily_at: '08:00', active: true, next_run: Date.now() / 1000 + 3600, ...extra });
     return { ctx, ids, calls, task };
 }
@@ -67,6 +70,8 @@ test('panel toggle and create confirmation expose tasks, with accessible button 
     ctx.showScheduleConfirmation();
     assert.equal(ids['jobs-panel'].classList.contains('hidden'), true);
     assert.equal(ids['rules-panel'].classList.contains('hidden'), true);
+    assert.equal(ids['settings-bar'].classList.contains('hidden'), true);
+    assert.equal(ids['pins-panel'].classList.contains('hidden'), true);
     assert.equal(ids['schedules-panel'].classList.contains('hidden'), false);
     assert.equal(ids['schedules-toggle'].attributes['aria-expanded'], 'true');
     assert.match(ids['schedules-list'].children[0].textContent, /No scheduled tasks/);
@@ -126,4 +131,16 @@ test('failed actions retain the task and display an error; duplicate clicks are 
     assert.equal(ids['schedules-list'].children[0].classList.contains('paused'), false);
     assert.match(ids['schedules-feedback'].textContent, /Could not pause or resume/);
     assert.equal(ids['schedules-feedback'].classList.contains('error'), true);
+});
+
+test('closeSidePanels closes every other right-hand panel and clears their active state', () => {
+    const { ctx, ids } = harness();
+    for (const name of ['jobs', 'rules', 'settings', 'pins']) ids[name + '-toggle'].className = 'active';
+    ids['schedules-panel'].className = '';
+    ctx.closeSidePanels('settings');
+    assert.equal(ids['settings-bar'].classList.contains('hidden'), false);
+    assert.equal(ids['settings-toggle'].classList.contains('active'), true);
+    for (const id of ['jobs-panel', 'rules-panel', 'pins-panel', 'schedules-panel']) assert.equal(ids[id].classList.contains('hidden'), true, id);
+    for (const id of ['jobs-toggle', 'rules-toggle', 'pins-toggle']) assert.equal(ids[id].classList.contains('active'), false, id);
+    assert.equal(ids['schedules-toggle'].attributes['aria-expanded'], 'false');
 });

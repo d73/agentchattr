@@ -243,6 +243,9 @@ function buildSoundSettings() {
     for (const name of agents) {
         const row = document.createElement('div');
         row.className = 'sound-row';
+        row.title = name === 'default'
+            ? 'Notification sound for agents without their own choice. Synced across browsers.'
+            : 'Notification sound for messages from this agent; "Use default" follows the Default sound. Synced across browsers.';
         const label = document.createElement('span');
         label.className = 'sound-label';
         label.textContent = name === 'default' ? 'Default sound'
@@ -2131,9 +2134,26 @@ function applySettings(data) {
     }
 }
 
+// All right-hand slide-out panels are mutually exclusive: opening one closes the others.
+const SIDE_PANELS = {
+    jobs: 'jobs-panel', rules: 'rules-panel', schedules: 'schedules-panel',
+    settings: 'settings-bar', pins: 'pins-panel',
+};
+function closeSidePanels(except) {
+    for (const [name, id] of Object.entries(SIDE_PANELS)) {
+        if (name === except) continue;
+        document.getElementById(id)?.classList.add('hidden');
+        const btn = document.getElementById(name + '-toggle');
+        btn?.classList.remove('active');
+        if (name === 'schedules') btn?.setAttribute('aria-expanded', 'false');
+    }
+}
+window.closeSidePanels = closeSidePanels;
+
 function toggleSettings() {
     window.MentionAlerts.render();
     const bar = document.getElementById('settings-bar');
+    if (bar.classList.contains('hidden')) closeSidePanels('settings');
     bar.classList.toggle('hidden');
     document.getElementById('settings-toggle').classList.toggle('active', !bar.classList.contains('hidden'));
     if (!bar.classList.contains('hidden')) {
@@ -2173,6 +2193,7 @@ function clearChat() {
         }
         _clearClearChatConfirm();
         document.getElementById('settings-bar').classList.add('hidden');
+        document.getElementById('settings-toggle')?.classList.remove('active');
         return;
     }
 
@@ -2199,6 +2220,7 @@ function clearChat() {
         }
         _clearClearChatConfirm();
         document.getElementById('settings-bar').classList.add('hidden');
+        document.getElementById('settings-toggle')?.classList.remove('active');
     };
     confirmWrap.querySelector('.ch-confirm-no').onclick = (e) => {
         e.stopPropagation();
@@ -3216,6 +3238,7 @@ function handleDeleteBroadcast(ids) {
 function togglePinsPanel() {
     _preserveScroll(() => {
         const panel = document.getElementById('pins-panel');
+        if (panel.classList.contains('hidden')) closeSidePanels('pins');
         panel.classList.toggle('hidden');
         document.getElementById('pins-toggle').classList.toggle('active', !panel.classList.contains('hidden'));
         if (!panel.classList.contains('hidden')) {
@@ -3663,11 +3686,8 @@ function toggleSchedulesPanel(forceOpen) {
     window._preserveScroll(() => {
         if (opening) {
             // Avoid stacked sidebars on desktop and hidden controls beneath the
-            // scheduled-task overlay on narrow screens.
-            for (const name of ['jobs', 'rules']) {
-                document.getElementById(name + '-panel')?.classList.add('hidden');
-                document.getElementById(name + '-toggle')?.classList.remove('active');
-            }
+            // overlay on narrow screens.
+            closeSidePanels('schedules');
         }
         panel.classList.toggle('hidden', !opening);
         const button = document.getElementById('schedules-toggle');
