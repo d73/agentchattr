@@ -170,27 +170,27 @@
             </aside>
         <aside id="settings-bar" class="hidden side-panel">
                 <div class="jobs-header"><span>Settings</span><button class="schedule-close" onclick="toggleSettings()" title="Close settings" aria-label="Close settings">&times;</button></div>
-            <div class="settings-field">
+            <div class="settings-field" title="The name shown on your messages and used when agents @mention you.">
                 <label for="setting-username">Name</label>
                 <input type="text" id="setting-username" placeholder="your name" maxlength="20">
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="The color of your name, mentions and messages. Synced across browsers.">
                 <label for="setting-user-color">Your color</label>
                 <input type="color" id="setting-user-color" value="#a78bfa" title="Color of your name, mentions and messages (synced across browsers)">
                 <button type="button" class="settings-btn" id="setting-user-color-reset" title="Back to the default color">Reset</button>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="A short label shown next to the title, to tell this server apart from others.">
                 <label for="setting-subtitle">This server</label>
                 <input type="text" id="setting-subtitle" placeholder="e.g. urbly" maxlength="40" title="Shown next to agentchattr, to tell this server apart from others">
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="The typeface used for the chat: monospace or sans-serif.">
                 <label for="setting-font">Font</label>
                 <select id="setting-font">
                     <option value="mono">Monospace</option>
                     <option value="sans">Sans</option>
                 </select>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="How many agent-to-agent replies can happen in a row before the chat pauses, to stop runaway loops.">
                 <label for="setting-hops">Loop guard</label>
                 <div class="sched-num-wrap">
                     <input type="number" id="setting-hops" class="sched-pop-num" min="1" max="50" value="4" title="Max agent-to-agent hops before pausing">
@@ -200,7 +200,7 @@
                     </div>
                 </div>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="How many past messages load per channel when the page opens.">
                 <label for="setting-history">History</label>
                 <select id="setting-history">
                     <option value="all">All</option>
@@ -211,35 +211,35 @@
                     <option value="500">500</option>
                 </select>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="Normal or High contrast for text and borders.">
                 <label for="setting-contrast">Contrast</label>
                 <select id="setting-contrast">
                     <option value="normal">Normal</option>
                     <option value="high">High</option>
                 </select>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="How an agent's pill signals it is waiting on you: a soft highlight or a hard flash. Synced across browsers.">
                 <label for="setting-attention-style">Needs attention</label>
                 <select id="setting-attention-style" title="How an agent pill signals it is waiting on you (synced across browsers)">
                     <option value="highlight">Highlight</option>
                     <option value="flash">Flash</option>
                 </select>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="Play the agent's notification sound when its pill starts needing you. Synced across browsers.">
                 <label for="setting-attention-sound">Needs attention sound</label>
                 <select id="setting-attention-sound" title="Play the agent's notification sound when its pill starts needing you (synced across browsers)">
                     <option value="on">On</option>
                     <option value="off">Off</option>
                 </select>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="Show channels as a top bar or as a Discord/Slack-style sidebar. Synced across browsers.">
                 <label for="setting-channel-sidebar">Channels</label>
                 <select id="setting-channel-sidebar" title="Show channels in a sidebar (Discord/Slack-style) instead of a top bar">
                     <option value="top">Top bar</option>
                     <option value="sidebar">Sidebar</option>
                 </select>
             </div>
-            <div class="settings-field">
+            <div class="settings-field" title="How often active rules are re-sent to agents: on rule changes only, or every N triggers.">
                 <label for="setting-rules-refresh">Rule refresh</label>
                 <select id="setting-rules-refresh" title="How often to re-send active rules to agents">
                     <option value="0">On rule changes</option>
@@ -253,7 +253,7 @@
             <div class="settings-field">
                 <div id="sound-settings"></div>
             </div>
-            <div class="settings-field mention-alerts-field">
+            <div class="settings-field mention-alerts-field" title="Get a browser notification and/or sound when you are @mentioned. The page must stay open; permission is per browser.">
                 <label for="setting-mention-alerts">Mention alerts</label>
                 <select id="setting-mention-alerts" aria-describedby="mention-alerts-status">
                     <option value="off">Off</option>
@@ -263,11 +263,11 @@
                 <small id="mention-alerts-status" role="status"></small>
             </div>
             <div class="settings-divider"></div>
-            <div class="settings-field">
+            <div class="settings-field" title="Export this project's chat history to a .zip file, or import one back in.">
                 <label>Project History</label>
                 <div class="settings-history-btns">
-                    <button class="settings-btn" onclick="exportHistory()">Export History</button>
-                    <button class="settings-btn" id="import-history-btn" onclick="document.getElementById('import-file').click()">Import History</button>
+                    <button class="settings-btn" onclick="exportHistory()" title="Download all messages and attachments as a .zip">Export History</button>
+                    <button class="settings-btn" id="import-history-btn" title="Restore messages from a previously exported .zip" onclick="document.getElementById('import-file').click()">Import History</button>
                     <input type="file" id="import-file" accept=".zip" style="display:none" onchange="importHistory(this)">
                 </div>
             </div>

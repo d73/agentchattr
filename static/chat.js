@@ -243,6 +243,9 @@ function buildSoundSettings() {
     for (const name of agents) {
         const row = document.createElement('div');
         row.className = 'sound-row';
+        row.title = name === 'default'
+            ? 'Notification sound for agents without their own choice. Synced across browsers.'
+            : 'Notification sound for messages from this agent; "Use default" follows the Default sound. Synced across browsers.';
         const label = document.createElement('span');
         label.className = 'sound-label';
         label.textContent = name === 'default' ? 'Default sound'
