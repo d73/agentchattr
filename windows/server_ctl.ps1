@@ -56,8 +56,12 @@ function Start-Server {
     if (-not (Test-Path $venvPy)) {
         & python -m venv .venv; if ($LASTEXITCODE -ne 0) { Write-Error "venv creation failed."; exit 5 }
     }
-    & $venvPy -c "import fastapi, uvicorn, mcp" 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under 'Stop'; probe under 'Continue'.
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & $venvPy -c "import fastapi, uvicorn, mcp" *> $null
+    $depsOk = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prevEap
+    if (-not $depsOk) {
         & $venvPy -m pip install -r requirements.txt; if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed."; exit 5 }
     }
     $p = Start-Process -FilePath $venvPy -ArgumentList ('"' + (Join-Path $root 'run.py') + '"') -WorkingDirectory $root -WindowStyle Hidden -PassThru
