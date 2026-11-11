@@ -26,7 +26,16 @@ let channelList = ['general'];
 let channelUnread = {};  // { channelName: count }
 let agentHats = {};  // { agent_name: svg_string }
 window.customRoles = [];  // saved custom roles from settings
-let colorOverrides = JSON.parse(localStorage.getItem('agentchattr-color-overrides') || '{}');
+let colorOverrides = {};
+try { colorOverrides = JSON.parse(localStorage.getItem('agentchattr-color-overrides') || '{}') || {}; } catch (e) {}
+
+// Persist overrides locally (cache) and on the server (survives origin/browser changes).
+function saveColorOverrides() {
+    try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
+    if (typeof ws !== 'undefined' && ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'update_settings', data: { agent_colors: colorOverrides } }));
+    }
+}
 let schedulesList = [];  // array of schedule objects from server
 
 // Expose globals that extracted modules (sessions.js, jobs.js) read via window.*
@@ -1661,7 +1670,7 @@ function showPillPopover(pillEl, opts) {
     // --- Color picker handlers ---
     const applyColorOverride = (color) => {
         colorOverrides[opts.name] = color;
-        localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides));
+        saveColorOverrides();
         // Update pill color
         const pillToUpdate = document.getElementById(`status-${opts.name}`);
         if (pillToUpdate) pillToUpdate.style.setProperty('--agent-color', color);
@@ -1704,7 +1713,7 @@ function showPillPopover(pillEl, opts) {
         resetBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             delete colorOverrides[opts.name];
-            localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides));
+            saveColorOverrides();
             const defaultColor = opts.color || '#888';
             const pillToUpdate = document.getElementById(`status-${opts.name}`);
             if (pillToUpdate) pillToUpdate.style.setProperty('--agent-color', defaultColor);
@@ -1984,6 +1993,16 @@ function applySettings(data) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
         document.body.classList.add('font-' + data.font);
         document.getElementById('setting-font').value = data.font;
+    }
+    if (data.agent_colors && typeof data.agent_colors === 'object') {
+        // Server is authoritative; an empty server map seeds from this browser's overrides.
+        if (Object.keys(data.agent_colors).length) {
+            colorOverrides = Object.assign({}, data.agent_colors);
+            try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
+            if (typeof recolorMessages === 'function') recolorMessages();
+        } else if (Object.keys(colorOverrides).length) {
+            saveColorOverrides();
+        }
     }
     if (data.max_agent_hops !== undefined) {
         document.getElementById('setting-hops').value = data.max_agent_hops;

@@ -58,6 +58,9 @@ room_settings: dict = {
     "history_limit": "all",
     "contrast": "normal",
     "custom_roles": [],
+    # Per-agent color overrides {name: "#rrggbb"}; server-side so they survive
+    # a changed port/origin or a different browser (localStorage does not).
+    "agent_colors": {},
 }
 
 # Channel validation
@@ -1348,6 +1351,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         pass
                 if "contrast" in new and new["contrast"] in ("normal", "high"):
                     room_settings["contrast"] = new["contrast"]
+                if isinstance(new.get("agent_colors"), dict):
+                    room_settings["agent_colors"] = {
+                        str(k)[:64]: v for k, v in new["agent_colors"].items()
+                        if isinstance(v, str) and _re.fullmatch(r"#[0-9a-fA-F]{6}", v)
+                    }
                 if "rules_refresh_interval" in new:
                     try:
                         ri = int(new["rules_refresh_interval"])
