@@ -9,7 +9,7 @@ if not exist ".venv" (
 )
 call .venv\Scripts\activate.bat
 
-python "%CD%un.py"
+python "%CD%\run.py"
 echo.
 echo === Server exited with code %ERRORLEVEL% ===
 pause
