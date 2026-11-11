@@ -4606,6 +4606,6 @@ a.file-attachment:hover { border-color: var(--accent); }
     50% { box-shadow: none; background-color: transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-    .status-pill.needs-input,
-    :root[data-attention="flash"] .status-pill.needs-input { animation: none; box-shadow: 0 0 8px 2px var(--agent-color, #fbbf24); }
+    /* Flash is an explicit opt-in, so it still blinks (slowly, <3 Hz); only the default pulse is suppressed. */
+    :root:not([data-attention="flash"]) .status-pill.needs-input { animation: none; box-shadow: 0 0 8px 2px var(--agent-color, #fbbf24); }
 }
