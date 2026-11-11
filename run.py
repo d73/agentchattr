@@ -32,9 +32,18 @@ def _parse_args():
     return parser.parse_args()
 
 
+def _log_level() -> int:
+    """Console log level. Quiet (WARNING) by default; set AGENTCHATTR_LOG_LEVEL=info|debug to see more."""
+    import os
+    name = os.environ.get("AGENTCHATTR_LOG_LEVEL", "warning").strip().upper()
+    levels = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
+              "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL}
+    return levels.get(name, logging.WARNING)
+
+
 def main():
     logging.basicConfig(
-        level=logging.INFO,
+        level=_log_level(),
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
@@ -161,7 +170,7 @@ def main():
         print(f"  Auto-shutdown when the browser is closed and no agents are connected")
     print(f"\n  Session token: {session_token}\n")
 
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level=logging.getLevelName(_log_level()).lower(), access_log=_log_level() <= logging.INFO))
 
     def _request_shutdown():
         server.should_exit = True
