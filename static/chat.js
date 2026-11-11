@@ -82,6 +82,41 @@ const CROSS_CHANNEL_SOUND = 'pluck';
 let soundPrefs = JSON.parse(localStorage.getItem('agentchattr-sounds') || '{}');
 const soundCache = {};
 
+// --- Human (you) visual + sound prefs, per browser ---
+const DEFAULT_USER_COLOR = '#a78bfa';
+function applyUserColor() {
+    let c = '';
+    try { c = localStorage.getItem('agentchattr-user-color') || ''; } catch (e) {}
+    if (/^#[0-9a-fA-F]{6}$/.test(c)) document.documentElement.style.setProperty('--user-color', c);
+    else document.documentElement.style.removeProperty('--user-color');
+    const input = document.getElementById('setting-user-color');
+    if (input) input.value = /^#[0-9a-fA-F]{6}$/.test(c) ? c : DEFAULT_USER_COLOR;
+}
+function setupUserColorSetting() {
+    const input = document.getElementById('setting-user-color');
+    const reset = document.getElementById('setting-user-color-reset');
+    if (!input || !reset) return;
+    input.addEventListener('input', () => {
+        try { localStorage.setItem('agentchattr-user-color', input.value); } catch (e) {}
+        applyUserColor();
+    });
+    reset.addEventListener('click', () => {
+        try { localStorage.removeItem('agentchattr-user-color'); } catch (e) {}
+        applyUserColor();
+    });
+    applyUserColor();
+}
+
+// Sound for your own sent messages (default: none).
+function playOwnSendSound() {
+    const soundName = soundPrefs['you'] || 'none';
+    if (soundName === 'none') return;
+    if (!soundCache[soundName]) soundCache[soundName] = new Audio(`/static/sounds/${soundName}.mp3`);
+    const audio = soundCache[soundName];
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+}
+
 function playNotificationSound(sender) {
     const key = sender.toLowerCase();
     const soundName = soundPrefs[key] || soundPrefs['default'] || DEFAULT_SOUND;
@@ -112,7 +147,7 @@ function buildSoundSettings() {
     container.innerHTML = '';
 
     // Default sound + cross-channel sound + per-agent rows
-    const agents = ['default', 'cross-channel', ...Object.keys(agentConfig)];
+    const agents = ['default', 'cross-channel', 'you', ...Object.keys(agentConfig)];
     for (const name of agents) {
         const row = document.createElement('div');
         row.className = 'sound-row';
@@ -120,12 +155,13 @@ function buildSoundSettings() {
         label.className = 'sound-label';
         label.textContent = name === 'default' ? 'Default sound'
             : name === 'cross-channel' ? 'Background alerts'
+            : name === 'you' ? 'You (your messages)'
             : (agentConfig[name]?.label || name);
         const select = document.createElement('select');
         select.className = 'sound-select';
         select.dataset.agent = name;
         const currentVal = soundPrefs[name]
-            || (name === 'default' ? DEFAULT_SOUND : name === 'cross-channel' ? CROSS_CHANNEL_SOUND : '');
+            || (name === 'default' ? DEFAULT_SOUND : name === 'cross-channel' ? CROSS_CHANNEL_SOUND : name === 'you' ? 'none' : '');
         for (const opt of SOUND_OPTIONS) {
             const o = document.createElement('option');
             o.value = opt.value;
@@ -134,7 +170,7 @@ function buildSoundSettings() {
             select.appendChild(o);
         }
         // Add "Use default" option for per-agent rows (not default or cross-channel)
-        if (name !== 'default' && name !== 'cross-channel') {
+        if (name !== 'default' && name !== 'cross-channel' && name !== 'you') {
             const o = document.createElement('option');
             o.value = '';
             o.textContent = 'Use default';
@@ -243,6 +279,7 @@ function init() {
     setupPaste();
     setupScroll();
     setupSettingsKeys();
+    setupUserColorSetting();
     setupKeyboardShortcuts();
     RulesPanel.init();
     Jobs.init();
@@ -463,6 +500,9 @@ function handleServerEvent(event) {
         // The mention preference owns sound for opted-in mention alerts.
         if (!mentionAlert && soundEnabled && (document.hidden || !document.hasFocus()) && event.data.type !== 'join' && event.data.type !== 'leave' && event.data.type !== 'summary' && event.data.sender && event.data.sender.toLowerCase() !== username.toLowerCase()) {
             playNotificationSound(event.data.sender);
+        }
+        if (soundEnabled && event.data.type === 'chat' && event.data.sender && event.data.sender.toLowerCase() === username.toLowerCase()) {
+            playOwnSendSound();
         }
         appendMessage(event.data);
     } else if (event.type === 'agent_renamed') {
