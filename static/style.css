@@ -393,6 +393,10 @@ header h1 {
 #settings-bar .settings-field label { flex: 1 1 auto; }
 #settings-bar .settings-field select { width: 150px; margin-left: auto; text-align: right; text-align-last: right; }
 #settings-bar .settings-field input { margin-left: auto; }
+#settings-bar #sound-settings { flex: 1 1 100%; flex-direction: column; flex-wrap: nowrap; gap: 10px; }
+#settings-bar .sound-row { justify-content: space-between; }
+#settings-bar .sound-label { flex: 1 1 auto; }
+#settings-bar .sound-select { width: 150px; margin-left: auto; text-align: right; text-align-last: right; }
 #settings-bar .mention-alerts-field { max-width: none; }
 #settings-bar .mention-alerts-field select { width: 150px; }
 #settings-bar .mention-alerts-field small { flex-basis: 100%; text-align: right; }
@@ -3733,6 +3737,8 @@ a.file-attachment:hover { border-color: var(--accent); }
 
 @media (max-width: 700px) {
     #content-area { position: relative; }
+    #jobs-panel, #rules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; margin-right: 0; }
+    #jobs-panel.hidden, #rules-panel.hidden { display: none; }
     .side-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
     #schedules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
 }

@@ -48,7 +48,7 @@ function harness() {
         SESSION_TOKEN: 'test-token',
         fetch: async (url, options) => { calls.push({ url, ...options }); return { ok: false }; },
     });
-    vm.runInContext('let schedulesList = [];\n' + panelCode, ctx);
+    vm.runInContext('let schedulesList = [];\n' + sidePanelCode + panelCode, ctx);
     const task = (id, extra = {}) => ({ id, prompt: 'Daily summary', targets: ['codex'], channel: 'stocks', daily_at: '08:00', active: true, next_run: Date.now() / 1000 + 3600, ...extra });
     return { ctx, ids, calls, task };
 }

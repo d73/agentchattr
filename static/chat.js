@@ -2193,6 +2193,7 @@ function clearChat() {
         }
         _clearClearChatConfirm();
         document.getElementById('settings-bar').classList.add('hidden');
+        document.getElementById('settings-toggle')?.classList.remove('active');
         return;
     }
 
@@ -2219,6 +2220,7 @@ function clearChat() {
         }
         _clearClearChatConfirm();
         document.getElementById('settings-bar').classList.add('hidden');
+        document.getElementById('settings-toggle')?.classList.remove('active');
     };
     confirmWrap.querySelector('.ch-confirm-no').onclick = (e) => {
         e.stopPropagation();
