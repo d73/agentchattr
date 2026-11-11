@@ -74,6 +74,15 @@ class NeedsInputTests(unittest.TestCase):
             self.assertTrue(needs_user_input(["some output", line, "  2. No", "> "]), line)
             self.assertTrue(needs_user_input([line]), line)
 
+    def test_allow_options_need_input(self):
+        for line in ("› 1. Allow", "  2. Allow for this session", "│ ❯ 1. Allow │", "> 2. Allow for this session"):
+            self.assertTrue(needs_user_input(["some output", line, "  3. Deny", "> "]), line)
+
+    def test_quoted_allow_is_not_input(self):
+        for line in ("1. Allow is the option you should select.", 'He chose "1. Allow" earlier',
+                     "2. Allow for this session is quoted here", "- text 1. Allow", "`1. Allow`"):
+            self.assertFalse(needs_user_input([line, "> "]), line)
+
     def test_quoted_yes_proceed_is_not_input(self):
         for line in ("1. Yes, proceed is the option you should select.",
                      "1. Yes, proceed-with-caution is just an example.",

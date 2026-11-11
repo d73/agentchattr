@@ -37,6 +37,9 @@ _ENTER_LINE = re.compile(r"^[\s│|]*(?:press )?enter to confirm", re.I)
 # with only menu decoration before it, so quoted/inline text never matches.
 _YES_PROCEED_LINE = re.compile(
     r"^[\s│|╭╰─❯>›•●]*1\.\s+yes,?\s+proceed(?:\s*\((?:y|enter)\))?[\s│|╮╯─]*$", re.I)
+# "› 1. Allow" / "2. Allow for this session" rows of an allow/deny menu (same whole-line anchoring).
+_ALLOW_LINE = re.compile(
+    r"^[\s│|╭╰─❯>›•●]*[12]\.\s+allow(?:\s+for\s+this\s+session)?(?:\s*\((?:y|a|enter)\))?[\s│|╮╯─]*$", re.I)
 
 
 def _tail(rows, n):
@@ -74,7 +77,7 @@ def agent_idle_by_marker(rows) -> bool:
 
 def needs_user_input(rows) -> bool:
     live = _tail(rows, INPUT_ROWS)
-    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) or _YES_PROCEED_LINE.match(r) for r in live):
+    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) or _YES_PROCEED_LINE.match(r) or _ALLOW_LINE.match(r) for r in live):
         return True
     return (any(_QUESTION_LINE.match(r) for r in live)
             and any(_OPTION_ROW.match(r) for r in live))
