@@ -1,12 +1,8 @@
 @echo off
-REM agentchattr — starts the server only
+REM agentchattr - starts the server in the background and returns once it is listening.
+REM Use stop.bat / restart.bat to stop or restart it. For a visible console, run: .venv\Scripts\python.exe run.py
 cd /d "%~dp0.."
-
-REM Auto-create venv and install deps on first run
 call "%~dp0ensure_venv.bat"
 if errorlevel 1 exit /b 1
-
-"%VENV_PY%" "%CD%\run.py"
-echo.
-echo === Server exited with code %ERRORLEVEL% ===
-pause
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0server_ctl.ps1" start
+exit /b %ERRORLEVEL%
