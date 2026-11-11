@@ -122,6 +122,17 @@ function setupAttentionStyleSetting() {
         applyAttentionStyle();
     });
     applyAttentionStyle();
+    // Audio half of "needs attention": on by default, per browser.
+    const sound = document.getElementById('setting-attention-sound');
+    if (sound) {
+        sound.value = attentionSoundOn() ? 'on' : 'off';
+        sound.addEventListener('change', () => {
+            try { localStorage.setItem('agentchattr-attention-sound', sound.value); } catch (e) {}
+        });
+    }
+}
+function attentionSoundOn() {
+    try { return localStorage.getItem('agentchattr-attention-sound') !== 'off'; } catch (e) { return true; }
 }
 
 // Audio is only for messages that @mention you directly (never your own messages, never @all).
@@ -1910,7 +1921,11 @@ function updateStatus(data) {
         if (!pill) continue;
 
         pill.classList.remove('available', 'working', 'offline');
-        pill.classList.toggle('needs-input', !!(info.needs_input && info.available));
+        const wasNeedsInput = pill.classList.contains('needs-input');
+        const needsInput = !!(info.needs_input && info.available);
+        pill.classList.toggle('needs-input', needsInput);
+        // Sound once when a pill starts needing you (not on every status refresh, not during history replay).
+        if (needsInput && !wasNeedsInput && soundEnabled && attentionSoundOn()) playNotificationSound(name);
         // Pending pills keep their pending animation (set in buildStatusPills)
         if (!pill.classList.contains('pending')) {
             if (info.busy && info.available) {
