@@ -146,7 +146,6 @@ test('your own messages never play audio, even with a saved You sound preference
     Object.assign(s.context, { historyLoading: false, pendingLiveEvents: [], pendingHistory: [],
         scheduleHistoryRender() {}, Hub: { emit() {} }, soundEnabled: true, username: 'Derek',
         appendMessage() {}, playNotificationSound: s.window.playNotificationSound,
-        playCrossChannelSound() { s.sounds.push('cross'); },
         soundPrefs: { you: 'warm-bell' } });
     loadMentionsUser(s.context);
     const chat = fs.readFileSync(path.join(root, 'static/chat.js'), 'utf8');

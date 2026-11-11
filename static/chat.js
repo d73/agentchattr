@@ -78,7 +78,6 @@ const SOUND_OPTIONS = [
     { value: 'none', label: 'None' },
 ];
 const DEFAULT_SOUND = 'soft-chime';
-const CROSS_CHANNEL_SOUND = 'pluck';
 let soundPrefs = JSON.parse(localStorage.getItem('agentchattr-sounds') || '{}');
 const soundCache = {};
 
@@ -127,38 +126,25 @@ function playNotificationSound(sender) {
     audio.play().catch(() => {});  // ignore autoplay policy errors
 }
 
-function playCrossChannelSound() {
-    const soundName = soundPrefs['cross-channel'] || CROSS_CHANNEL_SOUND;
-    if (soundName === 'none') return;
-    if (!soundCache[soundName]) {
-        soundCache[soundName] = new Audio(`/static/sounds/${soundName}.mp3`);
-    }
-    const audio = soundCache[soundName];
-    audio.currentTime = 0;
-    audio.play().catch(() => {});
-}
-window.playCrossChannelSound = playCrossChannelSound;
-
 function buildSoundSettings() {
     const container = document.getElementById('sound-settings');
     if (!container) return;
     container.innerHTML = '';
 
-    // Default sound + cross-channel sound + per-agent rows
-    const agents = ['default', 'cross-channel', ...Object.keys(agentConfig)];
+    // Default sound + per-agent rows
+    const agents = ['default', ...Object.keys(agentConfig)];
     for (const name of agents) {
         const row = document.createElement('div');
         row.className = 'sound-row';
         const label = document.createElement('span');
         label.className = 'sound-label';
         label.textContent = name === 'default' ? 'Default sound'
-            : name === 'cross-channel' ? 'Background alerts'
             : (agentConfig[name]?.label || name);
         const select = document.createElement('select');
         select.className = 'sound-select';
         select.dataset.agent = name;
         const currentVal = soundPrefs[name]
-            || (name === 'default' ? DEFAULT_SOUND : name === 'cross-channel' ? CROSS_CHANNEL_SOUND : '');
+            || (name === 'default' ? DEFAULT_SOUND : '');
         for (const opt of SOUND_OPTIONS) {
             const o = document.createElement('option');
             o.value = opt.value;
@@ -166,8 +152,8 @@ function buildSoundSettings() {
             if (currentVal === opt.value) o.selected = true;
             select.appendChild(o);
         }
-        // Add "Use default" option for per-agent rows (not default or cross-channel)
-        if (name !== 'default' && name !== 'cross-channel') {
+        // Add "Use default" option for per-agent rows (not the default row)
+        if (name !== 'default') {
             const o = document.createElement('option');
             o.value = '';
             o.textContent = 'Use default';
@@ -1026,9 +1012,9 @@ function appendMessage(msg, options = {}) {
         if (!options.history && soundEnabled && msg.type !== 'join' && msg.type !== 'leave') {
             channelUnread[msgChannel] = (channelUnread[msgChannel] || 0) + 1;
             renderChannelTabs();
-            // Play soft pluck for cross-channel chat messages from others (only when focused)
+            // A mention of you in another channel plays the normal mention sound, even while this page is focused
             if (document.hasFocus() && msg.type === 'chat' && msg.sender && msg.sender.toLowerCase() !== username.toLowerCase() && mentionsUser(msg.text)) {
-                playCrossChannelSound();
+                playNotificationSound(msg.sender);
             }
         }
     }

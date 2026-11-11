@@ -12,7 +12,11 @@ class MentionOnlySoundTests(unittest.TestCase):
         self.assertIn("window.mentionsUser = mentionsUser;", chat)
         # channel message sound, background-channel sound
         self.assertIn("soundEnabled && mentionsUser(event.data.text)", chat)
-        self.assertIn("mentionsUser(msg.text)) {\n                playCrossChannelSound", chat.replace("\r\n", "\n"))
+        # a mention in another channel/thread plays the normal mention sound, not a separate pluck
+        self.assertIn("mentionsUser(msg.text)) {\n                playNotificationSound(msg.sender);", chat.replace("\r\n", "\n"))
+        self.assertNotIn("playCrossChannelSound", chat)
+        self.assertNotIn("playCrossChannelSound", jobs)
+        self.assertNotIn("cross-channel", chat)
         # job-thread sounds
         self.assertEqual(jobs.count("window.mentionsUser(data.message.text)"), 2)
 
