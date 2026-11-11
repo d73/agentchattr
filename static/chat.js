@@ -87,10 +87,73 @@ const SOUND_OPTIONS = [
     { value: 'none', label: 'None' },
 ];
 const DEFAULT_SOUND = 'soft-chime';
-let soundPrefs = JSON.parse(localStorage.getItem('agentchattr-sounds') || '{}');
+
+// --- Synced UI prefs: server-owned (room settings "ui_prefs"), localStorage is a cache. ---
+// Absent on the server = never initialized, so a client seeds it once; present = authoritative.
+const UI_PREF_STORAGE = {
+    sounds: 'agentchattr-sounds',
+    user_color: 'agentchattr-user-color',
+    attention_style: 'agentchattr-attention-style',
+    attention_sound: 'agentchattr-attention-sound',
+    sidebar_mode: 'agentchattr-channel-sidebar-mode',
+};
+function collectUiPrefs() {
+    const out = {};
+    for (const [k, sk] of Object.entries(UI_PREF_STORAGE)) {
+        let v = null;
+        try { v = localStorage.getItem(sk); } catch (e) {}
+        if (v === null || v === '') continue;
+        if (k === 'sounds') { try { out[k] = JSON.parse(v) || {}; } catch (e) {} } else out[k] = v;
+    }
+    return out;
+}
+let _uiPrefsTimer = null;
+let _serverUiPrefs = {};          // last state received from the server
+const _dirtyUiPrefs = new Set();  // keys edited locally but not yet sent
+function saveUiPrefs() {
+    // Mark keys that differ from the server as pending so an incoming broadcast
+    // can't overwrite them before the debounce timer fires.
+    const cur = collectUiPrefs();
+    for (const k of Object.keys(UI_PREF_STORAGE)) {
+        if (JSON.stringify(cur[k]) !== JSON.stringify(_serverUiPrefs[k])) _dirtyUiPrefs.add(k);
+    }
+    clearTimeout(_uiPrefsTimer);
+    _uiPrefsTimer = setTimeout(() => {
+        if (typeof ws !== 'undefined' && ws && ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'update_settings', data: { ui_prefs: collectUiPrefs() } }));
+            _dirtyUiPrefs.clear();
+        }
+    }, 250);
+}
+function applyUiPrefs(p) {
+    _serverUiPrefs = JSON.parse(JSON.stringify(p));
+    for (const [k, sk] of Object.entries(UI_PREF_STORAGE)) {
+        if (_dirtyUiPrefs.has(k)) continue;  // keep unsent local edits
+        try {
+            if (p[k] === undefined) localStorage.removeItem(sk);
+            else localStorage.setItem(sk, k === 'sounds' ? JSON.stringify(p[k]) : String(p[k]));
+        } catch (e) {}
+    }
+    try { soundPrefs = JSON.parse(localStorage.getItem('agentchattr-sounds') || '{}') || {}; } catch (e) { soundPrefs = {}; }
+    document.querySelectorAll('.sound-select').forEach(sel => {
+        const n = sel.dataset.agent;
+        sel.value = soundPrefs[n] || (n === 'default' ? DEFAULT_SOUND : '');
+    });
+    applyUserColor();
+    applyAttentionStyle();
+    const as = document.getElementById('setting-attention-sound');
+    if (as) as.value = attentionSoundOn() ? 'on' : 'off';
+    if (typeof setChannelSidebarMode === 'function') {
+        let m = 'top';
+        try { m = localStorage.getItem(UI_PREF_STORAGE.sidebar_mode) || 'top'; } catch (e) {}
+        setChannelSidebarMode(m, false);
+    }
+}
+let soundPrefs = {};
+try { soundPrefs = JSON.parse(localStorage.getItem('agentchattr-sounds') || '{}') || {}; } catch (e) {}
 const soundCache = {};
 
-// --- Human (you) visual + sound prefs, per browser ---
+// --- Human (you) visual + sound prefs (synced via ui_prefs) ---
 const DEFAULT_USER_COLOR = '#a78bfa';
 function applyUserColor() {
     let c = '';
@@ -107,15 +170,17 @@ function setupUserColorSetting() {
     input.addEventListener('input', () => {
         try { localStorage.setItem('agentchattr-user-color', input.value); } catch (e) {}
         applyUserColor();
+        saveUiPrefs();
     });
     reset.addEventListener('click', () => {
         try { localStorage.removeItem('agentchattr-user-color'); } catch (e) {}
         applyUserColor();
+        saveUiPrefs();
     });
     applyUserColor();
 }
 
-// How a pill signals "needs attention": 'highlight' (default, soft pulse) or 'flash' (hard blink). Per browser.
+// How a pill signals "needs attention": 'highlight' (default, soft pulse) or 'flash' (hard blink). Synced via ui_prefs.
 function applyAttentionStyle() {
     let v = '';
     try { v = localStorage.getItem('agentchattr-attention-style') || ''; } catch (e) {}
@@ -129,14 +194,16 @@ function setupAttentionStyleSetting() {
     if (select) select.addEventListener('change', () => {
         try { localStorage.setItem('agentchattr-attention-style', select.value); } catch (e) {}
         applyAttentionStyle();
+        saveUiPrefs();
     });
     applyAttentionStyle();
-    // Audio half of "needs attention": on by default, per browser.
+    // Audio half of "needs attention": on by default, synced via ui_prefs.
     const sound = document.getElementById('setting-attention-sound');
     if (sound) {
         sound.value = attentionSoundOn() ? 'on' : 'off';
         sound.addEventListener('change', () => {
             try { localStorage.setItem('agentchattr-attention-sound', sound.value); } catch (e) {}
+            saveUiPrefs();
         });
     }
 }
@@ -203,6 +270,7 @@ function buildSoundSettings() {
             const val = select.value;
             soundPrefs[name] = val;
             localStorage.setItem('agentchattr-sounds', JSON.stringify(soundPrefs));
+            saveUiPrefs();
             if (val && val !== 'none') {
                 if (!soundCache[val]) soundCache[val] = new Audio(`/static/sounds/${val}.mp3`);
                 soundCache[val].currentTime = 0;
@@ -2007,6 +2075,11 @@ function applySettings(data) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
         document.body.classList.add('font-' + data.font);
         document.getElementById('setting-font').value = data.font;
+    }
+    if (data.ui_prefs && typeof data.ui_prefs === 'object') {
+        applyUiPrefs(data.ui_prefs);
+    } else {
+        saveUiPrefs();  // never initialized: seed once from this browser (may be empty)
     }
     if (data.agent_colors && typeof data.agent_colors === 'object') {
         // Server-owned and authoritative (an empty map is an explicit Reset).

@@ -561,7 +561,7 @@ function setChannelSidebarMode(mode, persist = true) {
         if (support && support.parentElement !== rightBar) rightBar.appendChild(support);
     }
 
-    if (persist) localStorage.setItem(SIDEBAR_MODE_KEY, mode);
+    if (persist) { localStorage.setItem(SIDEBAR_MODE_KEY, mode); if (typeof saveUiPrefs === 'function') saveUiPrefs(); }
     const setting = document.getElementById('setting-channel-sidebar');
     if (setting && setting.value !== mode) setting.value = mode;
 

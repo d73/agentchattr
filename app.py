@@ -59,9 +59,30 @@ room_settings: dict = {
     "contrast": "normal",
     "custom_roles": [],
 }
+# "ui_prefs" follows the same rule as "agent_colors" below.
 # "agent_colors" ({name: "#rrggbb"}) is deliberately absent until a client first
 # sets it. Absent = never initialized (a client may seed it from its legacy
 # localStorage); present, even as {}, = authoritative (an explicit Reset).
+
+def _clean_ui_prefs(raw: dict) -> dict:
+    """Whitelist + validate synced per-user UI options (absent key = unset)."""
+    out: dict = {}
+    sounds = raw.get("sounds")
+    if isinstance(sounds, dict):
+        out["sounds"] = {
+            str(k)[:64]: v for k, v in sounds.items()
+            if isinstance(v, str) and _re.fullmatch(r"[a-z0-9-]{0,40}", v)
+        }
+    if isinstance(raw.get("user_color"), str) and _HEX_COLOR_RE.fullmatch(raw["user_color"]):
+        out["user_color"] = raw["user_color"]
+    if raw.get("attention_style") in ("highlight", "flash"):
+        out["attention_style"] = raw["attention_style"]
+    if raw.get("attention_sound") in ("on", "off"):
+        out["attention_sound"] = raw["attention_sound"]
+    if raw.get("sidebar_mode") in ("top", "sidebar"):
+        out["sidebar_mode"] = raw["sidebar_mode"]
+    return out
+
 
 # Channel validation
 _HEX_COLOR_RE = _re.compile(r'#[0-9a-fA-F]{6}')  # module-level: a later local `import re as _re` shadows _re inside websocket_endpoint
@@ -1352,6 +1373,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         pass
                 if "contrast" in new and new["contrast"] in ("normal", "high"):
                     room_settings["contrast"] = new["contrast"]
+                if isinstance(new.get("ui_prefs"), dict):
+                    room_settings["ui_prefs"] = _clean_ui_prefs(new["ui_prefs"])
                 if isinstance(new.get("agent_colors"), dict):
                     room_settings["agent_colors"] = {
                         str(k)[:64]: v for k, v in new["agent_colors"].items()
