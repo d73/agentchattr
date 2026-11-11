@@ -14,7 +14,14 @@ Check 'other_run.py'                     (Test-OwnsServer (P $venvPy 'python oth
 Check 'relative run.py, system python'   (Test-OwnsServer (P 'C:\Python\python.exe' 'python run.py') $root) $false
 Check 'relative run.py, other venv'      (Test-OwnsServer (P 'C:\OtherApp\.venv\Scripts\python.exe' 'python run.py') $root) $false
 Check 'sibling dir prefix (agentchattr2)' (Test-OwnsServer (P 'C:\Apps\agentchattr2\.venv\Scripts\python.exe' 'python run.py') $root) $false
-Check 'no run.py'                        (Test-OwnsServer (P $venvPy 'python -m http.server 8300') $root) $false
+Check 'run.py only as arg of another script' (Test-OwnsServer (P $venvPy "python C:\OtherApp\worker.py $root\run.py") $root) $false
+Check 'python -m http.server --directory run.py' (Test-OwnsServer (P 'C:\Python\python.exe' "python -m http.server --directory $root\run.py") $root) $false
+Check 'python -c with run.py arg'        (Test-OwnsServer (P $venvPy "python -c print(1) $root\run.py") $root) $false
+Check 'cmd /c type run.py'               (Test-OwnsServer (P 'C:\Windows\System32\cmd.exe' "cmd /c type $root\run.py") $root) $false
+Check 'non-python exe with abs run.py'   (Test-OwnsServer (P 'C:\Tools\node.exe' "node $root\run.py") $root) $false
+Check 'python flags before script'       (Test-OwnsServer (P 'C:\Python\python.exe' "python -u -X utf8 $root\run.py") $root) $true
+Check 'pythonw quoted abs run.py'        (Test-OwnsServer (P 'C:\Python\pythonw.exe' "`"C:\Python\pythonw.exe`" `"$root\run.py`"") $root) $true
+Check 'no run.py'                      (Test-OwnsServer (P $venvPy 'python -m http.server 8300') $root) $false
 Check 'chain: child base python, parent venv launcher' (Test-ChainOwnsServer @((P 'C:\Python\python.exe' 'python run.py'), (P $venvPy 'python run.py')) $root) $true
 Check 'chain: unrelated'                 (Test-ChainOwnsServer @((P 'C:\Python\python.exe' 'python C:\OtherApp\run.py')) $root) $false
 
