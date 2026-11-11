@@ -1430,9 +1430,9 @@ function handleJobEvent(action, data) {
             markJobRead(data.job_id);
         } else if (!isSelfMessage) {
             jobUnread[data.job_id] = (jobUnread[data.job_id] || 0) + 1;
-            // Play soft pluck for chat messages in other job threads
-            if (window.soundEnabled && document.hasFocus() && msgType === 'chat' && window.playCrossChannelSound && window.mentionsUser && window.mentionsUser(data.message.text)) {
-                window.playCrossChannelSound();
+            // A mention of you in another job thread plays the normal mention sound
+            if (window.soundEnabled && document.hasFocus() && msgType === 'chat' && window.playNotificationSound && window.mentionsUser && window.mentionsUser(data.message.text)) {
+                window.playNotificationSound(sender);
             }
         }
     } else if (action === 'message_delete') {
