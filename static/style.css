@@ -233,6 +233,11 @@ header h1 {
     overflow-x: auto;
     max-width: 60vw;
     scrollbar-width: none;
+    /* overflow clips box-shadow: pad the scroller so the needs-attention glow isn't cut off around the
+       rounded pill. Vertical padding is cancelled by a negative margin; horizontal padding is kept
+       (no negative horizontal margin) so scrolling pills can't run into the neighbouring button. */
+    padding: 14px 16px;
+    margin: -14px 0;
 }
 #agent-status::-webkit-scrollbar { display: none; }
 
@@ -4591,7 +4596,7 @@ a.file-attachment:hover { border-color: var(--accent); }
     animation: needs-input-flash 1s ease-in-out infinite;
 }
 @keyframes needs-input-flash {
-    0%, 100% { box-shadow: 0 0 0 0 transparent; background-color: transparent; }
+    0%, 100% { box-shadow: 0 0 0 0 transparent; background-color: var(--bg-subtle); }
     50% {
         box-shadow: 0 0 10px 2px var(--agent-color, #fbbf24);
         background-color: color-mix(in srgb, var(--agent-color, #fbbf24) 30%, transparent);
@@ -4603,7 +4608,7 @@ a.file-attachment:hover { border-color: var(--accent); }
 }
 @keyframes needs-input-blink {
     0%, 100% { box-shadow: 0 0 12px 3px var(--agent-color, #fbbf24); background-color: color-mix(in srgb, var(--agent-color, #fbbf24) 55%, transparent); }
-    50% { box-shadow: none; background-color: transparent; }
+    50% { box-shadow: none; background-color: var(--bg-subtle); }
 }
 @media (prefers-reduced-motion: reduce) {
     /* Flash is an explicit opt-in, so it still blinks (slowly, <3 Hz); only the default pulse is suppressed. */
