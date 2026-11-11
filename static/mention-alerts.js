@@ -12,10 +12,11 @@
     let originalTitle = null;
     const seen = new Set();
 
-    function mentions(text, name) {
+    function mentions(text, name, includeAll = true) {
         if (!name || typeof text !== 'string') return false;
         const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return new RegExp('(^|[^\\p{L}\\p{N}_@-])@(?:' + escaped + '|all)(?![\\p{L}\\p{N}_-])', 'iu').test(text);
+        const who = includeAll ? escaped + '|all' : escaped;
+        return new RegExp('(^|[^\\p{L}\\p{N}_@-])@(?:' + who + ')(?![\\p{L}\\p{N}_-])', 'iu').test(text);
     }
 
     function preview(text) {
@@ -82,7 +83,8 @@
                     alert.close();
                     resetTitle();
                 };
-                if (mode === 'sound') window.playNotificationSound(msg.sender);
+                // Sound only for a direct @you mention; @all keeps the visual notification only.
+                if (mode === 'sound' && mentions(msg.text, name, false)) window.playNotificationSound(msg.sender);
                 return true;
             } catch (_) {
                 error = '(Browser could not show notifications)';

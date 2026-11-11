@@ -10,12 +10,13 @@ class HumanSettingsStaticTests(unittest.TestCase):
         self.assertIn('id="setting-user-color"', html)
         self.assertIn('id="setting-user-color-reset"', html)
 
-    def test_you_sound_row_and_color_wiring(self):
+    def test_color_wiring_and_no_own_send_sound(self):
         js = (STATIC / "chat.js").read_text(encoding="utf-8")
-        self.assertIn("'cross-channel', 'you'", js)
         self.assertIn("setupUserColorSetting();", js)
-        self.assertIn("playOwnSendSound();", js)
         self.assertIn("agentchattr-user-color", js)
+        # audio is only for @mentions of you: no sound for your own messages
+        self.assertNotIn("playOwnSendSound", js)
+        self.assertNotIn("'you'", js)
 
 
 if __name__ == "__main__":
