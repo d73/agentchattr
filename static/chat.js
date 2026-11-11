@@ -1101,7 +1101,10 @@ window.appendMessage = appendMessage;
 
 function updateScrollAnchor() {
     const anchor = document.getElementById('scroll-anchor');
-    if (autoScroll) {
+    // Only offer the down arrow when more than one screenful of content is below the viewport.
+    const tl = document.getElementById('timeline');
+    const moreThanScreenBelow = tl && (tl.scrollHeight - tl.scrollTop - tl.clientHeight) > tl.clientHeight;
+    if (autoScroll || !moreThanScreenBelow) {
         anchor.classList.add('hidden');
     } else {
         anchor.classList.remove('hidden');
@@ -2701,9 +2704,12 @@ function setupScroll() {
     const resizeObserver = new ResizeObserver(() => {
         if (autoScroll && !historyLoading) {
             scrollToBottom();
+        } else {
+            updateScrollAnchor();  // content grew/shrank while scrolled up: re-check the one-screen threshold
         }
     });
     resizeObserver.observe(messages);
+    resizeObserver.observe(timeline);  // viewport height changes also move the one-screen threshold
 
     // Reposition scroll-anchor when window resizes or sidebars toggle
     window.addEventListener('resize', repositionScrollAnchor);
