@@ -108,6 +108,29 @@ test('blocked, unsupported, dismissed, and failed notifications show status', as
     assert.match(dismissed.controls['mention-alerts-status'].textContent, /could not enable/);
 });
 
+// handleServerEvent is sliced out of chat.js, so load the top-level mentionsUser helper it calls too.
+function loadMentionsUser(context) {
+    const chat = fs.readFileSync(path.join(root, 'static/chat.js'), 'utf8');
+    const start = chat.indexOf('function mentionsUser(text) {');
+    vm.runInContext(chat.slice(start, chat.indexOf('\nfunction ', start + 1)), context);
+}
+
+test('unmentioned messages never play a sound (legacy path; opt-in alerts treat @all as a mention)', () => {
+    const s = setup('off');
+    const chat = fs.readFileSync(path.join(root, 'static/chat.js'), 'utf8');
+    const start = chat.indexOf('function handleServerEvent(event) {');
+    Object.assign(s.context, { historyLoading: false, pendingLiveEvents: [], pendingHistory: [],
+        scheduleHistoryRender() {}, Hub: { emit() {} }, soundEnabled: true, username: 'Derek',
+        appendMessage() {}, playNotificationSound: s.window.playNotificationSound });
+    loadMentionsUser(s.context);
+    vm.runInContext(chat.slice(start, chat.indexOf('\nfunction ', start + 1)), s.context);
+    for (const text of ['build finished', '@all heads up', '@Derek-bot done', 'mail a@Derek.com']) {
+        s.context.event = { type: 'message', data: msg({ id: Math.random(), text }) };
+        vm.runInContext('handleServerEvent(event)', s.context);
+    }
+    assert.deepEqual(s.sounds, []);
+});
+
 test('actual message dispatcher keeps history silent and avoids duplicate alert audio', () => {
     const s = setup('sound');
     const chat = fs.readFileSync(path.join(root, 'static/chat.js'), 'utf8');
@@ -116,6 +139,7 @@ test('actual message dispatcher keeps history silent and avoids duplicate alert 
     Object.assign(s.context, { historyLoading: false, pendingLiveEvents: [], pendingHistory: [],
         scheduleHistoryRender() {}, Hub: { emit() {} }, soundEnabled: true, username: 'Derek',
         appendMessage() {}, playNotificationSound: s.window.playNotificationSound });
+    loadMentionsUser(s.context);
     vm.runInContext(chat.slice(start, end), s.context);
     vm.runInContext('handleServerEvent({type:"history", messages:[{id:42,text:"@Derek"}]})', s.context);
     assert.equal(s.alerts.length, 0);
@@ -143,6 +167,7 @@ test('decision prompts alert; blocked and failed notifications preserve one lega
             Object.assign(s.context, { historyLoading: false, Hub: { emit() {} }, soundEnabled: true,
                 username: 'Derek', appendMessage() {}, playNotificationSound: s.window.playNotificationSound,
                 event: { type: 'message', data: msg({ type: 'decision' }) } });
+            loadMentionsUser(s.context);
             vm.runInContext(chat.slice(start, chat.indexOf('\nfunction ', start + 1)), s.context);
             vm.runInContext('handleServerEvent(event); handleServerEvent(event)', s.context);
             assert.equal(s.alerts.length, 0);
