@@ -274,6 +274,9 @@ def get_activity_checker(pid_holder, agent_name="unknown", trigger_flag=None):
     IDLE_COOLDOWN = 5       # need 5 consecutive idle polls (5s) before going idle
     _consecutive_idle = [0]
     _is_active = [False]
+    # Agent TUIs show these while a turn is running, even when the only screen
+    # change is a spinner/timer (< MIN_CHANGED_CELLS). Treat them as "working".
+    BUSY_MARKERS = ("esc to interrupt", "ctrl+c to interrupt", "esc to cancel")
 
     def check():
         # External trigger: queue watcher injected a message → force active
@@ -324,6 +327,12 @@ def get_activity_checker(pid_holder, agent_name="unknown", trigger_flag=None):
                         n_changed += 1
         significant = n_changed >= MIN_CHANGED_CELLS
         last_chars[0] = char_data
+        if not significant:
+            try:
+                text = shorts[::2].tobytes().decode("utf-16-le", "ignore").lower()
+                significant = any(m in text for m in BUSY_MARKERS)
+            except Exception:
+                pass
 
         # Hysteresis: active immediately on significant change or trigger,
         # idle only after IDLE_COOLDOWN consecutive quiet polls
