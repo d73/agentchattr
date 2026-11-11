@@ -85,7 +85,10 @@ class NeedsInputTests(unittest.TestCase):
             self.assertTrue(needs_user_input(["some output", line, "  3. No", "> "]), line)
 
     def test_quoted_dont_ask_again_is_not_input(self):
-        for line in ("2. Yes, and don't ask again is the option you should select.",
+        for line in ("2. Yes, and don't ask again for example is a menu label.",
+                     "2. Yes, and don't ask again for commands that start with `git push` (p) is what you press.",
+                     "2. Yes, and don't ask again for commands that start with git push (p)",
+                     "2. Yes, and don't ask again is the option you should select.",
                      "He chose \"2. Yes, and don't ask again\" earlier", "- text 2. Yes, and don't ask again",
                      "`2. Yes, and don't ask again`"):
             self.assertFalse(needs_user_input([line, "> "]), line)

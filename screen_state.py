@@ -44,7 +44,7 @@ _ALLOW_LINE = re.compile(
 # "2. Yes, and don't ask again" (Codex adds " for commands that start with `x` (p)"). Whole line only.
 _DONT_ASK_LINE = re.compile(
     r"^[\s│|╭╰─❯>›•●]*2\.\s+yes,?\s+and\s+don['’]t\s+ask\s+again"
-    r"(?:\s+for\b.*?)?(?:\s*\([a-z]\))?[\s│|╮╯─]*$", re.I)
+    r"(?:\s+for\s+commands\s+that\s+start\s+with\s+`[^`\n]+`)?(?:\s*\([a-z]\))?[\s│|╮╯─]*$", re.I)
 
 
 def _tail(rows, n):
