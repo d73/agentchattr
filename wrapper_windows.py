@@ -333,14 +333,23 @@ def get_activity_checker(pid_holder, agent_name="unknown", trigger_flag=None):
                         n_changed += 1
         significant = n_changed >= MIN_CHANGED_CELLS
         last_chars[0] = char_data
+        done_marker = False
         try:
             text = char_data.decode("utf-16-le", "ignore")
             rows = [text[i:i + width] for i in range(0, len(text), width)]
             _needs_input[0] = screen_state.needs_user_input(rows)
+            done_marker = screen_state.agent_idle_by_marker(rows)
             if not significant:
                 significant = screen_state.has_busy_marker(rows)
         except Exception:
             _needs_input[0] = False
+
+        # A visible "Worked for 2m 14s"-style summary (and no live busy status) means the
+        # agent finished: go idle now instead of waiting out the cooldown. A queue trigger still wins.
+        if done_marker and not triggered:
+            _consecutive_idle[0] = IDLE_COOLDOWN
+            _is_active[0] = False
+            return False
 
         # Hysteresis: active immediately on significant change or trigger,
         # idle only after IDLE_COOLDOWN consecutive quiet polls

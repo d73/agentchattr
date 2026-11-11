@@ -1,7 +1,7 @@
 """Live-screen classifiers: busy markers and needs-input prompts."""
 import unittest
 
-from screen_state import has_busy_marker, needs_user_input
+from screen_state import agent_idle_by_marker, has_busy_marker, has_done_marker, needs_user_input
 
 
 class BusyTests(unittest.TestCase):
@@ -28,6 +28,28 @@ class QuotedExampleTests(unittest.TestCase):
     def test_quoted_prompt_text_is_not_input(self):
         self.assertFalse(needs_user_input(['The tool asks "Do you want to proceed?" before running', "> Ready"]))
         self.assertFalse(needs_user_input(["Do you want to proceed?", "> Ready"]))  # no option rows
+
+
+class DoneMarkerTests(unittest.TestCase):
+    def test_finished_summary_lines(self):
+        for line in ("✻ Worked for 1m 3s", "✻ Baked for 2m 5s", "─ Worked for 2m 14s ─────────────",
+                     "• Worked for 45s", "done 1:03", "Done in 12s", "✻ Worked for 1h 2m 3s"):
+            self.assertTrue(has_done_marker(["output", line, "", "> "]), line)
+            self.assertTrue(agent_idle_by_marker(["output", line, "> "]), line)
+
+    def test_quoted_or_partial_text_is_not_done(self):
+        for line in ("I worked for 5m on it", "He said Worked for 5m yesterday", "worked for a long time",
+                     "done", "The job is done 5 times", "Worked for 2 minutes"):
+            self.assertFalse(has_done_marker([line, "> "]), line)
+
+    def test_old_done_line_scrolled_away_is_ignored(self):
+        rows = ["✻ Worked for 1m 3s"] + ["new output"] * 12
+        self.assertFalse(has_done_marker(rows))
+
+    def test_live_busy_status_beats_done_line(self):
+        rows = ["✻ Worked for 1m 3s", "", "✻ Thinking… (4s · esc to interrupt)", "> "]
+        self.assertTrue(has_done_marker(rows))
+        self.assertFalse(agent_idle_by_marker(rows))
 
 
 class NeedsInputTests(unittest.TestCase):
