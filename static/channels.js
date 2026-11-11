@@ -9,6 +9,16 @@
 
 const _channelScrollMsg = {};  // channel name -> message ID at top of viewport
 
+// Channels display A-Z (case-insensitive), with #general always first.
+function sortedChannelList() {
+    return [...window.channelList].sort((a, b) => {
+        if (a === b) return 0;
+        if (a === 'general') return -1;
+        if (b === 'general') return 1;
+        return a.toLowerCase().localeCompare(b.toLowerCase()) || a.localeCompare(b);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -39,7 +49,7 @@ function renderChannelTabs() {
     const scrollLeft = container.scrollLeft;
     container.innerHTML = '';
 
-    for (const name of window.channelList) {
+    for (const name of sortedChannelList()) {
         const tab = document.createElement('button');
         tab.className = 'channel-tab' + (name === window.activeChannel ? ' active' : '');
         tab.dataset.channel = name;
@@ -115,7 +125,7 @@ function renderChannelSidebar() {
     const existingCreate = list.querySelector('.channel-inline-create');
     list.innerHTML = '';
 
-    for (const name of window.channelList) {
+    for (const name of sortedChannelList()) {
         const row = document.createElement('button');
         row.className = 'channel-sidebar-row' + (name === window.activeChannel ? ' active' : '');
         row.dataset.channel = name;
