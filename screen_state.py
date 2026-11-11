@@ -26,8 +26,9 @@ _BUSY_LINE = re.compile(
 # Option rows of a live permission menu.
 _OPTION_ROW = re.compile(r"^[\s│|]*[❯>›]?\s*(?:\d+\.\s+\S|yes, proceed|\(y\))", re.I)
 _QUESTION_LINE = re.compile(
-    r"^[\s│|╭╰─>❯›•●]*(?:do you want to (?:proceed|make this edit|create|allow|run)"
-    r"|would you like to run the following command)",
+    r"^[\s│|╭╰─>❯›•●]*(?:do you want to (?:proceed|make this edit|create|allow|run|approve|apply)"
+    r"|would you like to (?:run the following command|make the following edits?|apply|allow)"
+    r"|(?:allow|approve) (?:codex|claude|this|the following)\b.*\?\s*$)",
     re.I,
 )
 _YN_LINE = re.compile(r"[\[(]y/n[\])]\??\s*$", re.I)
