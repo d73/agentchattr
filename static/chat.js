@@ -3424,7 +3424,9 @@ function renderTodosPanel() {
 // into a channel where you meant to tag someone else.
 window._onChannelSwitchMentions = function(oldChannel, newChannel) {
     if (oldChannel) _channelMentions[oldChannel] = [...activeMentions];
-    activeMentions = new Set(_channelMentions[newChannel] || []);
+    // Also drop agents that are no longer registered (remembered selections can outlive them).
+    const known = Object.keys(agentConfig).length ? (n => n in agentConfig) : (() => true);
+    activeMentions = new Set((_channelMentions[newChannel] || []).filter(known));
     // Reflect the swapped state on the toggle buttons
     for (const btn of document.querySelectorAll('.mention-toggle')) {
         btn.classList.toggle('active', activeMentions.has(btn.dataset.agent));
@@ -3454,9 +3456,21 @@ function buildMentionToggles() {
     const container = document.getElementById('mention-toggles');
     container.innerHTML = '';
 
-    // Prune stale mentions for agents no longer in config
+    // Prune stale mentions for agents no longer in config. Skip until the agent list has
+    // arrived, otherwise an empty config would wipe every remembered selection.
     for (const name of activeMentions) {
         if (!(name in agentConfig)) activeMentions.delete(name);
+    }
+    if (Object.keys(agentConfig).length) {
+        let pruned = false;
+        for (const ch of Object.keys(_channelMentions)) {
+            const kept = (_channelMentions[ch] || []).filter(name => name in agentConfig);
+            if (kept.length !== (_channelMentions[ch] || []).length) {
+                _channelMentions[ch] = kept;
+                pruned = true;
+            }
+        }
+        if (pruned) persistMentions();
     }
 
     // @all: selects every available agent, or deselects them all if they are
