@@ -306,6 +306,7 @@ function switchChannel(name) {
     filterMessagesByChannel();
     renderChannelTabs();
     Store.set('activeChannel', name);
+    if (typeof window.updateLoadEarlierButton === 'function') window.updateLoadEarlierButton();
     document.querySelector('#channel-tabs .channel-tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     // Restore: scroll to saved message, or bottom if none saved
     const savedId = _channelScrollMsg[name];

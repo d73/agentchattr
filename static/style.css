@@ -680,6 +680,33 @@ main#timeline {
 
 #loading-indicator.hidden { display: none; }
 
+.load-earlier-wrap {
+    display: flex;
+    justify-content: center;
+    padding: 12px 16px;
+}
+.load-earlier-wrap.hidden { display: none; }
+.load-earlier-btn {
+    background: var(--surface-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.load-earlier-btn:hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--text);
+    border-color: var(--accent);
+}
+.load-earlier-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .loading-spinner {
     width: 16px;
     height: 16px;

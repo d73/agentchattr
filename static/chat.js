@@ -24,6 +24,8 @@ let lastMessageDate = null;  // track date for dividers (general channel)
 let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
 let soundEnabled = false;  // suppress sounds during initial history load
 let activeChannel = localStorage.getItem('agentchattr-channel') || 'general';
+let channelHasMore = {};  // channelName -> bool
+let _loadingEarlier = false;
 
 // Sticky @-mention selection, remembered per channel in this browser only. Entries expire
 // after a day so a forgotten tag can't keep waking an agent.
@@ -453,6 +455,7 @@ function init() {
     Jobs.init();
     Sessions.init();
     Channels.init();
+    setupLoadEarlier();
     checkForUpdate();
 
     // Dismiss channel edit controls when clicking outside channel bar
@@ -652,7 +655,99 @@ function renderHistoryBatch() {
         pendingLiveEvents = [];
         for (const event of events) handleServerEvent(event);
         if (autoScroll) scrollToBottom(true);
+        updateLoadEarlierButton();
     }
+}
+
+// --- Progressive history loading (load_earlier) ---
+
+function getOldestMsgId(channel) {
+    const msgs = document.querySelectorAll(`#messages .message[data-channel="${channel}"]`);
+    if (!msgs.length) return null;
+    let minId = null;
+    for (const el of msgs) {
+        const id = parseInt(el.dataset.id);
+        if (!isNaN(id)) {
+            if (minId === null || id < minId) minId = id;
+        }
+    }
+    return minId;
+}
+
+function updateLoadEarlierButton() {
+    const wrap = document.getElementById('load-earlier-wrap');
+    const btn = document.getElementById('load-earlier-btn');
+    if (!wrap || !btn) return;
+    const ch = activeChannel || 'general';
+    const hasMore = !!channelHasMore[ch];
+    wrap.classList.toggle('hidden', !hasMore || historyLoading);
+    btn.disabled = _loadingEarlier;
+    btn.textContent = _loadingEarlier ? 'Loading...' : 'Load earlier messages';
+}
+window.updateLoadEarlierButton = updateLoadEarlierButton;
+
+function requestEarlierMessages() {
+    if (_loadingEarlier || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const ch = activeChannel || 'general';
+    if (!channelHasMore[ch]) return;
+    const oldestId = getOldestMsgId(ch);
+    if (oldestId == null) return;
+
+    _loadingEarlier = true;
+    updateLoadEarlierButton();
+
+    ws.send(JSON.stringify({
+        type: 'load_earlier',
+        channel: ch,
+        before_id: oldestId,
+        limit: 50
+    }));
+}
+
+function prependEarlierMessages(channel, messages) {
+    if (!messages || !messages.length) return;
+    const timeline = document.getElementById('timeline');
+    const container = document.getElementById('messages');
+    if (!timeline || !container) return;
+
+    // Anchor scroll offset so prepending causes no viewport jump
+    autoScroll = false;
+    const prevScrollHeight = timeline.scrollHeight;
+    const prevScrollTop = timeline.scrollTop;
+
+    const fragment = document.createDocumentFragment();
+    const prevLastDate = lastMessageDates[channel];
+    delete lastMessageDates[channel];
+
+    for (const msg of messages) {
+        if (document.getElementById(`message-${msg.id}`)) continue;
+        appendMessage(msg, { history: true, container: fragment });
+    }
+
+    const lastPrependedDate = lastMessageDates[channel];
+    lastMessageDates[channel] = prevLastDate;
+
+    // If the last prepended message shares a date with the first existing divider in this channel,
+    // deduplicate the existing divider
+    if (lastPrependedDate) {
+        const existingDividers = container.querySelectorAll(`.date-divider[data-channel="${channel}"]`);
+        if (existingDividers.length > 0) {
+            const firstExisting = existingDividers[0];
+            if (firstExisting.textContent === formatDateDivider(lastPrependedDate)) {
+                firstExisting.remove();
+            }
+        }
+    }
+
+    container.insertBefore(fragment, container.firstChild);
+
+    // Keep viewport anchored to the message the user was looking at
+    const newScrollHeight = timeline.scrollHeight;
+    timeline.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+}
+
+function setupLoadEarlier() {
+    document.getElementById('load-earlier-btn')?.addEventListener('click', requestEarlierMessages);
 }
 
 // --- WebSocket ---
@@ -669,7 +764,21 @@ function handleServerEvent(event) {
     }
     if (event.type === 'history_complete') {
         historyReceived = true;
+        if (event.has_more && typeof event.has_more === 'object') {
+            channelHasMore = Object.assign({}, event.has_more);
+        }
         scheduleHistoryRender();
+        return;
+    }
+    if (event.type === 'history_earlier') {
+        if (event.channel) {
+            channelHasMore[event.channel] = !!event.has_more;
+        }
+        _loadingEarlier = false;
+        if (event.messages && event.messages.length) {
+            prependEarlierMessages(event.channel, event.messages);
+        }
+        updateLoadEarlierButton();
         return;
     }
     // Emit through Hub for modules to subscribe (PR 1 seam)
