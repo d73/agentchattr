@@ -420,6 +420,27 @@ function init() {
     });
 }
 
+// Markdown links are untrusted (agents and users write them). marked escapes raw HTML but not
+// URL schemes, so [x](javascript:...) would otherwise become a clickable script link.
+const SAFE_LINK_SCHEMES = new Set(['http', 'https', 'mailto', 'tel']);
+function isSafeLinkHref(rawHref) {
+    const probe = document.createElement('textarea');
+    probe.innerHTML = rawHref;  // decode entities such as &#x6A; before inspecting the scheme
+    const href = probe.value.replace(/[\u0000- \u007f-\u009f]/g, '');
+    const m = href.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+    if (!m) return true;  // relative URL or #anchor
+    return SAFE_LINK_SCHEMES.has(m[1].toLowerCase());
+}
+function sanitizeLinkHrefs(html) {
+    return html.replace(/<a\b([^>]*)>/gi, (tag, attrs) => {
+        const m = attrs.match(/\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+        if (!m) return tag;
+        const raw = m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]);
+        if (isSafeLinkHref(raw)) return tag;
+        return '<a' + attrs.replace(m[0], ' data-blocked-href="1"') + '>';
+    });
+}
+
 function renderMarkdown(text) {
     // Protect Windows paths from escape replacement (e.g. \tests → tab, \new → newline)
     const pathSlots = [];
@@ -445,7 +466,7 @@ function renderMarkdown(text) {
     // Restore paths
     text = text.replace(/\x00P(\d+)\x00/g, (_, i) => pathSlots[parseInt(i)]);
     // Parse markdown, then color @mentions, URLs, and file paths in the output
-    let html = marked.parse(text);
+    let html = sanitizeLinkHrefs(marked.parse(text));
     // Remove wrapping <p> tags for single-line messages to keep them inline
     const trimmed = html.trim();
     if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>') && trimmed.indexOf('<p>', 1) === -1) {
