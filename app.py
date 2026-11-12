@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re as _re
+from atomic_io import atomic_write_text
 import sys
 import threading
 import uuid
@@ -111,7 +112,7 @@ def _load_hats():
 def _save_hats():
     p = _hats_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(agent_hats), "utf-8")
+    atomic_write_text(p, json.dumps(agent_hats))
 
 
 def _sanitize_svg(svg: str) -> str:
@@ -198,7 +199,7 @@ def _load_settings():
 def _save_settings():
     p = _settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(room_settings, indent=2), "utf-8")
+    atomic_write_text(p, json.dumps(room_settings, indent=2))
 
 
 def _extract_agent_token(request: Request) -> str:

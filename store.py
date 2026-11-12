@@ -7,6 +7,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from atomic_io import atomic_write_text
+
 
 class MessageStore:
     def __init__(self, path: str):
@@ -108,11 +110,7 @@ class MessageStore:
 
     def _rewrite(self):
         """Rewrite the full JSONL file from memory (used after bulk edits)."""
-        with open(self._path, "w", encoding="utf-8") as f:
-            for m in self._messages:
-                f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        atomic_write_text(self._path, "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in self._messages))
 
     def get_by_id(self, msg_id: int) -> dict | None:
         with self._lock:
@@ -192,11 +190,7 @@ class MessageStore:
 
     def _rewrite_jsonl(self):
         """Rewrite the JSONL file from current in-memory messages."""
-        with open(self._path, "w", encoding="utf-8") as f:
-            for m in self._messages:
-                f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        atomic_write_text(self._path, "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in self._messages))
 
     def clear(self, channel: str | None = None):
         """Wipe messages and rewrite the log file.
@@ -214,7 +208,7 @@ class MessageStore:
                     self._save_todos()
             else:
                 self._messages.clear()
-                self._path.write_text("")
+                atomic_write_text(self._path, "")
                 self._todos.clear()
                 self._save_todos()
 
@@ -279,9 +273,9 @@ class MessageStore:
                 self._todos = {}
 
     def _save_todos(self):
-        self._todos_path.write_text(
+        atomic_write_text(
+            self._todos_path,
             json.dumps({str(k): v for k, v in self._todos.items()}, indent=2),
-            "utf-8"
         )
 
     def on_todo(self, callback):
