@@ -15,6 +15,7 @@ let baseColors = {};   // { name: { color, label } } — base agent colors (for 
 let todos = {};  // { msg_id: "todo" | "done" }
 let todoSummaries = {};  // { msg_id: { id, status, sender, text, time, timestamp, channel } }
 let rules = [];  // array of rule objects from server
+let _agentConfigReady = false;  // true once the server's agent list has arrived (it may legitimately be empty)
 let activeMentions = new Set();  // agent names with pre-@ toggled on (for the active channel)
 let _channelMentions = {};  // channel -> array of toggled agent names (per-channel memory of activeMentions)
 let replyingTo = null;  // { id, sender, text } or null
@@ -23,6 +24,41 @@ let lastMessageDate = null;  // track date for dividers (general channel)
 let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
 let soundEnabled = false;  // suppress sounds during initial history load
 let activeChannel = localStorage.getItem('agentchattr-channel') || 'general';
+
+// Sticky @-mention selection, remembered per channel in this browser only. Entries expire
+// after a day so a forgotten tag can't keep waking an agent.
+const MENTIONS_KEY = 'agentchattr-channel-mentions';
+const MENTIONS_TTL_MS = 24 * 60 * 60 * 1000;
+const _mentionTs = {};  // channel -> last time its selection changed (ms)
+function loadChannelMentions() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(MENTIONS_KEY) || '{}') || {};
+        const now = Date.now();
+        for (const [ch, v] of Object.entries(raw)) {
+            if (!v || !Array.isArray(v.agents) || typeof v.ts !== 'number' || now - v.ts > MENTIONS_TTL_MS) continue;
+            const agents = v.agents.filter(a => typeof a === 'string').slice(0, 50);
+            if (!agents.length) continue;
+            _channelMentions[ch] = agents;
+            _mentionTs[ch] = v.ts;
+        }
+    } catch (e) {}
+    activeMentions = new Set(_channelMentions[activeChannel] || []);
+}
+// Pass the channel whose selection just changed so its expiry restarts; omit when only migrating names.
+function persistMentions(changedChannel) {
+    if (changedChannel) {
+        _channelMentions[changedChannel] = changedChannel === activeChannel ? [...activeMentions] : (_channelMentions[changedChannel] || []);
+        _mentionTs[changedChannel] = Date.now();
+    }
+    try {
+        const out = {};
+        for (const [ch, arr] of Object.entries(_channelMentions)) {
+            if (Array.isArray(arr) && arr.length) out[ch] = { agents: arr, ts: _mentionTs[ch] || Date.now() };
+        }
+        localStorage.setItem(MENTIONS_KEY, JSON.stringify(out));
+    } catch (e) {}
+}
+loadChannelMentions();
 let channelList = ['general'];
 let channelUnread = {};  // { channelName: count }
 let agentHats = {};  // { agent_name: svg_string }
@@ -672,6 +708,7 @@ function handleServerEvent(event) {
             const idx = arr.indexOf(event.old_name);
             if (idx !== -1) arr[idx] = event.new_name;
         }
+        persistMentions();
         // Update sender name, color, and avatar on all existing messages in the DOM
         const newColor = getColor(event.new_name);
         const newAvatar = getAvatarSvg(event.new_name);
@@ -795,6 +832,11 @@ function handleServerEvent(event) {
         if (_channelMentions[event.old_name] !== undefined) {
             _channelMentions[event.new_name] = _channelMentions[event.old_name];
             delete _channelMentions[event.old_name];
+            if (_mentionTs[event.old_name] !== undefined) {
+                _mentionTs[event.new_name] = _mentionTs[event.old_name];
+                delete _mentionTs[event.old_name];
+            }
+            persistMentions();
         }
         if (pendingChannelSwitch === event.old_name) {
             pendingChannelSwitch = event.new_name;
@@ -1323,6 +1365,7 @@ function repositionScrollAnchor() {
 // --- Agents ---
 
 function applyAgentConfig(data) {
+    _agentConfigReady = true;
     agentConfig = {};
     for (const [name, cfg] of Object.entries(data)) {
         agentConfig[name.toLowerCase()] = cfg;
@@ -3023,6 +3066,7 @@ function startReply(msgId, event) {
                 btn.classList.remove('active');
             }
         }
+        persistMentions(activeChannel);
         syncMentionAllToggle();
     }
 
@@ -3382,7 +3426,9 @@ function renderTodosPanel() {
 // into a channel where you meant to tag someone else.
 window._onChannelSwitchMentions = function(oldChannel, newChannel) {
     if (oldChannel) _channelMentions[oldChannel] = [...activeMentions];
-    activeMentions = new Set(_channelMentions[newChannel] || []);
+    // Also drop agents that are no longer registered (remembered selections can outlive them).
+    const known = _agentConfigReady ? (n => n in agentConfig) : (() => true);
+    activeMentions = new Set((_channelMentions[newChannel] || []).filter(known));
     // Reflect the swapped state on the toggle buttons
     for (const btn of document.querySelectorAll('.mention-toggle')) {
         btn.classList.toggle('active', activeMentions.has(btn.dataset.agent));
@@ -3412,9 +3458,23 @@ function buildMentionToggles() {
     const container = document.getElementById('mention-toggles');
     container.innerHTML = '';
 
-    // Prune stale mentions for agents no longer in config
-    for (const name of activeMentions) {
-        if (!(name in agentConfig)) activeMentions.delete(name);
+    // Prune stale mentions for agents no longer in config. Skip until the agent list has
+    // arrived, otherwise an empty config would wipe every remembered selection.
+    if (_agentConfigReady) {
+        for (const name of activeMentions) {
+            if (!(name in agentConfig)) activeMentions.delete(name);
+        }
+    }
+    if (_agentConfigReady) {
+        let pruned = false;
+        for (const ch of Object.keys(_channelMentions)) {
+            const kept = (_channelMentions[ch] || []).filter(name => name in agentConfig);
+            if (kept.length !== (_channelMentions[ch] || []).length) {
+                _channelMentions[ch] = kept;
+                pruned = true;
+            }
+        }
+        if (pruned) persistMentions();
     }
 
     // @all: selects every available agent, or deselects them all if they are
@@ -3438,6 +3498,7 @@ function buildMentionToggles() {
             for (const btn of container.querySelectorAll('.mention-toggle')) {
                 btn.classList.toggle('active', activeMentions.has(btn.dataset.agent));
             }
+            persistMentions(activeChannel);
             syncMentionAllToggle();
             updateSchedulePopoverState();
         };
@@ -3464,6 +3525,7 @@ function buildMentionToggles() {
                 activeMentions.add(name);
                 btn.classList.add('active');
             }
+            persistMentions(activeChannel);
             syncMentionAllToggle();
             updateSchedulePopoverState();
         };
