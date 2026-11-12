@@ -126,6 +126,19 @@ class MessageStore:
                 msgs = [m for m in msgs if m.get("channel", "general") == channel]
             return list(msgs[-count:])
 
+    def get_before(self, before_id: int, count: int = 50, channel: str | None = None) -> tuple[list[dict], bool]:
+        """Up to `count` messages older than `before_id` (oldest first) and whether more exist."""
+        with self._lock:
+            older = [m for m in self._messages if m["id"] < before_id]
+            if channel:
+                older = [m for m in older if m.get("channel", "general") == channel]
+            count = max(1, count)
+            return list(older[-count:]), len(older) > count
+
+    def count_channel(self, channel: str) -> int:
+        with self._lock:
+            return sum(1 for m in self._messages if m.get("channel", "general") == channel)
+
     def get_since(self, since_id: int = 0, channel: str | None = None) -> list[dict]:
         with self._lock:
             msgs = [m for m in self._messages if m["id"] > since_id]

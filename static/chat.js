@@ -605,6 +605,90 @@ let pendingHistory = [];
 let pendingLiveEvents = [];
 let historyScheduled = false;
 let historyGeneration = 0;
+let earlierHistory = {};  // channel -> whether the server has more saved messages
+const earlierRequests = new Map();
+
+function updateEarlierHistoryControl() {
+    const button = document.getElementById('load-earlier-btn');
+    if (!button) return;
+    const loading = earlierRequests.has(activeChannel);
+    button.classList.toggle('hidden', historyLoading || !earlierHistory[activeChannel]);
+    button.disabled = loading || !ws || ws.readyState !== 1;
+    button.textContent = loading ? 'Loading...' : 'Load earlier messages';
+    button.setAttribute('aria-busy', String(loading));
+}
+
+function resetEarlierHistory(channel) {
+    if (channel) {
+        clearTimeout(earlierRequests.get(channel)?.timer);
+        earlierRequests.delete(channel);
+        delete earlierHistory[channel];
+    } else {
+        for (const request of earlierRequests.values()) clearTimeout(request.timer);
+        earlierRequests.clear();
+        earlierHistory = {};
+    }
+    updateEarlierHistoryControl();
+}
+
+function loadEarlierMessages() {
+    const channel = activeChannel;
+    if (historyLoading || !earlierHistory[channel] || earlierRequests.has(channel) || !ws || ws.readyState !== 1) return;
+    let before = Infinity;
+    for (const el of document.querySelectorAll('#messages .message[data-id]')) {
+        if ((el.dataset.channel || 'general') === channel) before = Math.min(before, Number(el.dataset.id));
+    }
+    if (!Number.isFinite(before)) return;
+    const request = { generation: historyGeneration, before };
+    request.timer = setTimeout(() => {
+        if (earlierRequests.get(channel) !== request) return;
+        earlierRequests.delete(channel);
+        updateEarlierHistoryControl();
+        if (activeChannel === channel) showToast('Could not load earlier messages. Try again.', 'error');
+    }, 15000);
+    earlierRequests.set(channel, request);
+    updateEarlierHistoryControl();
+    ws.send(JSON.stringify({ type: 'load_earlier', channel, before_id: before, limit: 50 }));
+}
+
+function prependEarlierHistory(event) {
+    const channel = event.channel;
+    const request = earlierRequests.get(channel);
+    if (!request || request.generation !== historyGeneration) return;
+    clearTimeout(request.timer);
+    earlierRequests.delete(channel);
+    const timeline = document.getElementById('timeline');
+    const container = document.getElementById('messages');
+    const top = timeline.scrollTop;
+    const height = timeline.scrollHeight;
+    const fragment = document.createDocumentFragment();
+    const existingDivider = [...container.children].find(el => el.classList.contains('date-divider') && (el.dataset.channel || 'general') === channel);
+    const tailDates = lastMessageDates;
+    lastMessageDates = {};
+    const seen = new Set();
+    try {
+        for (const msg of event.messages || []) {
+            if ((msg.channel || 'general') !== channel || !Number.isInteger(msg.id) || msg.id >= request.before || seen.has(msg.id)) continue;
+            seen.add(msg.id);
+            appendMessage(msg, { history: true, container: fragment });
+        }
+        if (fragment.childElementCount && existingDivider?.dataset.date === lastMessageDates[channel]) existingDivider.remove();
+    } finally {
+        lastMessageDates = tailDates;
+    }
+    const breadcrumbs = [...fragment.querySelectorAll('.job-breadcrumb')];
+    container.prepend(fragment);
+    for (const el of breadcrumbs) window._collapseJobBreadcrumbs?.(container, el);
+    earlierHistory[channel] = !!event.has_more;
+    updateEarlierHistoryControl();
+    if (activeChannel === channel) {
+        autoScroll = false;
+        timeline.scrollTo({ top: top + timeline.scrollHeight - height, behavior: 'instant' });
+        updateScrollAnchor();
+        dayFloatRefresh();
+    }
+}
+
 // A task queue yields between batches and also runs in background tabs,
 // where animation frames can be suspended.
 const historyTasks = new MessageChannel();
@@ -648,6 +732,7 @@ function renderHistoryBatch() {
         historyLoading = false;
         soundEnabled = true;
         setHistoryIndicator(false);
+        updateEarlierHistoryControl();
         const events = pendingLiveEvents;
         pendingLiveEvents = [];
         for (const event of events) handleServerEvent(event);
@@ -668,8 +753,13 @@ function handleServerEvent(event) {
         return;
     }
     if (event.type === 'history_complete') {
+        earlierHistory = event.has_more || {};
         historyReceived = true;
         scheduleHistoryRender();
+        return;
+    }
+    if (event.type === 'history_earlier') {
+        prependEarlierHistory(event);
         return;
     }
     // Emit through Hub for modules to subscribe (PR 1 seam)
@@ -819,6 +909,9 @@ function handleServerEvent(event) {
         });
         _showNextPendingName();
     } else if (event.type === 'channel_renamed') {
+        const hadEarlier = earlierHistory[event.old_name];
+        resetEarlierHistory(event.old_name);
+        earlierHistory[event.new_name] = hadEarlier;
         // Migrate per-channel client state to the new name
         const channelIndex = channelList.indexOf(event.old_name);
         if (channelIndex !== -1) {
@@ -861,6 +954,7 @@ function handleServerEvent(event) {
         }
         filterMessagesByChannel();
         renderChannelTabs();
+        updateEarlierHistoryControl();
     } else if (event.type === 'edit') {
         // A message was edited/demoted — re-render it in place
         const updatedMsg = event.message;
@@ -888,6 +982,7 @@ function handleServerEvent(event) {
         const _clearDbgBefore = _clearDbgList ? _clearDbgList.children.length : -1;
         console.log('CLEAR_DEBUG clear event received, channel=' + (event.channel || 'ALL'), 'jobs-panel-children-before=' + _clearDbgBefore);
         const clearChannel = event.channel || null;
+        resetEarlierHistory(clearChannel);
         if (clearChannel) {
             // Per-channel clear: remove only messages from that channel
             const container = document.getElementById('messages');
@@ -926,6 +1021,7 @@ function connectWebSocket() {
     historyReceived = false;
     pendingHistory = [];
     pendingLiveEvents = [];
+    resetEarlierHistory();
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
 
@@ -948,6 +1044,7 @@ function connectWebSocket() {
             return;
         }
         console.log('Disconnected, reconnecting in 2s...');
+        resetEarlierHistory();
         soundEnabled = false;  // suppress sounds during reconnect history replay
         historyGeneration++;
         historyScheduled = false;
@@ -1001,6 +1098,7 @@ function maybeInsertDateDivider(container, msg) {
         const divider = document.createElement('div');
         divider.className = 'date-divider';
         divider.dataset.channel = channel;
+        divider.dataset.date = msgDate;
         divider.innerHTML = `<span>${formatDateDivider(msgDate)}</span>`;
         if (channel !== activeChannel) {
             divider.style.display = 'none';
@@ -1083,7 +1181,7 @@ function appendMessage(msg, options = {}) {
     maybeInsertDateDivider(container, msg);
 
     const el = document.createElement('div');
-    el.className = 'message';
+    el.className = options.history ? 'message history-message' : 'message';
     el.id = `message-${msg.id}`;
     el.dataset.id = msg.id;
     const msgChannel = msg.channel || 'general';
