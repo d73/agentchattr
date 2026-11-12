@@ -685,6 +685,7 @@ function updateLoadEarlierButton() {
     btn.textContent = _loadingEarlier ? 'Loading...' : 'Load earlier messages';
 }
 window.updateLoadEarlierButton = updateLoadEarlierButton;
+window.resetLoadingEarlierState = function() { _loadingEarlier = false; };
 
 function requestEarlierMessages() {
     if (_loadingEarlier || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -764,6 +765,7 @@ function handleServerEvent(event) {
     }
     if (event.type === 'history_complete') {
         historyReceived = true;
+        _loadingEarlier = false;
         if (event.has_more && typeof event.has_more === 'object') {
             channelHasMore = Object.assign({}, event.has_more);
         }
