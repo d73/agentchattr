@@ -339,6 +339,44 @@ class MessageStore:
         """Returns {msg_id: status} for all todos."""
         return dict(self._todos)
 
+    TODO_SUMMARY_TEXT_MAX = 500
+
+    @classmethod
+    def _todo_summary(cls, msg: dict, status: str) -> dict:
+        """Just enough of a pinned message to render it without the message in the DOM."""
+        text = msg.get("text") or ""
+        if len(text) > cls.TODO_SUMMARY_TEXT_MAX:
+            text = text[:cls.TODO_SUMMARY_TEXT_MAX].rstrip() + "..."
+        return {
+            "id": msg["id"],
+            "status": status,
+            "sender": msg.get("sender", ""),
+            "text": text,
+            "time": msg.get("time", ""),
+            "timestamp": msg.get("timestamp", 0),
+            "channel": msg.get("channel", "general"),
+        }
+
+    def get_todo_summary(self, msg_id: int) -> dict | None:
+        """Summary of one pinned message, or None if it isn't pinned or no longer exists."""
+        with self._lock:
+            status = self._todos.get(msg_id)
+            if status is None:
+                return None
+            for m in self._messages:
+                if m["id"] == msg_id:
+                    return self._todo_summary(m, status)
+        return None
+
+    def get_todo_summaries(self) -> dict[int, dict]:
+        """{msg_id: summary} for every pinned message that still exists (one pass)."""
+        with self._lock:
+            todos = dict(self._todos)
+            return {
+                m["id"]: self._todo_summary(m, todos[m["id"]])
+                for m in self._messages if m["id"] in todos
+            }
+
     def get_todo_messages(self, status: str | None = None) -> list[dict]:
         """Get todo messages, optionally filtered by status."""
         with self._lock:
