@@ -1,6 +1,7 @@
 """Per-channel summary store — agents write, everyone reads."""
 
 import json
+from atomic_io import atomic_write_text
 import time
 import threading
 import uuid
@@ -28,7 +29,7 @@ class SummaryStore:
             self._summaries = {}
 
     def _save(self):
-        self._path.write_text(
+        atomic_write_text(self._path, 
             json.dumps(self._summaries, indent=2, ensure_ascii=False) + "\n",
             "utf-8",
         )
