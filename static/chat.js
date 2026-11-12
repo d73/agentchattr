@@ -15,6 +15,7 @@ let baseColors = {};   // { name: { color, label } } — base agent colors (for 
 let todos = {};  // { msg_id: "todo" | "done" }
 let todoSummaries = {};  // { msg_id: { id, status, sender, text, time, timestamp, channel } }
 let rules = [];  // array of rule objects from server
+let _agentConfigReady = false;  // true once the server's agent list has arrived (it may legitimately be empty)
 let activeMentions = new Set();  // agent names with pre-@ toggled on (for the active channel)
 let _channelMentions = {};  // channel -> array of toggled agent names (per-channel memory of activeMentions)
 let replyingTo = null;  // { id, sender, text } or null
@@ -1364,6 +1365,7 @@ function repositionScrollAnchor() {
 // --- Agents ---
 
 function applyAgentConfig(data) {
+    _agentConfigReady = true;
     agentConfig = {};
     for (const [name, cfg] of Object.entries(data)) {
         agentConfig[name.toLowerCase()] = cfg;
@@ -3425,7 +3427,7 @@ function renderTodosPanel() {
 window._onChannelSwitchMentions = function(oldChannel, newChannel) {
     if (oldChannel) _channelMentions[oldChannel] = [...activeMentions];
     // Also drop agents that are no longer registered (remembered selections can outlive them).
-    const known = Object.keys(agentConfig).length ? (n => n in agentConfig) : (() => true);
+    const known = _agentConfigReady ? (n => n in agentConfig) : (() => true);
     activeMentions = new Set((_channelMentions[newChannel] || []).filter(known));
     // Reflect the swapped state on the toggle buttons
     for (const btn of document.querySelectorAll('.mention-toggle')) {
@@ -3458,10 +3460,12 @@ function buildMentionToggles() {
 
     // Prune stale mentions for agents no longer in config. Skip until the agent list has
     // arrived, otherwise an empty config would wipe every remembered selection.
-    for (const name of activeMentions) {
-        if (!(name in agentConfig)) activeMentions.delete(name);
+    if (_agentConfigReady) {
+        for (const name of activeMentions) {
+            if (!(name in agentConfig)) activeMentions.delete(name);
+        }
     }
-    if (Object.keys(agentConfig).length) {
+    if (_agentConfigReady) {
         let pruned = false;
         for (const ch of Object.keys(_channelMentions)) {
             const kept = (_channelMentions[ch] || []).filter(name => name in agentConfig);
