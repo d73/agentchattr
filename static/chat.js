@@ -144,7 +144,7 @@ function applyUiPrefs(p) {
     applyUserColor();
     applyAttentionStyle();
     const as = document.getElementById('setting-attention-sound');
-    if (as) as.value = attentionSoundOn() ? 'on' : 'off';
+    if (as) as.value = attentionSoundChoice();
     if (typeof setChannelSidebarMode === 'function') {
         let m = 'top';
         try { m = localStorage.getItem(UI_PREF_STORAGE.sidebar_mode) || 'top'; } catch (e) {}
@@ -199,18 +199,45 @@ function setupAttentionStyleSetting() {
         saveUiPrefs();
     });
     applyAttentionStyle();
-    // Audio half of "needs attention": on by default, synced via ui_prefs.
+    // Audio half of "needs attention": same sound list as the per-agent pickers, synced via ui_prefs.
+    // "Use agent's sound" (the default) plays the agent's own sound; None is silent.
     const sound = document.getElementById('setting-attention-sound');
     if (sound) {
-        sound.value = attentionSoundOn() ? 'on' : 'off';
+        sound.innerHTML = '';
+        const own = document.createElement('option');
+        own.value = '';
+        own.textContent = "Use agent's sound";
+        sound.appendChild(own);
+        for (const opt of SOUND_OPTIONS) {
+            const o = document.createElement('option');
+            o.value = opt.value;
+            o.textContent = opt.label;
+            sound.appendChild(o);
+        }
+        sound.value = attentionSoundChoice();
         sound.addEventListener('change', () => {
-            try { localStorage.setItem('agentchattr-attention-sound', sound.value); } catch (e) {}
+            try {
+                if (sound.value) localStorage.setItem('agentchattr-attention-sound', sound.value);
+                else localStorage.removeItem('agentchattr-attention-sound');
+            } catch (e) {}
             saveUiPrefs();
+            if (sound.value && sound.value !== 'none') playSoundFile(sound.value);  // preview
         });
     }
 }
-function attentionSoundOn() {
-    try { return localStorage.getItem('agentchattr-attention-sound') !== 'off'; } catch (e) { return true; }
+// '' = the agent's own sound, 'none' = silent, otherwise a sound file name. Legacy on/off are mapped.
+function attentionSoundChoice() {
+    let v = '';
+    try { v = localStorage.getItem('agentchattr-attention-sound') || ''; } catch (e) {}
+    if (v === 'on') return '';
+    if (v === 'off') return 'none';
+    return /^[a-z0-9-]{1,40}$/.test(v) ? v : '';
+}
+function playAttentionSound(agentName) {
+    const choice = attentionSoundChoice();
+    if (choice === 'none') return;
+    if (choice) playSoundFile(choice);
+    else playNotificationSound(agentName);
 }
 
 // Audio is only for messages that @mention you directly (never your own messages, never @all).
@@ -225,6 +252,9 @@ function playNotificationSound(sender) {
     const key = sender.toLowerCase();
     const soundName = soundPrefs[key] || soundPrefs['default'] || DEFAULT_SOUND;
     if (soundName === 'none') return;
+    playSoundFile(soundName);
+}
+function playSoundFile(soundName) {
     if (!soundCache[soundName]) {
         soundCache[soundName] = new Audio(`/static/sounds/${soundName}.mp3`);
     }
@@ -2021,7 +2051,7 @@ function updateStatus(data) {
         const needsInput = !!(info.needs_input && info.available);
         pill.classList.toggle('needs-input', needsInput);
         // Sound once when a pill starts needing you (not on every status refresh, not during history replay).
-        if (needsInput && !wasNeedsInput && soundEnabled && attentionSoundOn()) playNotificationSound(name);
+        if (needsInput && !wasNeedsInput && soundEnabled) playAttentionSound(name);
         // Pending pills keep their pending animation (set in buildStatusPills)
         if (!pill.classList.contains('pending')) {
             if (info.busy && info.available) {
