@@ -3019,7 +3019,12 @@ function cancelReply() {
 
 function scrollToMessage(msgId) {
     const el = document.querySelector(`.message[data-id="${msgId}"]`);
-    if (!el) return;
+    if (!el) {
+        if (typeof showToast === 'function') {
+            showToast('Message is outside loaded history', 'info');
+        }
+        return;
+    }
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.classList.add('highlight');
     setTimeout(() => el.classList.remove('highlight'), 1500);
