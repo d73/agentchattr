@@ -8,6 +8,8 @@ import sys
 import threading
 import uuid
 import logging
+import time
+import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
@@ -99,13 +101,41 @@ def _hats_path() -> Path:
     return Path(data_dir) / "hats.json"
 
 
+def _clean_agent_colors(raw) -> dict:
+    """Validate a {name: "#rrggbb"} map (live updates and file loads share this)."""
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k)[:64]: v for k, v in raw.items()
+        if isinstance(v, str) and _HEX_COLOR_RE.fullmatch(v)
+    }
+
+
+def _quarantine_corrupt(p: Path, reason) -> None:
+    """Keep an unreadable state file for recovery instead of silently dropping it.
+
+    The next save would otherwise overwrite it with defaults and lose the
+    original contents for good.
+    """
+    try:
+        dest = p.with_name(f"{p.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+        shutil.copy2(p, dest)
+        log.warning("Could not read %s (%s); kept a copy at %s and using defaults", p, reason, dest)
+    except Exception as exc:  # never let backup trouble block startup
+        log.warning("Could not read %s (%s); backup failed too: %s", p, reason, exc)
+
+
 def _load_hats():
     global agent_hats
     p = _hats_path()
     if p.exists():
         try:
-            agent_hats = json.loads(p.read_text("utf-8"))
-        except Exception:
+            loaded = json.loads(p.read_text("utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("expected a JSON object")
+            agent_hats = loaded
+        except Exception as exc:
+            _quarantine_corrupt(p, exc)
             agent_hats = {}
 
 
@@ -183,9 +213,23 @@ def _load_settings():
     if p.exists():
         try:
             saved = json.loads(p.read_text("utf-8"))
+            if not isinstance(saved, dict):
+                raise ValueError("expected a JSON object")
             room_settings.update(saved)
-        except Exception:
-            pass
+        except Exception as exc:
+            _quarantine_corrupt(p, exc)
+    # The file is hand-editable, so run synced options through the same
+    # validators as live updates; drop them (back to "uninitialized") if invalid.
+    if "ui_prefs" in room_settings:
+        if isinstance(room_settings["ui_prefs"], dict):
+            room_settings["ui_prefs"] = _clean_ui_prefs(room_settings["ui_prefs"])
+        else:
+            del room_settings["ui_prefs"]
+    if "agent_colors" in room_settings:
+        if isinstance(room_settings["agent_colors"], dict):
+            room_settings["agent_colors"] = _clean_agent_colors(room_settings["agent_colors"])
+        else:
+            del room_settings["agent_colors"]
     # settings.json is hand-editable, so the file bypasses every check the
     # live update path applies. Re-normalise on load rather than trust it.
     room_settings["subtitle"] = normalize_room_subtitle(room_settings.get("subtitle")) or ""
@@ -1378,10 +1422,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if isinstance(new.get("ui_prefs"), dict):
                     room_settings["ui_prefs"] = _clean_ui_prefs(new["ui_prefs"])
                 if isinstance(new.get("agent_colors"), dict):
-                    room_settings["agent_colors"] = {
-                        str(k)[:64]: v for k, v in new["agent_colors"].items()
-                        if isinstance(v, str) and _HEX_COLOR_RE.fullmatch(v)
-                    }
+                    room_settings["agent_colors"] = _clean_agent_colors(new["agent_colors"])
                 if "rules_refresh_interval" in new:
                     try:
                         ri = int(new["rules_refresh_interval"])
