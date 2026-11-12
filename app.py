@@ -77,8 +77,9 @@ def _clean_ui_prefs(raw: dict) -> dict:
         out["user_color"] = raw["user_color"]
     if raw.get("attention_style") in ("highlight", "flash"):
         out["attention_style"] = raw["attention_style"]
-    if raw.get("attention_sound") in ("on", "off"):
-        out["attention_sound"] = raw["attention_sound"]
+    att = raw.get("attention_sound")
+    if isinstance(att, str) and _re.fullmatch(r"[a-z0-9-]{1,40}", att):  # sound name, "none", or legacy on/off
+        out["attention_sound"] = att
     if raw.get("sidebar_mode") in ("top", "sidebar"):
         out["sidebar_mode"] = raw["sidebar_mode"]
     return out
