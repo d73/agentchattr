@@ -49,7 +49,8 @@ test('dangerous schemes lose their href, including obfuscated forms', () => {
         'vbscript:msgbox(1)',
     ]) {
         assert.equal(blocked(ctx, `<a href="${href}">x</a>`), true, href);
-        assert.equal(ctx.sanitizeLinkHrefs(`<a href="${href}">x</a>`).includes('href="'), false, href);
+        // No real href attribute may remain (data-blocked-href is the harmless marker).
+        assert.equal(/\shref\s*=/i.test(ctx.sanitizeLinkHrefs(`<a href="${href}">x</a>`)), false, href);
     }
 });
 
