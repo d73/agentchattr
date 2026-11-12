@@ -23,6 +23,41 @@ let lastMessageDate = null;  // track date for dividers (general channel)
 let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
 let soundEnabled = false;  // suppress sounds during initial history load
 let activeChannel = localStorage.getItem('agentchattr-channel') || 'general';
+
+// Sticky @-mention selection, remembered per channel in this browser only. Entries expire
+// after a day so a forgotten tag can't keep waking an agent.
+const MENTIONS_KEY = 'agentchattr-channel-mentions';
+const MENTIONS_TTL_MS = 24 * 60 * 60 * 1000;
+const _mentionTs = {};  // channel -> last time its selection changed (ms)
+function loadChannelMentions() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(MENTIONS_KEY) || '{}') || {};
+        const now = Date.now();
+        for (const [ch, v] of Object.entries(raw)) {
+            if (!v || !Array.isArray(v.agents) || typeof v.ts !== 'number' || now - v.ts > MENTIONS_TTL_MS) continue;
+            const agents = v.agents.filter(a => typeof a === 'string').slice(0, 50);
+            if (!agents.length) continue;
+            _channelMentions[ch] = agents;
+            _mentionTs[ch] = v.ts;
+        }
+    } catch (e) {}
+    activeMentions = new Set(_channelMentions[activeChannel] || []);
+}
+// Pass the channel whose selection just changed so its expiry restarts; omit when only migrating names.
+function persistMentions(changedChannel) {
+    if (changedChannel) {
+        _channelMentions[changedChannel] = changedChannel === activeChannel ? [...activeMentions] : (_channelMentions[changedChannel] || []);
+        _mentionTs[changedChannel] = Date.now();
+    }
+    try {
+        const out = {};
+        for (const [ch, arr] of Object.entries(_channelMentions)) {
+            if (Array.isArray(arr) && arr.length) out[ch] = { agents: arr, ts: _mentionTs[ch] || Date.now() };
+        }
+        localStorage.setItem(MENTIONS_KEY, JSON.stringify(out));
+    } catch (e) {}
+}
+loadChannelMentions();
 let channelList = ['general'];
 let channelUnread = {};  // { channelName: count }
 let agentHats = {};  // { agent_name: svg_string }
@@ -672,6 +707,7 @@ function handleServerEvent(event) {
             const idx = arr.indexOf(event.old_name);
             if (idx !== -1) arr[idx] = event.new_name;
         }
+        persistMentions();
         // Update sender name, color, and avatar on all existing messages in the DOM
         const newColor = getColor(event.new_name);
         const newAvatar = getAvatarSvg(event.new_name);
@@ -795,6 +831,11 @@ function handleServerEvent(event) {
         if (_channelMentions[event.old_name] !== undefined) {
             _channelMentions[event.new_name] = _channelMentions[event.old_name];
             delete _channelMentions[event.old_name];
+            if (_mentionTs[event.old_name] !== undefined) {
+                _mentionTs[event.new_name] = _mentionTs[event.old_name];
+                delete _mentionTs[event.old_name];
+            }
+            persistMentions();
         }
         if (pendingChannelSwitch === event.old_name) {
             pendingChannelSwitch = event.new_name;
@@ -3023,6 +3064,7 @@ function startReply(msgId, event) {
                 btn.classList.remove('active');
             }
         }
+        persistMentions(activeChannel);
         syncMentionAllToggle();
     }
 
@@ -3438,6 +3480,7 @@ function buildMentionToggles() {
             for (const btn of container.querySelectorAll('.mention-toggle')) {
                 btn.classList.toggle('active', activeMentions.has(btn.dataset.agent));
             }
+            persistMentions(activeChannel);
             syncMentionAllToggle();
             updateSchedulePopoverState();
         };
@@ -3464,6 +3507,7 @@ function buildMentionToggles() {
                 activeMentions.add(name);
                 btn.classList.add('active');
             }
+            persistMentions(activeChannel);
             syncMentionAllToggle();
             updateSchedulePopoverState();
         };
