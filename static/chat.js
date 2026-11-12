@@ -31,10 +31,14 @@ let colorOverrides = {};
 try { colorOverrides = JSON.parse(localStorage.getItem('agentchattr-color-overrides') || '{}') || {}; } catch (e) {}
 
 // Persist overrides locally (cache) and on the server (survives origin/browser changes).
+let _colorsDirty = false;  // a color change that could not be sent (offline); retried after reconnect
 function saveColorOverrides() {
     try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
     if (typeof ws !== 'undefined' && ws && ws.readyState === 1) {
         ws.send(JSON.stringify({ type: 'update_settings', data: { agent_colors: colorOverrides } }));
+        _colorsDirty = false;
+    } else {
+        _colorsDirty = true;
     }
 }
 let schedulesList = [];  // array of schedule objects from server
@@ -146,6 +150,8 @@ function applyUiPrefs(p) {
     applyAttentionStyle();
     const as = document.getElementById('setting-attention-sound');
     if (as) as.value = attentionSoundChoice();
+    // Edits made while disconnected stay local (see the dirty-key check above); send them now.
+    if (_dirtyUiPrefs.size) saveUiPrefs();
     if (typeof setChannelSidebarMode === 'function') {
         let m = 'top';
         try { m = localStorage.getItem(UI_PREF_STORAGE.sidebar_mode) || 'top'; } catch (e) {}
@@ -2133,12 +2139,14 @@ function applySettings(data) {
         const subEl = document.getElementById('room-subtitle');
         if (subEl) subEl.textContent = data.subtitle;
         const subInput = document.getElementById('setting-subtitle');
-        if (subInput) subInput.value = data.subtitle;
+        // Never overwrite a field the user is typing in.
+        if (subInput && document.activeElement !== subInput) subInput.value = data.subtitle;
     }
     if (data.username) {
         username = data.username;
         document.getElementById('sender-label').textContent = username;
-        document.getElementById('setting-username').value = username;
+        const nameInput = document.getElementById('setting-username');
+        if (document.activeElement !== nameInput) nameInput.value = username;
     }
     if (data.font) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
@@ -2154,17 +2162,23 @@ function applySettings(data) {
         saveUiPrefs();
     }
     if (data.agent_colors && typeof data.agent_colors === 'object') {
-        // Server-owned and authoritative (an empty map is an explicit Reset).
-        colorOverrides = Object.assign({}, data.agent_colors);
-        try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
-        refreshAgentColors();
+        if (_colorsDirty) {
+            // A local change made while disconnected wins over the server copy; resend it now.
+            saveColorOverrides();
+        } else {
+            // Server-owned and authoritative (an empty map is an explicit Reset).
+            colorOverrides = Object.assign({}, data.agent_colors);
+            try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
+            refreshAgentColors();
+        }
     } else if (!_seededColors) {
         // Server never initialized: seed once per page load from this browser's legacy overrides.
         _seededColors = true;
         saveColorOverrides();
     }
     if (data.max_agent_hops !== undefined) {
-        document.getElementById('setting-hops').value = data.max_agent_hops;
+        const hopsInput = document.getElementById('setting-hops');
+        if (document.activeElement !== hopsInput) hopsInput.value = data.max_agent_hops;
     }
     if (data.history_limit !== undefined) {
         document.getElementById('setting-history').value = String(data.history_limit);
