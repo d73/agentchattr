@@ -1062,7 +1062,12 @@ async def broadcast_clear(channel: str | None = None):
 
 
 async def broadcast_todo_update(msg_id: int, status: str | None):
-    data = json.dumps({"type": "todo_update", "data": {"id": msg_id, "status": status}})
+    payload = {"type": "todo_update", "data": {"id": msg_id, "status": status}}
+    if status is not None:
+        summary = store.get_todo_summary(msg_id)
+        if summary:
+            payload["message"] = summary
+    data = json.dumps(payload)
     dead = set()
     for client in list(ws_clients):
         try:
@@ -1196,7 +1201,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.send_text(json.dumps({"type": "base_colors", "data": base_colors}))
 
     # Send todos {msg_id: status}
-    await websocket.send_text(json.dumps({"type": "todos", "data": store.get_todos()}))
+    # "data" keeps the {id: status} shape older clients expect; "messages" carries the
+    # pinned messages' text/sender/time/channel so the panel doesn't depend on the DOM
+    # (messages outside the loaded history window aren't rendered there).
+    await websocket.send_text(json.dumps({
+        "type": "todos", "data": store.get_todos(), "messages": store.get_todo_summaries(),
+    }))
 
     # Send rules
     await websocket.send_text(json.dumps({"type": "rules", "data": rules.list_all()}))
