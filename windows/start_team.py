@@ -244,7 +244,7 @@ def start_team(url, env, commands):
         # cmd /k keeps errors visible; each interactive CLI needs its own console.
         wrapper_args = [sys.executable, str(ROOT / "wrapper.py"), name]
         if name == "codex":
-            wrapper_args += ["--", "--no-daemon"]  # run Codex without the shared background server
+            wrapper_args += ["--", "--no-daemon", "--approve-for-me"]  # no shared background server; auto-review approvals
         command = subprocess.list2cmdline(wrapper_args)
         shell = subprocess.list2cmdline([env.get("COMSPEC", "cmd.exe")])
         inner = f'{shell} /d /s /k "{command}"'
