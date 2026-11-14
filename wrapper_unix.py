@@ -177,13 +177,15 @@ def get_activity_checker(session_name, trigger_flag=None, *, provider=""):
             screen_text = output.decode("utf-8", "ignore")
             _needs_input[0] = screen_state.needs_user_input(screen_text)
             done_marker = screen_state.agent_idle_by_marker(screen_text)
+            busy_marker = screen_state.has_busy_marker(screen_text)
             if provider == "codex":
                 output = _without_codex_input_animation(output)
             h = hash(output)
             changed = last_hash[0] is not None and h != last_hash[0]
             last_hash[0] = h
             # A visible "Worked for 2m 14s"-style summary (no live busy status) means finished.
-            return changed and not done_marker
+            # A live busy status (e.g. "1 background terminal running") counts as working even when quiet.
+            return (changed or busy_marker) and not done_marker
         except Exception:
             _needs_input[0] = False
             return False

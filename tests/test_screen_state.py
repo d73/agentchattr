@@ -20,6 +20,27 @@ class BusyTests(unittest.TestCase):
         self.assertFalse(has_busy_marker(rows))
 
 
+class BackgroundTerminalTests(unittest.TestCase):
+    def test_background_terminal_footer_is_busy(self):
+        for line in ("1 background terminal running · /ps to view · /stop to close",
+                     "  2 background terminals running", "• 1 background terminal running",
+                     "│ 3 background terminals running | /ps to view │"):
+            self.assertTrue(has_busy_marker(["output", line, "› Ask Codex"]), line)
+
+    def test_background_terminal_beats_done_line(self):
+        rows = ["─ Worked for 2m 14s ─────────", "1 background terminal running · /ps to view", "› Ask Codex"]
+        self.assertTrue(has_done_marker(rows))
+        self.assertFalse(agent_idle_by_marker(rows))
+
+    def test_quoted_or_stale_background_terminal_text_is_not_busy(self):
+        for line in ("I saw 1 background terminal running in the docs", "The footer says 1 background terminal running",
+                     "background terminal running", "`1 background terminal running`",
+                     "1 background terminal running is what Codex shows"):
+            self.assertFalse(has_busy_marker([line, "› Ask Codex"]), line)
+        stale = ["1 background terminal running"] + [f"line {i}" for i in range(30)]
+        self.assertFalse(has_busy_marker(stale))
+
+
 class QuotedExampleTests(unittest.TestCase):
     def test_quoted_status_example_is_not_busy(self):
         self.assertFalse(has_busy_marker(["Example: (12s - esc to interrupt)", "> Ready"]))

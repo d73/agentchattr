@@ -23,6 +23,13 @@ _BUSY_LINE = re.compile(
     re.I,
 )
 
+# Codex footer while a background terminal is still running, e.g.
+#   "1 background terminal running · /ps to view · /stop to close"
+# The agent is working even if the screen is otherwise quiet. Whole line only (menu decoration and
+# a count before it, an optional "·"/"|"-separated hint after), so quoted prose never matches.
+_BG_TERMINAL_LINE = re.compile(
+    r"^[\s│|•●◦·*-]*\d+\s+background\s+terminals?\s+running(?:\s*[·•|,-].*)?[\s│|]*$", re.I)
+
 # Option rows of a live permission menu.
 _OPTION_ROW = re.compile(r"^[\s│|]*[❯>›]?\s*(?:\d+\.\s+\S|yes, proceed|\(y\))", re.I)
 _QUESTION_LINE = re.compile(
@@ -67,7 +74,8 @@ def _tail(rows, n):
 
 
 def has_busy_marker(rows) -> bool:
-    return any(_BUSY_LINE.match(r.strip()) for r in _tail(rows, BUSY_ROWS))
+    return any(_BUSY_LINE.match(r.strip()) or _BG_TERMINAL_LINE.match(r.strip())
+               for r in _tail(rows, BUSY_ROWS))
 
 
 # "Turn finished" summary lines, shown when the agent stops working:
