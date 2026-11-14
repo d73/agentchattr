@@ -100,7 +100,9 @@ class NeedsInputTests(unittest.TestCase):
     def test_allow_for_session_variants_need_input(self):
         for line in (" 2. Allow for this session", "  2. Yes, allow for this session",
                      "2. Yes, allow Claude to edit its own settings for this session (shift+tab)",
-                     "1. Allow  2. Allow for this session", "│ 1. Allow once  2. Allow for this session │"):
+                     "1. Allow  2. Allow for this session", "│ 1. Allow once  2. Allow for this session │",
+                     "1. Allow  2. Allow for this session  3. Deny",
+                     "│ 1. Allow once  2. Allow for this session  3. No (esc) │"):
             self.assertTrue(needs_user_input(["some output", line, "> "]), line)
 
     def test_quoted_allow_for_session_is_not_input(self):

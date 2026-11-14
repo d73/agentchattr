@@ -50,6 +50,7 @@ _ALLOW_SESSION_LINE = re.compile(
     r"^[\s│|╭╰─❯>›•●]*(?:"
     r"[12]\.\s+(?:yes,?\s+)?allow\b[^\n]{0,60}?\bfor\s+this\s+session(?:\s*\([^)\n]{1,20}\))?"
     r"|1\.\s+allow\b(?:\s+once)?\s+2\.\s+(?:yes,?\s+)?allow\b[^\n]{0,60}?\bfor\s+this\s+session"
+    r"(?:\s+3\.\s+(?:deny|no|don['’]t allow)\b[^\n]{0,30}?)?"
     r")[\s│|╮╯─]*$", re.I)
 
 # "2. Yes, and don't ask again" (Codex adds " for commands that start with `x` (p)"). Whole line only.
