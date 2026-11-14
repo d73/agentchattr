@@ -29,7 +29,7 @@ if %errorlevel% neq 0 (
     goto :wait_server
 )
 
-"%VENV_PY%" wrapper.py codex -- --no-daemon
+"%VENV_PY%" wrapper.py codex -- --no-daemon --approve-for-me
 if %errorlevel% neq 0 (
     echo.
     echo   Agent exited unexpectedly. Check the output above.
