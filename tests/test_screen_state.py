@@ -84,6 +84,30 @@ class NeedsInputTests(unittest.TestCase):
                      "│ ❯ 2. Yes, and don't ask again │"):
             self.assertTrue(needs_user_input(["some output", line, "  3. No", "> "]), line)
 
+    def test_submit_footer_needs_input(self):
+        for line in ("Enter to submit | Esc to cancel", " enter to submit | esc to cancel",
+                     "│ Enter to submit · Esc to cancel │", "Press enter to submit | esc to cancel"):
+            self.assertTrue(needs_user_input(["some output", line]), line)
+
+    def test_quoted_submit_footer_is_not_input(self):
+        for line in ("Press enter to submit the form", 'The footer says "enter to submit | esc to cancel" here',
+                     "- enter to submit | esc to cancel", "`enter to submit | esc to cancel`",
+                     "enter to submit | esc to cancel is the footer text"):
+            self.assertFalse(needs_user_input([line, "> "]), line)
+        stale = ["Enter to submit | Esc to cancel"] + ["later output"] * 25
+        self.assertFalse(needs_user_input(stale))
+
+    def test_allow_for_session_variants_need_input(self):
+        for line in (" 2. Allow for this session", "  2. Yes, allow for this session",
+                     "2. Yes, allow Claude to edit its own settings for this session (shift+tab)",
+                     "1. Allow  2. Allow for this session", "│ 1. Allow once  2. Allow for this session │"):
+            self.assertTrue(needs_user_input(["some output", line, "> "]), line)
+
+    def test_quoted_allow_for_session_is_not_input(self):
+        for line in ("2. Allow for this session is the option to select.", 'He chose "2. Allow for this session"',
+                     "- text 2. Allow for this session", "`2. Yes, allow for this session`"):
+            self.assertFalse(needs_user_input([line, "> "]), line)
+
     def test_quoted_dont_ask_again_is_not_input(self):
         for line in ("2. Yes, and don't ask again for example is a menu label.",
                      "2. Yes, and don't ask again for commands that start with `git push` (p) is what you press.",
