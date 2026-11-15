@@ -23,6 +23,13 @@ _BUSY_LINE = re.compile(
     re.I,
 )
 
+# Codex footer while a background terminal is still running, e.g.
+#   "1 background terminal running · /ps to view · /stop to close"
+# The agent is working even if the screen is otherwise quiet. Whole line only (menu decoration and
+# a count before it, an optional "·"/"|"-separated hint after), so quoted prose never matches.
+_BG_TERMINAL_LINE = re.compile(
+    r"^[\s│|•●◦·*-]*\d+\s+background\s+terminals?\s+running(?:\s*[·•|,-].*)?[\s│|]*$", re.I)
+
 # Option rows of a live permission menu.
 _OPTION_ROW = re.compile(r"^[\s│|]*[❯>›]?\s*(?:\d+\.\s+\S|yes, proceed|\(y\))", re.I)
 _QUESTION_LINE = re.compile(
@@ -33,6 +40,10 @@ _QUESTION_LINE = re.compile(
 )
 _YN_LINE = re.compile(r"[\[(]y/n[\])]\??\s*$", re.I)
 _ENTER_LINE = re.compile(r"^[\s│|]*(?:press )?enter to confirm", re.I)
+# Question/form footer: "Enter to submit | Esc to cancel" (also "·" or "•" separators, optional
+# leading "Press"). Whole line, with the esc-to-cancel half required so prose never matches.
+_SUBMIT_LINE = re.compile(
+    r"^[\s│|]*(?:press )?enter to (?:submit|select)\s*[|·•,]\s*esc to cancel[\s│|]*$", re.I)
 # The first option of an approval menu ("› 1. Yes, proceed (y)", "1. Yes, proceed"). Line-anchored
 # with only menu decoration before it, so quoted/inline text never matches.
 _YES_PROCEED_LINE = re.compile(
@@ -40,6 +51,14 @@ _YES_PROCEED_LINE = re.compile(
 # "› 1. Allow" / "2. Allow for this session" rows of an allow/deny menu (same whole-line anchoring).
 _ALLOW_LINE = re.compile(
     r"^[\s│|╭╰─❯>›•●]*[12]\.\s+allow(?:\s+for\s+this\s+session)?(?:\s*\((?:y|a|enter)\))?[\s│|╮╯─]*$", re.I)
+# "2. Allow for this session" variants: "2. Yes, allow ... for this session (shift+tab)" and the
+# options laid out on one row ("1. Allow  2. Allow for this session  3. Deny"). Whole line only.
+_ALLOW_SESSION_LINE = re.compile(
+    r"^[\s│|╭╰─❯>›•●]*(?:"
+    r"[12]\.\s+(?:yes,?\s+)?allow\b[^\n]{0,60}?\bfor\s+this\s+session(?:\s*\([^)\n]{1,20}\))?"
+    r"|1\.\s+allow\b(?:\s+once)?\s+2\.\s+(?:yes,?\s+)?allow\b[^\n]{0,60}?\bfor\s+this\s+session"
+    r"(?:\s+3\.\s+(?:deny|no|don['’]t allow)\b[^\n]{0,30}?)?"
+    r")[\s│|╮╯─]*$", re.I)
 
 # "2. Yes, and don't ask again" (Codex adds " for commands that start with `x` (p)"). Whole line only.
 _DONT_ASK_LINE = re.compile(
@@ -55,7 +74,8 @@ def _tail(rows, n):
 
 
 def has_busy_marker(rows) -> bool:
-    return any(_BUSY_LINE.match(r.strip()) for r in _tail(rows, BUSY_ROWS))
+    return any(_BUSY_LINE.match(r.strip()) or _BG_TERMINAL_LINE.match(r.strip())
+               for r in _tail(rows, BUSY_ROWS))
 
 
 # "Turn finished" summary lines, shown when the agent stops working:
@@ -82,8 +102,8 @@ def agent_idle_by_marker(rows) -> bool:
 
 def needs_user_input(rows) -> bool:
     live = _tail(rows, INPUT_ROWS)
-    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) or _YES_PROCEED_LINE.match(r) or _ALLOW_LINE.match(r)
-           or _DONT_ASK_LINE.match(r) for r in live):
+    if any(_YN_LINE.search(r) or _ENTER_LINE.match(r) or _SUBMIT_LINE.match(r) or _YES_PROCEED_LINE.match(r)
+           or _ALLOW_LINE.match(r) or _ALLOW_SESSION_LINE.match(r) or _DONT_ASK_LINE.match(r) for r in live):
         return True
     return (any(_QUESTION_LINE.match(r) for r in live)
             and any(_OPTION_ROW.match(r) for r in live))
