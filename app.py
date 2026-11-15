@@ -58,7 +58,7 @@ room_settings: dict = {
     "username": "user",
     "font": "sans",
     "channels": ["general"],
-    "history_limit": "all",
+    "history_limit": 50,
     "contrast": "normal",
     "custom_roles": [],
 }
@@ -218,6 +218,12 @@ def _load_settings():
             room_settings.update(saved)
         except Exception as exc:
             _quarantine_corrupt(p, exc)
+    # One-time move off the old default ("all"): loading every message per channel on
+    # connect grows without bound. Users can still pick All in Settings afterwards.
+    if not room_settings.get("history_default_v2"):
+        if room_settings.get("history_limit") == "all":
+            room_settings["history_limit"] = 50
+        room_settings["history_default_v2"] = True
     # The file is hand-editable, so run synced options through the same
     # validators as live updates; drop them (back to "uninitialized") if invalid.
     if "ui_prefs" in room_settings:
@@ -1233,12 +1239,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 }))
 
     # Send history (per channel based on history_limit)
-    limit_val = room_settings.get("history_limit", "all")
+    limit_val = room_settings.get("history_limit", 50)
     count = 10000 if limit_val == "all" else int(limit_val)
     
     history = []
+    has_more = {}
     for ch in room_settings["channels"]:
-        history.extend(store.get_recent(count, channel=ch))
+        recent = store.get_recent(count, channel=ch)
+        history.extend(recent)
+        # More exists if the channel holds more messages than were just sent.
+        has_more[ch] = store.count_channel(ch) > len(recent)
     
     # Sort history by timestamp to interleave messages from different channels correctly
     history.sort(key=lambda m: m.get("timestamp", 0))
@@ -1250,7 +1260,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "type": "history", "messages": history[offset:offset + 100],
         }))
         await asyncio.sleep(0)
-    await websocket.send_text(json.dumps({"type": "history_complete"}))
+    await websocket.send_text(json.dumps({"type": "history_complete", "has_more": has_more}))
 
     # Send status
     await broadcast_status()
@@ -1409,6 +1419,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     except Exception:
                         pass
                 continue
+
+            elif event.get("type") == "load_earlier":
+                # Page older messages for one channel: {channel, before_id, limit}.
+                ch = event.get("channel")
+                try:
+                    before_id = int(event.get("before_id"))
+                    limit = max(1, min(int(event.get("limit") or 50), 200))
+                except (TypeError, ValueError):
+                    continue
+                if ch not in room_settings["channels"]:
+                    continue
+                older, more = store.get_before(before_id, limit, channel=ch)
+                await websocket.send_text(json.dumps({
+                    "type": "history_earlier", "channel": ch, "messages": older, "has_more": more,
+                }))
 
             elif event.get("type") == "update_settings":
                 new = event.get("data", {})

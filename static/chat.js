@@ -15,6 +15,7 @@ let baseColors = {};   // { name: { color, label } } — base agent colors (for 
 let todos = {};  // { msg_id: "todo" | "done" }
 let todoSummaries = {};  // { msg_id: { id, status, sender, text, time, timestamp, channel } }
 let rules = [];  // array of rule objects from server
+let _agentConfigReady = false;  // true once the server's agent list has arrived (it may legitimately be empty)
 let activeMentions = new Set();  // agent names with pre-@ toggled on (for the active channel)
 let _channelMentions = {};  // channel -> array of toggled agent names (per-channel memory of activeMentions)
 let replyingTo = null;  // { id, sender, text } or null
@@ -23,6 +24,41 @@ let lastMessageDate = null;  // track date for dividers (general channel)
 let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
 let soundEnabled = false;  // suppress sounds during initial history load
 let activeChannel = localStorage.getItem('agentchattr-channel') || 'general';
+
+// Sticky @-mention selection, remembered per channel in this browser only. Entries expire
+// after a day so a forgotten tag can't keep waking an agent.
+const MENTIONS_KEY = 'agentchattr-channel-mentions';
+const MENTIONS_TTL_MS = 24 * 60 * 60 * 1000;
+const _mentionTs = {};  // channel -> last time its selection changed (ms)
+function loadChannelMentions() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(MENTIONS_KEY) || '{}') || {};
+        const now = Date.now();
+        for (const [ch, v] of Object.entries(raw)) {
+            if (!v || !Array.isArray(v.agents) || typeof v.ts !== 'number' || now - v.ts > MENTIONS_TTL_MS) continue;
+            const agents = v.agents.filter(a => typeof a === 'string').slice(0, 50);
+            if (!agents.length) continue;
+            _channelMentions[ch] = agents;
+            _mentionTs[ch] = v.ts;
+        }
+    } catch (e) {}
+    activeMentions = new Set(_channelMentions[activeChannel] || []);
+}
+// Pass the channel whose selection just changed so its expiry restarts; omit when only migrating names.
+function persistMentions(changedChannel) {
+    if (changedChannel) {
+        _channelMentions[changedChannel] = changedChannel === activeChannel ? [...activeMentions] : (_channelMentions[changedChannel] || []);
+        _mentionTs[changedChannel] = Date.now();
+    }
+    try {
+        const out = {};
+        for (const [ch, arr] of Object.entries(_channelMentions)) {
+            if (Array.isArray(arr) && arr.length) out[ch] = { agents: arr, ts: _mentionTs[ch] || Date.now() };
+        }
+        localStorage.setItem(MENTIONS_KEY, JSON.stringify(out));
+    } catch (e) {}
+}
+loadChannelMentions();
 let channelList = ['general'];
 let channelUnread = {};  // { channelName: count }
 let agentHats = {};  // { agent_name: svg_string }
@@ -569,6 +605,90 @@ let pendingHistory = [];
 let pendingLiveEvents = [];
 let historyScheduled = false;
 let historyGeneration = 0;
+let earlierHistory = {};  // channel -> whether the server has more saved messages
+const earlierRequests = new Map();
+
+function updateEarlierHistoryControl() {
+    const button = document.getElementById('load-earlier-btn');
+    if (!button) return;
+    const loading = earlierRequests.has(activeChannel);
+    button.classList.toggle('hidden', historyLoading || !earlierHistory[activeChannel]);
+    button.disabled = loading || !ws || ws.readyState !== 1;
+    button.textContent = loading ? 'Loading...' : 'Load earlier messages';
+    button.setAttribute('aria-busy', String(loading));
+}
+
+function resetEarlierHistory(channel) {
+    if (channel) {
+        clearTimeout(earlierRequests.get(channel)?.timer);
+        earlierRequests.delete(channel);
+        delete earlierHistory[channel];
+    } else {
+        for (const request of earlierRequests.values()) clearTimeout(request.timer);
+        earlierRequests.clear();
+        earlierHistory = {};
+    }
+    updateEarlierHistoryControl();
+}
+
+function loadEarlierMessages() {
+    const channel = activeChannel;
+    if (historyLoading || !earlierHistory[channel] || earlierRequests.has(channel) || !ws || ws.readyState !== 1) return;
+    let before = Infinity;
+    for (const el of document.querySelectorAll('#messages .message[data-id]')) {
+        if ((el.dataset.channel || 'general') === channel) before = Math.min(before, Number(el.dataset.id));
+    }
+    if (!Number.isFinite(before)) return;
+    const request = { generation: historyGeneration, before };
+    request.timer = setTimeout(() => {
+        if (earlierRequests.get(channel) !== request) return;
+        earlierRequests.delete(channel);
+        updateEarlierHistoryControl();
+        if (activeChannel === channel) showToast('Could not load earlier messages. Try again.', 'error');
+    }, 15000);
+    earlierRequests.set(channel, request);
+    updateEarlierHistoryControl();
+    ws.send(JSON.stringify({ type: 'load_earlier', channel, before_id: before, limit: 50 }));
+}
+
+function prependEarlierHistory(event) {
+    const channel = event.channel;
+    const request = earlierRequests.get(channel);
+    if (!request || request.generation !== historyGeneration) return;
+    clearTimeout(request.timer);
+    earlierRequests.delete(channel);
+    const timeline = document.getElementById('timeline');
+    const container = document.getElementById('messages');
+    const top = timeline.scrollTop;
+    const height = timeline.scrollHeight;
+    const fragment = document.createDocumentFragment();
+    const existingDivider = [...container.children].find(el => el.classList.contains('date-divider') && (el.dataset.channel || 'general') === channel);
+    const tailDates = lastMessageDates;
+    lastMessageDates = {};
+    const seen = new Set();
+    try {
+        for (const msg of event.messages || []) {
+            if ((msg.channel || 'general') !== channel || !Number.isInteger(msg.id) || msg.id >= request.before || seen.has(msg.id)) continue;
+            seen.add(msg.id);
+            appendMessage(msg, { history: true, container: fragment });
+        }
+        if (fragment.childElementCount && existingDivider?.dataset.date === lastMessageDates[channel]) existingDivider.remove();
+    } finally {
+        lastMessageDates = tailDates;
+    }
+    const breadcrumbs = [...fragment.querySelectorAll('.job-breadcrumb')];
+    container.prepend(fragment);
+    for (const el of breadcrumbs) window._collapseJobBreadcrumbs?.(container, el);
+    earlierHistory[channel] = !!event.has_more;
+    updateEarlierHistoryControl();
+    if (activeChannel === channel) {
+        autoScroll = false;
+        timeline.scrollTo({ top: top + timeline.scrollHeight - height, behavior: 'instant' });
+        updateScrollAnchor();
+        dayFloatRefresh();
+    }
+}
+
 // A task queue yields between batches and also runs in background tabs,
 // where animation frames can be suspended.
 const historyTasks = new MessageChannel();
@@ -612,6 +732,7 @@ function renderHistoryBatch() {
         historyLoading = false;
         soundEnabled = true;
         setHistoryIndicator(false);
+        updateEarlierHistoryControl();
         const events = pendingLiveEvents;
         pendingLiveEvents = [];
         for (const event of events) handleServerEvent(event);
@@ -632,8 +753,13 @@ function handleServerEvent(event) {
         return;
     }
     if (event.type === 'history_complete') {
+        earlierHistory = event.has_more || {};
         historyReceived = true;
         scheduleHistoryRender();
+        return;
+    }
+    if (event.type === 'history_earlier') {
+        prependEarlierHistory(event);
         return;
     }
     // Emit through Hub for modules to subscribe (PR 1 seam)
@@ -672,6 +798,7 @@ function handleServerEvent(event) {
             const idx = arr.indexOf(event.old_name);
             if (idx !== -1) arr[idx] = event.new_name;
         }
+        persistMentions();
         // Update sender name, color, and avatar on all existing messages in the DOM
         const newColor = getColor(event.new_name);
         const newAvatar = getAvatarSvg(event.new_name);
@@ -782,6 +909,9 @@ function handleServerEvent(event) {
         });
         _showNextPendingName();
     } else if (event.type === 'channel_renamed') {
+        const hadEarlier = earlierHistory[event.old_name];
+        resetEarlierHistory(event.old_name);
+        earlierHistory[event.new_name] = hadEarlier;
         // Migrate per-channel client state to the new name
         const channelIndex = channelList.indexOf(event.old_name);
         if (channelIndex !== -1) {
@@ -795,6 +925,11 @@ function handleServerEvent(event) {
         if (_channelMentions[event.old_name] !== undefined) {
             _channelMentions[event.new_name] = _channelMentions[event.old_name];
             delete _channelMentions[event.old_name];
+            if (_mentionTs[event.old_name] !== undefined) {
+                _mentionTs[event.new_name] = _mentionTs[event.old_name];
+                delete _mentionTs[event.old_name];
+            }
+            persistMentions();
         }
         if (pendingChannelSwitch === event.old_name) {
             pendingChannelSwitch = event.new_name;
@@ -819,6 +954,7 @@ function handleServerEvent(event) {
         }
         filterMessagesByChannel();
         renderChannelTabs();
+        updateEarlierHistoryControl();
     } else if (event.type === 'edit') {
         // A message was edited/demoted — re-render it in place
         const updatedMsg = event.message;
@@ -846,6 +982,7 @@ function handleServerEvent(event) {
         const _clearDbgBefore = _clearDbgList ? _clearDbgList.children.length : -1;
         console.log('CLEAR_DEBUG clear event received, channel=' + (event.channel || 'ALL'), 'jobs-panel-children-before=' + _clearDbgBefore);
         const clearChannel = event.channel || null;
+        resetEarlierHistory(clearChannel);
         if (clearChannel) {
             // Per-channel clear: remove only messages from that channel
             const container = document.getElementById('messages');
@@ -884,6 +1021,7 @@ function connectWebSocket() {
     historyReceived = false;
     pendingHistory = [];
     pendingLiveEvents = [];
+    resetEarlierHistory();
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
 
@@ -906,6 +1044,7 @@ function connectWebSocket() {
             return;
         }
         console.log('Disconnected, reconnecting in 2s...');
+        resetEarlierHistory();
         soundEnabled = false;  // suppress sounds during reconnect history replay
         historyGeneration++;
         historyScheduled = false;
@@ -959,6 +1098,7 @@ function maybeInsertDateDivider(container, msg) {
         const divider = document.createElement('div');
         divider.className = 'date-divider';
         divider.dataset.channel = channel;
+        divider.dataset.date = msgDate;
         divider.innerHTML = `<span>${formatDateDivider(msgDate)}</span>`;
         if (channel !== activeChannel) {
             divider.style.display = 'none';
@@ -1041,7 +1181,7 @@ function appendMessage(msg, options = {}) {
     maybeInsertDateDivider(container, msg);
 
     const el = document.createElement('div');
-    el.className = 'message';
+    el.className = options.history ? 'message history-message' : 'message';
     el.id = `message-${msg.id}`;
     el.dataset.id = msg.id;
     const msgChannel = msg.channel || 'general';
@@ -1323,6 +1463,7 @@ function repositionScrollAnchor() {
 // --- Agents ---
 
 function applyAgentConfig(data) {
+    _agentConfigReady = true;
     agentConfig = {};
     for (const [name, cfg] of Object.entries(data)) {
         agentConfig[name.toLowerCase()] = cfg;
@@ -3023,6 +3164,7 @@ function startReply(msgId, event) {
                 btn.classList.remove('active');
             }
         }
+        persistMentions(activeChannel);
         syncMentionAllToggle();
     }
 
@@ -3382,7 +3524,9 @@ function renderTodosPanel() {
 // into a channel where you meant to tag someone else.
 window._onChannelSwitchMentions = function(oldChannel, newChannel) {
     if (oldChannel) _channelMentions[oldChannel] = [...activeMentions];
-    activeMentions = new Set(_channelMentions[newChannel] || []);
+    // Also drop agents that are no longer registered (remembered selections can outlive them).
+    const known = _agentConfigReady ? (n => n in agentConfig) : (() => true);
+    activeMentions = new Set((_channelMentions[newChannel] || []).filter(known));
     // Reflect the swapped state on the toggle buttons
     for (const btn of document.querySelectorAll('.mention-toggle')) {
         btn.classList.toggle('active', activeMentions.has(btn.dataset.agent));
@@ -3412,9 +3556,23 @@ function buildMentionToggles() {
     const container = document.getElementById('mention-toggles');
     container.innerHTML = '';
 
-    // Prune stale mentions for agents no longer in config
-    for (const name of activeMentions) {
-        if (!(name in agentConfig)) activeMentions.delete(name);
+    // Prune stale mentions for agents no longer in config. Skip until the agent list has
+    // arrived, otherwise an empty config would wipe every remembered selection.
+    if (_agentConfigReady) {
+        for (const name of activeMentions) {
+            if (!(name in agentConfig)) activeMentions.delete(name);
+        }
+    }
+    if (_agentConfigReady) {
+        let pruned = false;
+        for (const ch of Object.keys(_channelMentions)) {
+            const kept = (_channelMentions[ch] || []).filter(name => name in agentConfig);
+            if (kept.length !== (_channelMentions[ch] || []).length) {
+                _channelMentions[ch] = kept;
+                pruned = true;
+            }
+        }
+        if (pruned) persistMentions();
     }
 
     // @all: selects every available agent, or deselects them all if they are
@@ -3438,6 +3596,7 @@ function buildMentionToggles() {
             for (const btn of container.querySelectorAll('.mention-toggle')) {
                 btn.classList.toggle('active', activeMentions.has(btn.dataset.agent));
             }
+            persistMentions(activeChannel);
             syncMentionAllToggle();
             updateSchedulePopoverState();
         };
@@ -3464,6 +3623,7 @@ function buildMentionToggles() {
                 activeMentions.add(name);
                 btn.classList.add('active');
             }
+            persistMentions(activeChannel);
             syncMentionAllToggle();
             updateSchedulePopoverState();
         };

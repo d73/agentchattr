@@ -680,6 +680,24 @@ main#timeline {
 
 #loading-indicator.hidden { display: none; }
 
+.load-earlier-btn {
+    display: block;
+    margin: 12px auto;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-input);
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+.load-earlier-btn.hidden { display: none; }
+.load-earlier-btn:disabled { cursor: wait; opacity: 0.65; }
+.load-earlier-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* Saved messages should stay anchored instead of replaying the live-message entrance. */
+.message.history-message { animation: none; }
+
 .loading-spinner {
     width: 16px;
     height: 16px;
