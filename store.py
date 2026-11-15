@@ -7,6 +7,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from atomic_io import atomic_write_text
+
 
 class MessageStore:
     def __init__(self, path: str):
@@ -108,11 +110,7 @@ class MessageStore:
 
     def _rewrite(self):
         """Rewrite the full JSONL file from memory (used after bulk edits)."""
-        with open(self._path, "w", encoding="utf-8") as f:
-            for m in self._messages:
-                f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        atomic_write_text(self._path, "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in self._messages))
 
     def get_by_id(self, msg_id: int) -> dict | None:
         with self._lock:
@@ -192,11 +190,7 @@ class MessageStore:
 
     def _rewrite_jsonl(self):
         """Rewrite the JSONL file from current in-memory messages."""
-        with open(self._path, "w", encoding="utf-8") as f:
-            for m in self._messages:
-                f.write(json.dumps(m, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        atomic_write_text(self._path, "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in self._messages))
 
     def clear(self, channel: str | None = None):
         """Wipe messages and rewrite the log file.
@@ -214,7 +208,7 @@ class MessageStore:
                     self._save_todos()
             else:
                 self._messages.clear()
-                self._path.write_text("")
+                atomic_write_text(self._path, "")
                 self._todos.clear()
                 self._save_todos()
 
@@ -279,9 +273,9 @@ class MessageStore:
                 self._todos = {}
 
     def _save_todos(self):
-        self._todos_path.write_text(
+        atomic_write_text(
+            self._todos_path,
             json.dumps({str(k): v for k, v in self._todos.items()}, indent=2),
-            "utf-8"
         )
 
     def on_todo(self, callback):
@@ -338,6 +332,44 @@ class MessageStore:
     def get_todos(self) -> dict[int, str]:
         """Returns {msg_id: status} for all todos."""
         return dict(self._todos)
+
+    TODO_SUMMARY_TEXT_MAX = 500
+
+    @classmethod
+    def _todo_summary(cls, msg: dict, status: str) -> dict:
+        """Just enough of a pinned message to render it without the message in the DOM."""
+        text = msg.get("text") or ""
+        if len(text) > cls.TODO_SUMMARY_TEXT_MAX:
+            text = text[:cls.TODO_SUMMARY_TEXT_MAX].rstrip() + "..."
+        return {
+            "id": msg["id"],
+            "status": status,
+            "sender": msg.get("sender", ""),
+            "text": text,
+            "time": msg.get("time", ""),
+            "timestamp": msg.get("timestamp", 0),
+            "channel": msg.get("channel", "general"),
+        }
+
+    def get_todo_summary(self, msg_id: int) -> dict | None:
+        """Summary of one pinned message, or None if it isn't pinned or no longer exists."""
+        with self._lock:
+            status = self._todos.get(msg_id)
+            if status is None:
+                return None
+            for m in self._messages:
+                if m["id"] == msg_id:
+                    return self._todo_summary(m, status)
+        return None
+
+    def get_todo_summaries(self) -> dict[int, dict]:
+        """{msg_id: summary} for every pinned message that still exists (one pass)."""
+        with self._lock:
+            todos = dict(self._todos)
+            return {
+                m["id"]: self._todo_summary(m, todos[m["id"]])
+                for m in self._messages if m["id"] in todos
+            }
 
     def get_todo_messages(self, status: str | None = None) -> list[dict]:
         """Get todo messages, optionally filtered by status."""

@@ -1,6 +1,7 @@
 """Schedule store — recurring prompts fired without human intervention."""
 
 import json
+from atomic_io import atomic_write_text
 import math
 import re
 import time
@@ -110,7 +111,7 @@ class ScheduleStore:
             self._schedules = []
 
     def _save(self):
-        self._path.write_text(
+        atomic_write_text(self._path, 
             json.dumps(self._schedules, indent=2, ensure_ascii=False) + "\n",
             "utf-8",
         )

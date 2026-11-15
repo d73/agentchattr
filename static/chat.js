@@ -13,6 +13,7 @@ let username = 'user';
 let agentConfig = {};  // { name: { color, label } } — registered instances (used for pills)
 let baseColors = {};   // { name: { color, label } } — base agent colors (for message coloring)
 let todos = {};  // { msg_id: "todo" | "done" }
+let todoSummaries = {};  // { msg_id: { id, status, sender, text, time, timestamp, channel } }
 let rules = [];  // array of rule objects from server
 let activeMentions = new Set();  // agent names with pre-@ toggled on (for the active channel)
 let _channelMentions = {};  // channel -> array of toggled agent names (per-channel memory of activeMentions)
@@ -30,10 +31,14 @@ let colorOverrides = {};
 try { colorOverrides = JSON.parse(localStorage.getItem('agentchattr-color-overrides') || '{}') || {}; } catch (e) {}
 
 // Persist overrides locally (cache) and on the server (survives origin/browser changes).
+let _colorsDirty = false;  // a color change that could not be sent (offline); retried after reconnect
 function saveColorOverrides() {
     try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
     if (typeof ws !== 'undefined' && ws && ws.readyState === 1) {
         ws.send(JSON.stringify({ type: 'update_settings', data: { agent_colors: colorOverrides } }));
+        _colorsDirty = false;
+    } else {
+        _colorsDirty = true;
     }
 }
 let schedulesList = [];  // array of schedule objects from server
@@ -145,6 +150,8 @@ function applyUiPrefs(p) {
     applyAttentionStyle();
     const as = document.getElementById('setting-attention-sound');
     if (as) as.value = attentionSoundChoice();
+    // Edits made while disconnected stay local (see the dirty-key check above); send them now.
+    if (_dirtyUiPrefs.size) saveUiPrefs();
     if (typeof setChannelSidebarMode === 'function') {
         let m = 'top';
         try { m = localStorage.getItem(UI_PREF_STORAGE.sidebar_mode) || 'top'; } catch (e) {}
@@ -420,6 +427,27 @@ function init() {
     });
 }
 
+// Markdown links are untrusted (agents and users write them). marked escapes raw HTML but not
+// URL schemes, so [x](javascript:...) would otherwise become a clickable script link.
+const SAFE_LINK_SCHEMES = new Set(['http', 'https', 'mailto', 'tel']);
+function isSafeLinkHref(rawHref) {
+    const probe = document.createElement('textarea');
+    probe.innerHTML = rawHref;  // decode entities such as &#x6A; before inspecting the scheme
+    const href = probe.value.replace(/[\u0000- \u007f-\u009f]/g, '');
+    const m = href.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+    if (!m) return true;  // relative URL or #anchor
+    return SAFE_LINK_SCHEMES.has(m[1].toLowerCase());
+}
+function sanitizeLinkHrefs(html) {
+    return html.replace(/<a\b([^>]*)>/gi, (tag, attrs) => {
+        const m = attrs.match(/\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+        if (!m) return tag;
+        const raw = m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]);
+        if (isSafeLinkHref(raw)) return tag;
+        return '<a' + attrs.replace(m[0], ' data-blocked-href="1"') + '>';
+    });
+}
+
 function renderMarkdown(text) {
     // Protect Windows paths from escape replacement (e.g. \tests → tab, \new → newline)
     const pathSlots = [];
@@ -445,7 +473,7 @@ function renderMarkdown(text) {
     // Restore paths
     text = text.replace(/\x00P(\d+)\x00/g, (_, i) => pathSlots[parseInt(i)]);
     // Parse markdown, then color @mentions, URLs, and file paths in the output
-    let html = marked.parse(text);
+    let html = sanitizeLinkHrefs(marked.parse(text));
     // Remove wrapping <p> tags for single-line messages to keep them inline
     const trimmed = html.trim();
     if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>') && trimmed.indexOf('<p>', 1) === -1) {
@@ -699,15 +727,27 @@ function handleServerEvent(event) {
         baseColors = event.data || {};
     } else if (event.type === 'todos') {
         todos = {};
-        for (const [id, status] of Object.entries(event.data)) {
+        for (const [id, status] of Object.entries(event.data || {})) {
             todos[parseInt(id)] = status;
+        }
+        todoSummaries = {};
+        if (event.messages && typeof event.messages === 'object') {
+            for (const [id, summary] of Object.entries(event.messages)) {
+                todoSummaries[parseInt(id)] = summary;
+            }
         }
     } else if (event.type === 'todo_update') {
         const d = event.data;
         if (d.status === null) {
             delete todos[d.id];
+            delete todoSummaries[d.id];
         } else {
             todos[d.id] = d.status;
+            if (event.message) {
+                todoSummaries[d.id] = event.message;
+            } else if (todoSummaries[d.id]) {
+                todoSummaries[d.id].status = d.status;
+            }
         }
         updateTodoState(d.id, d.status);
     } else if (event.type === 'status') {
@@ -2099,12 +2139,14 @@ function applySettings(data) {
         const subEl = document.getElementById('room-subtitle');
         if (subEl) subEl.textContent = data.subtitle;
         const subInput = document.getElementById('setting-subtitle');
-        if (subInput) subInput.value = data.subtitle;
+        // Never overwrite a field the user is typing in.
+        if (subInput && document.activeElement !== subInput) subInput.value = data.subtitle;
     }
     if (data.username) {
         username = data.username;
         document.getElementById('sender-label').textContent = username;
-        document.getElementById('setting-username').value = username;
+        const nameInput = document.getElementById('setting-username');
+        if (document.activeElement !== nameInput) nameInput.value = username;
     }
     if (data.font) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
@@ -2120,17 +2162,23 @@ function applySettings(data) {
         saveUiPrefs();
     }
     if (data.agent_colors && typeof data.agent_colors === 'object') {
-        // Server-owned and authoritative (an empty map is an explicit Reset).
-        colorOverrides = Object.assign({}, data.agent_colors);
-        try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
-        refreshAgentColors();
+        if (_colorsDirty) {
+            // A local change made while disconnected wins over the server copy; resend it now.
+            saveColorOverrides();
+        } else {
+            // Server-owned and authoritative (an empty map is an explicit Reset).
+            colorOverrides = Object.assign({}, data.agent_colors);
+            try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
+            refreshAgentColors();
+        }
     } else if (!_seededColors) {
         // Server never initialized: seed once per page load from this browser's legacy overrides.
         _seededColors = true;
         saveColorOverrides();
     }
     if (data.max_agent_hops !== undefined) {
-        document.getElementById('setting-hops').value = data.max_agent_hops;
+        const hopsInput = document.getElementById('setting-hops');
+        if (document.activeElement !== hopsInput) hopsInput.value = data.max_agent_hops;
     }
     if (data.history_limit !== undefined) {
         document.getElementById('setting-history').value = String(data.history_limit);
@@ -3006,7 +3054,12 @@ function cancelReply() {
 
 function scrollToMessage(msgId) {
     const el = document.querySelector(`.message[data-id="${msgId}"]`);
-    if (!el) return;
+    if (!el) {
+        if (typeof showToast === 'function') {
+            showToast('Message is outside loaded history', 'info');
+        }
+        return;
+    }
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.classList.add('highlight');
     setTimeout(() => el.classList.remove('highlight'), 1500);
@@ -3050,22 +3103,22 @@ function todoRemove(msgId) {
 
 function updateTodoState(msgId, status) {
     const el = document.querySelector(`.message[data-id="${msgId}"]`);
-    if (!el) return;
+    if (el) {
+        el.classList.remove('msg-todo', 'msg-todo-todo', 'msg-todo-done');
 
-    el.classList.remove('msg-todo', 'msg-todo-todo', 'msg-todo-done');
+        if (status === 'todo') {
+            el.classList.add('msg-todo', 'msg-todo-todo');
+        } else if (status === 'done') {
+            el.classList.add('msg-todo', 'msg-todo-done');
+        }
 
-    if (status === 'todo') {
-        el.classList.add('msg-todo', 'msg-todo-todo');
-    } else if (status === 'done') {
-        el.classList.add('msg-todo', 'msg-todo-done');
+        const hint = el.querySelector('.todo-hint');
+        if (hint) hint.textContent = todoStatusLabel(status);
     }
-
-    const hint = el.querySelector('.todo-hint');
-    if (hint) hint.textContent = todoStatusLabel(status);
 
     // Update panel if open
     const panel = document.getElementById('pins-panel');
-    if (!panel.classList.contains('hidden')) renderTodosPanel();
+    if (panel && !panel.classList.contains('hidden')) renderTodosPanel();
 }
 
 // --- Delete mode ---
@@ -3291,27 +3344,27 @@ function renderTodosPanel() {
     const sorted = todoIds.map(Number).sort((a, b) => a - b);
 
     for (const id of sorted) {
-        const el = document.querySelector(`.message[data-id="${id}"]`);
-        if (!el) continue;
-
         const status = todos[id];
+        const summary = todoSummaries[id];
+        const el = document.querySelector(`.message[data-id="${id}"]`);
+        if (!summary && !el) continue;
+
+        const time = summary?.time || el?.querySelector('.msg-time')?.textContent || '';
+        const sender = (summary?.sender || el?.querySelector('.msg-sender')?.textContent || '').trim();
+        const text = summary?.text || el?.querySelector('.msg-text')?.textContent || '';
+        const senderColor = (sender ? getColor(sender) : '') || el?.querySelector('.msg-sender')?.style.color || 'var(--text)';
+        const msgChannel = summary?.channel || el?.dataset.channel || 'general';
+
         const item = document.createElement('div');
         item.className = `todo-item ${status === 'done' ? 'todo-done' : ''}`;
 
-        const time = el.querySelector('.msg-time')?.textContent || '';
-        const sender = (el.querySelector('.msg-sender')?.textContent || '').trim();
-        const text = el.querySelector('.msg-text')?.textContent || '';
-        const senderColor = el.querySelector('.msg-sender')?.style.color || 'var(--text)';
-
         const check = status === 'done' ? '&#10003;' : '&#9675;';
         const checkClass = status === 'done' ? 'todo-check done' : 'todo-check';
-        const msgChannel = el.dataset.channel || 'general';
 
-        item.innerHTML = `<button class="${checkClass}" onclick="todoToggle(${id})">${check}</button><span class="msg-time" style="color:var(--accent);font-weight:600;margin-right:4px">#${msgChannel}</span> <span class="msg-time">${escapeHtml(time)}</span> <span class="msg-sender" style="color: ${senderColor}">${escapeHtml(sender)}</span> <span class="msg-text">${escapeHtml(text)}</span><button class="dismiss-btn danger" onclick="todoRemove(${id})" title="Remove from todos">&times;</button>`;
+        item.innerHTML = `<button class="${checkClass}" onclick="todoToggle(${id})">${check}</button><span class="msg-time" style="color:var(--accent);font-weight:600;margin-right:4px">#${escapeHtml(msgChannel)}</span> <span class="msg-time">${escapeHtml(time)}</span> <span class="msg-sender" style="color: ${escapeHtml(senderColor)}">${escapeHtml(sender)}</span> <span class="msg-text">${escapeHtml(text)}</span><button class="dismiss-btn danger" onclick="todoRemove(${id})" title="Remove from todos">&times;</button>`;
         item.addEventListener('click', (e) => {
             if (e.target.closest('button')) return;
             // Cross-channel pin: switch channel if needed
-            const msgChannel = el.dataset.channel || 'general';
             if (msgChannel !== activeChannel) {
                 switchChannel(msgChannel);
             }

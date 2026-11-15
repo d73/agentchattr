@@ -1,6 +1,7 @@
 """Job store — bounded work conversations with threaded messages."""
 
 import json
+from atomic_io import atomic_write_text
 import time
 import threading
 import uuid
@@ -32,7 +33,7 @@ class JobStore:
             self._jobs = []
 
     def _save(self):
-        self._path.write_text(
+        atomic_write_text(self._path, 
             json.dumps(self._jobs, indent=2, ensure_ascii=False) + "\n",
             "utf-8",
         )
