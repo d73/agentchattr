@@ -29,4 +29,4 @@ if %errorlevel% neq 0 (
     goto :wait_server
 )
 
-"%VENV_PY%" wrapper.py codex -- --dangerously-bypass-approvals-and-sandbox
+"%VENV_PY%" wrapper.py codex -- --no-daemon --dangerously-bypass-approvals-and-sandbox

@@ -106,6 +106,24 @@ function setupUserColorSetting() {
     applyUserColor();
 }
 
+// How a pill signals "needs attention": 'highlight' (default, soft pulse) or 'flash' (hard blink). Per browser.
+function applyAttentionStyle() {
+    let v = '';
+    try { v = localStorage.getItem('agentchattr-attention-style') || ''; } catch (e) {}
+    if (v !== 'flash') v = 'highlight';
+    document.documentElement.dataset.attention = v;
+    const select = document.getElementById('setting-attention-style');
+    if (select) select.value = v;
+}
+function setupAttentionStyleSetting() {
+    const select = document.getElementById('setting-attention-style');
+    if (select) select.addEventListener('change', () => {
+        try { localStorage.setItem('agentchattr-attention-style', select.value); } catch (e) {}
+        applyAttentionStyle();
+    });
+    applyAttentionStyle();
+}
+
 // Audio is only for messages that @mention you directly (never your own messages, never @all).
 function mentionsUser(text) {
     if (!username || typeof text !== 'string') return false;
@@ -263,6 +281,7 @@ function init() {
     setupScroll();
     setupSettingsKeys();
     setupUserColorSetting();
+    setupAttentionStyleSetting();
     setupKeyboardShortcuts();
     RulesPanel.init();
     Jobs.init();
@@ -322,7 +341,12 @@ function linkifyUrls(html) {
         if (url) {
             return `<a href="${url}" target="_blank" rel="noopener">${url}</a>`;
         }
-        return match;
+        // Markdown links ([text](https://...)) render as bare <a href>: make outbound ones open in a new tab.
+        return match.replace(/^<a\b([^>]*)>/i, (tag, attrs) => {
+            if (!/\bhref\s*=\s*["'](?:https?:)?\/\//i.test(attrs)) return tag;
+            attrs = attrs.replace(/\s(?:target|rel)\s*=\s*("[^"]*"|'[^']*'|\S+)/gi, '');
+            return `<a${attrs} target="_blank" rel="noopener noreferrer">`;
+        });
     });
 }
 
@@ -1074,8 +1098,10 @@ function getColor(sender) {
 }
 
 function colorMentions(textHtml) {
-    // Match any @word — we'll resolve color per match
-    return textHtml.replace(/@(\w[\w-]*)/gi, (match, name) => {
+    // Match any @word — we'll resolve color per match. Skip HTML tags/anchors (an email autolinks to
+    // <a href="mailto:a@b.com">) and require a non-word char before '@' so emails are never treated as mentions.
+    return textHtml.replace(/<a\b[^>]*>.*?<\/a>|<[^>]*>|(?<![\w.+-])@(\w[\w-]*)/gis, (match, name) => {
+        if (!name) return match;
         const lower = name.toLowerCase();
         if (lower === 'both' || lower === 'all') {
             return `<span class="mention" style="color: var(--accent)">@${name}</span>`;
