@@ -246,7 +246,7 @@ Schedule one-shot or recurring messages from the split send button. Click the cl
 
 Instead of a fixed date and time, check **In a while from now** and give it hours and minutes to send relative to the moment you schedule it, which helps when you are waiting on something rather than aiming at a clock time. A one-shot time that has already passed is refused with a reason instead of firing straight away.
 
-A schedule strip above the composer shows active and paused schedules. For a single schedule, inline pause and delete controls appear directly in the strip. For multiple schedules, expand the strip to manage them. Schedules persist across server restarts (stored in `data/schedules.json`).
+The clock button beside Jobs in the header opens the Scheduled tasks panel. Active and paused tasks appear as cards with their channel, agents, prompt, timing, and pause/resume and delete controls. The panel stays closed until opened, and creating a task opens it with a confirmation. Schedules persist across server restarts (stored in `data/schedules.json`).
 
 The schedule popover validates that at least one agent is toggled before enabling the Schedule button — a yellow warning tells you what's needed.
 
