@@ -442,6 +442,7 @@ def _register_instance(server_port: int, base: str, label: str | None = None, na
 def _register_at_startup(server_port, base, label, name, timeout=40):
     """Allow window-close grace, forced shutdown, and the identity lease to expire."""
     deadline = time.monotonic() + timeout
+    announced = False
     while True:
         try:
             return _register_instance(server_port, base, label, name)
@@ -449,6 +450,9 @@ def _register_at_startup(server_port, base, label, name, timeout=40):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise
+            if not announced:
+                print(f"  Name {name} is in use. Retrying for up to {timeout:g} seconds...", flush=True)
+                announced = True
             time.sleep(min(1, remaining))
 
 

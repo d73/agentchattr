@@ -30,6 +30,13 @@ class RegistrationRetryTests(unittest.TestCase):
         self.assertEqual(register.call_count, 2)
         sleep.assert_called_once()
 
+    def test_conflict_announces_retry_once(self):
+        conflict = wrapper.NameInUseError('in use')
+        with patch.object(wrapper, '_register_instance', side_effect=[conflict, conflict, {'name': 'c2'}]), \
+             patch.object(wrapper.time, 'sleep'), patch('builtins.print') as output:
+            wrapper._register_at_startup(8300, 'codex', 'c2', 'c2')
+        output.assert_called_once_with('  Name c2 is in use. Retrying for up to 40 seconds...', flush=True)
+
     def test_live_owner_is_not_replaced_after_deadline(self):
         with patch.object(wrapper, '_register_instance', side_effect=wrapper.NameInUseError('in use')) as register, \
              patch.object(wrapper.time, 'monotonic', side_effect=[0, 1, 2]), \
