@@ -89,7 +89,7 @@ Object.defineProperty(window, 'channelUnread', { get() { return channelUnread; }
 let roomSubtitle = '';
 function updateRoomSubtitle() {
     const el = document.getElementById('room-subtitle');
-    if (el) el.textContent = `${roomSubtitle ? roomSubtitle + ' - ' : ''}# ${activeChannel}`;
+    if (el) el.textContent = `${username}${roomSubtitle ? ' @ ' + roomSubtitle : ''} - # ${activeChannel}`;
 }
 window._setActiveChannel = function(v) { activeChannel = v; updateRoomSubtitle(); };
 updateRoomSubtitle();
@@ -2372,6 +2372,7 @@ function applySettings(data) {
     }
     if (data.username) {
         username = data.username;
+        updateRoomSubtitle();
         document.getElementById('sender-label').textContent = username;
         const nameInput = document.getElementById('setting-username');
         if (document.activeElement !== nameInput) nameInput.value = username;

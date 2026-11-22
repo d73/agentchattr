@@ -10,10 +10,12 @@ test('header tracks server label and selected channel as plain text', () => {
     const code = source.match(/let roomSubtitle = '';[\s\S]*?\nupdateRoomSubtitle\(\);/)[0];
     const label = { textContent: '' };
     const context = vm.createContext({ window: {}, document: { getElementById: () => label } });
-    vm.runInContext("let activeChannel = 'general';\n" + code, context);
-    assert.equal(label.textContent, '# general');
+    vm.runInContext("let activeChannel = 'general'; let username = 'user';\n" + code, context);
+    assert.equal(label.textContent, 'user - # general');
     vm.runInContext("roomSubtitle = 'host'; updateRoomSubtitle()", context);
-    assert.equal(label.textContent, 'host - # general');
+    assert.equal(label.textContent, 'user @ host - # general');
+    vm.runInContext("username = 'Derek'; updateRoomSubtitle()", context);
+    assert.equal(label.textContent, 'Derek @ host - # general');
     context.window._setActiveChannel('<work>');
-    assert.equal(label.textContent, 'host - # <work>');
+    assert.equal(label.textContent, 'Derek @ host - # <work>');
 });
