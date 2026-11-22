@@ -867,10 +867,6 @@ main#timeline {
     margin-bottom: 6px;
 }
 
-.message.self .msg-sender {
-    display: none;
-}
-
 .message:hover .chat-bubble {
     background: color-mix(in srgb, var(--bubble-color, var(--text-dim)) 15%, var(--bg-msg));
 }
