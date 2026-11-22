@@ -32,7 +32,13 @@ class MessageStore:
         self.upload_dir = self._path.parent.parent / "uploads"  # Default fallback
         self._load()
         if self._id_path.exists():
-            self._next_id = max(self._next_id, int(self._id_path.read_text(encoding="utf-8")))
+            try:
+                marker = int(self._id_path.read_text(encoding="utf-8"))
+                if marker < 0:
+                    raise ValueError("next ID must not be negative")
+                self._next_id = max(self._next_id, marker)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Cannot read message ID marker {self._id_path.resolve()}: {exc}. The file was not changed.") from exc
         self._load_todos()
 
     def _load(self):
@@ -52,8 +58,8 @@ class MessageStore:
                     if msg["id"] > max_id:
                         max_id = msg["id"]
                     self._messages.append(msg)
-                except json.JSONDecodeError:
-                    continue
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Cannot read message history {self._path.resolve()}, line {i + 1}: {exc}. The file was not changed.") from exc
         self._next_id = max_id + 1
 
     def on_message(self, callback):
@@ -328,15 +334,15 @@ class MessageStore:
                     self._todos = {int(i): "todo" for i in ids}
                     self._save_todos()
                     old_pins.unlink()
-            except Exception:
-                pass
+            except (OSError, ValueError, TypeError) as exc:
+                raise ValueError(f"Cannot migrate pinned messages from {old_pins.resolve()}: {exc}. Check the file before retrying.") from exc
 
         if self._todos_path.exists():
             try:
                 raw = json.loads(self._todos_path.read_text("utf-8"))
                 self._todos = {int(k): v for k, v in raw.items()}
-            except Exception:
-                self._todos = {}
+            except (OSError, ValueError, TypeError) as exc:
+                raise ValueError(f"Cannot load pinned messages from {self._todos_path.resolve()}: {exc}. The file was not changed.") from exc
 
     def _save_todos(self):
         atomic_write_text(
