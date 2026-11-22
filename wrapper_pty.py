@@ -6,6 +6,19 @@ import threading
 from pty_bridge import BridgeClient, receive_frame, send_frame
 
 
+def stop_provider(process):
+    """Bound provider shutdown so the wrapper can still deregister."""
+    process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=.5)
+        except subprocess.TimeoutExpired:
+            pass  # TermGrid's job-object fallback will close remaining processes.
+
+
 def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, start_watcher,
               strip_env=None, pid_holder=None, session_name=None, inject_env=None,
               inject_delay=.3, enter_backend='console_input', set_activity_checker=None,
@@ -40,8 +53,7 @@ def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, star
             while process.poll() is None and not stopping.wait(.1):
                 pass
             if stopping.is_set() and process.poll() is None:
-                process.terminate()
-                process.wait(timeout=2)
+                stop_provider(process)
             if pid_holder is not None:
                 pid_holder[0] = None
             if no_restart or stopping.is_set():

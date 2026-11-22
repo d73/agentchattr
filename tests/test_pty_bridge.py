@@ -1,6 +1,7 @@
 import socket
 import struct
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -12,6 +13,14 @@ import wrapper_pty
 
 
 class FramingTests(unittest.TestCase):
+    def test_provider_timeout_escalates_without_blocking_cleanup(self):
+        process = Mock()
+        process.wait.side_effect = [subprocess.TimeoutExpired('provider', 1), subprocess.TimeoutExpired('provider', .5)]
+        wrapper_pty.stop_provider(process)
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_count, 2)
+
     def test_shutdown_stops_child_and_returns_from_wrapper_loop(self):
         listener = socket.socket()
         listener.bind(('127.0.0.1', 0))
