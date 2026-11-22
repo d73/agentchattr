@@ -1,1 +1,3 @@
 # Add agent-specific rules here.
+# The Codex session title is set to "I am idle" when the agent is idle (team rule).
+contains: I am idle
