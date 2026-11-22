@@ -5,6 +5,6 @@ set "RESULT=%ERRORLEVEL%"
 if not "%RESULT%"=="0" (
     echo.
     echo Server control failed with exit code %RESULT%. See details above.
-    pause
+    if /i not "%~1"=="--no-pause" call "%~dp0pause_if_interactive.bat"
 )
 exit /b %RESULT%

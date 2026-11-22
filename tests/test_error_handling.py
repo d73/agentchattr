@@ -15,11 +15,43 @@ class ErrorHandlingTests(unittest.TestCase):
         for cls in (JobStore, RuleStore, ScheduleStore, SessionStore, MessageStore):
             with self.subTest(store=cls.__name__), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / 'data.json'
-                path.write_text('{invalid', encoding='utf-8')
+                path.write_text('{invalid\n', encoding='utf-8')
                 with self.assertRaises(ValueError) as caught:
                     cls(str(path))
                 self.assertIn(str(path.resolve()), str(caught.exception))
-                self.assertEqual(path.read_text(encoding='utf-8'), '{invalid')
+                self.assertEqual(path.read_text(encoding='utf-8'), '{invalid\n')
+
+    def test_truncated_final_record_warns_and_preserves_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'history.jsonl'
+            original = b'{"id": 7, "text": "ok"}\n{"id": 8, "text": "partial'
+            path.write_bytes(original)
+            store = MessageStore(str(path))
+            self.assertEqual([m['id'] for m in store.get_recent()], [7])
+            self.assertIn('Incomplete final record', store.log_status()['error'])
+            self.assertEqual(store.log_status()['path'], str(path.resolve()))
+            result = store.add('user', 'still delivered')
+            self.assertIn('persistence_error', result)
+            self.assertEqual(path.read_bytes(), original)
+            with self.assertRaises(OSError):
+                store.flush_bulk()
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_bad_middle_record_fails_with_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'history.jsonl'
+            path.write_bytes(b'{bad}\n{"id": 1}\n')
+            with self.assertRaises(ValueError) as caught:
+                MessageStore(str(path))
+            self.assertIn(str(path.resolve()), str(caught.exception))
+
+    def test_complete_last_record_without_newline_is_not_joined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'history.jsonl'
+            path.write_bytes(b'{"id": 1, "text": "old"}')
+            store = MessageStore(str(path))
+            store.add('user', 'new')
+            self.assertEqual(len(MessageStore(str(path)).get_recent()), 2)
 
     def test_bad_id_marker_includes_path(self):
         with tempfile.TemporaryDirectory() as directory:
