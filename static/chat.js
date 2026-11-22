@@ -86,7 +86,13 @@ Object.defineProperty(window, 'SESSION_TOKEN', { get() { return SESSION_TOKEN; }
 Object.defineProperty(window, 'activeChannel', { get() { return activeChannel; } });
 Object.defineProperty(window, 'channelList', { get() { return channelList; }, set(v) { channelList = v; } });
 Object.defineProperty(window, 'channelUnread', { get() { return channelUnread; }, set(v) { channelUnread = v; } });
-window._setActiveChannel = function(v) { activeChannel = v; };
+let roomSubtitle = '';
+function updateRoomSubtitle() {
+    const el = document.getElementById('room-subtitle');
+    if (el) el.textContent = `${roomSubtitle ? roomSubtitle + ' - ' : ''}# ${activeChannel}`;
+}
+window._setActiveChannel = function(v) { activeChannel = v; updateRoomSubtitle(); };
+updateRoomSubtitle();
 window._setPendingChannelSwitch = function(v) { pendingChannelSwitch = v; };
 // scrollToBottom is set after function definition (see below)
 Object.defineProperty(window, 'username', { get() { return username; } });
@@ -1015,7 +1021,7 @@ function handleServerEvent(event) {
         }
         // Update active channel if we were on the renamed one
         if (activeChannel === event.old_name) {
-            activeChannel = event.new_name;
+            window._setActiveChannel(event.new_name);
             localStorage.setItem('agentchattr-channel', event.new_name);
             Store.set('activeChannel', event.new_name);
         }
@@ -2358,8 +2364,8 @@ function applySettings(data) {
         document.title = data.subtitle ? data.title + ' - ' + data.subtitle : data.title;
     }
     if (data.subtitle !== undefined) {
-        const subEl = document.getElementById('room-subtitle');
-        if (subEl) subEl.textContent = data.subtitle;
+        roomSubtitle = data.subtitle || '';
+        updateRoomSubtitle();
         const subInput = document.getElementById('setting-subtitle');
         // Never overwrite a field the user is typing in.
         if (subInput && document.activeElement !== subInput) subInput.value = data.subtitle;
@@ -2434,7 +2440,7 @@ function applySettings(data) {
         channelList = data.channels;
         // If active channel was deleted, switch to general
         if (!channelList.includes(activeChannel)) {
-            activeChannel = 'general';
+            window._setActiveChannel('general');
             localStorage.setItem('agentchattr-channel', 'general');
             Store.set('activeChannel', 'general');
             filterMessagesByChannel();
