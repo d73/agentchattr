@@ -670,6 +670,7 @@ def main():
     parser.add_argument("--no-restart", action="store_true", help="Do not restart on exit")
     parser.add_argument("--label", type=str, default=None, help="Custom display label")
     parser.add_argument("--name", type=str, default=None, help="Requested chat identity (lowercase letters, digits and hyphens)")
+    parser.add_argument("--working-directory", type=Path, help="Override the agent's working directory for this launch")
     # Per-project isolation flags (must match the server's flags so wrappers
     # launched separately connect to the right instance). Values are consumed
     # by apply_cli_overrides() above; listing here so --help shows them.
@@ -687,6 +688,10 @@ def main():
     agent = args.agent
     agent_cfg = config.get("agents", {}).get(agent, {})
     cwd = agent_cfg.get("cwd", ".")
+    if args.working_directory is not None:
+        if not args.working_directory.is_dir():
+            parser.error("the agent working directory must be an existing directory")
+        cwd = str(args.working_directory.resolve())
     command = agent_cfg.get("command", agent)
     data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
     data_dir.mkdir(parents=True, exist_ok=True)
