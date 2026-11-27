@@ -2084,7 +2084,10 @@ async def get_jobs(channel: str = "", status: str = ""):
 @app.get("/api/orchestrator/status")
 async def get_orchestrator_status():
     from orchestrator_bridge import status_snapshot
-    return JSONResponse(await asyncio.to_thread(status_snapshot, config), headers={"Cache-Control": "no-store"})
+    snapshot = await asyncio.to_thread(status_snapshot, config)
+    settings = config.get("orchestrator")
+    snapshot["configured"] = bool(isinstance(settings, dict) and settings.get("status_url"))
+    return JSONResponse(snapshot, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/orchestrator/jobs/{job_id}/close")
