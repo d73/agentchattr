@@ -2816,13 +2816,13 @@ function selectSlashCommand(cmd) {
 // --- Mention autocomplete ---
 
 function getMentionCandidates() {
-    // Build list: registered agents + "all agents" + username (self) + known humans
+    // Build the list from registered agents and the broadcast option.
     const candidates = [];
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;
         candidates.push({ name, label: cfg.label || name, color: cfg.color });
     }
-    candidates.push({ name: 'all agents', label: 'all agents', color: 'var(--accent)' });
+    candidates.push({ name: 'all', label: 'all', color: 'var(--accent)' });
     return candidates.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true }) || a.name.localeCompare(b.name));
 }
 
@@ -2843,7 +2843,7 @@ function updateMentionMenu() {
     let atPos = -1;
     for (let i = cursor - 1; i >= 0; i--) {
         if (text[i] === '@') { atPos = i; break; }
-        // Allow spaces if we are still matching a multi-word label like "all agents"
+        // Allow spaces when matching a multi-word display label.
         if (!/[\w\-\s]/.test(text[i])) break;
         // Optimization: don't look back more than 30 chars
         if (cursor - i > 30) break;
