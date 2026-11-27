@@ -915,11 +915,6 @@ body.archive-no-select * {
     outline: none;
 }
 
-.job-recipient-empty .mention-dot {
-    height: 2px;
-    background-color: var(--text-dim);
-}
-
 .job-recipient-check {
     margin-left: auto;
     color: var(--accent);

@@ -2049,7 +2049,6 @@ function openJobRecipientMenu(offset) {
     const selected = _normalizeJobRecipient(jobReplyTargets[activeJobId], options);
     options.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true })
         || a.name.localeCompare(b.name));
-    options.push({ name: '', label: 'No recipient' });
     closeJobMentionMenu();
     jobRecipientOffset = offset;
     showJobMentionMenu(options, 0, selected);
@@ -2110,10 +2109,9 @@ function showJobMentionMenu(matches, index, selectedRecipient) {
         const selected = item.name === selectedRecipient;
         row.setAttribute('aria-selected', String(selected));
         row.dataset.name = item.name;
-        row.classList.toggle('job-recipient-empty', isRecipient && !item.name);
         const dot = document.createElement('span');
         dot.className = 'mention-dot';
-        if (item.name) dot.style.background = item.color || 'var(--accent)';
+        dot.style.background = item.color || 'var(--accent)';
         const label = document.createElement('span');
         label.className = 'mention-name';
         label.textContent = item.label;
@@ -2141,8 +2139,9 @@ function chooseJobMention(name) {
         selectJobMention(name);
         return;
     }
-    if (activeJobId) {
-        jobReplyTargets[activeJobId] = _normalizeJobRecipient(name) || null;
+    const recipient = _normalizeJobRecipient(name);
+    if (activeJobId && recipient) {
+        jobReplyTargets[activeJobId] = recipient;
         updateJobReplyTargetUI();
     }
     closeJobMentionMenu();
