@@ -60,6 +60,28 @@ def _log_level() -> int:
     return levels.get(name, logging.WARNING)
 
 
+def _run_mcp_transport(server):
+    try:
+        server.run()
+    except SystemExit:
+        # Uvicorn logs bind failures before exiting its worker thread.
+        pass
+
+
+def _wait_for_mcp_transports(transports, timeout=10):
+    deadline = time.monotonic() + timeout
+    while True:
+        for server, thread in transports:
+            if not thread.is_alive():
+                raise RuntimeError(f"MCP failed to start on {server.config.host}:{server.config.port}.")
+        pending = [str(server.config.port) for server, _ in transports if not server.started]
+        if not pending:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"MCP did not start within {timeout:g}s on port(s) {', '.join(pending)}.")
+        time.sleep(0.05)
+
+
 def main():
     logging.basicConfig(
         level=_log_level(),
@@ -120,16 +142,8 @@ def main():
     mcp_bridge._ROLES_FILE = data_dir / "roles.json"
     mcp_bridge._load_roles()
 
-    # Start MCP servers in background threads
     http_port = config.get("mcp", {}).get("http_port", 8200)
     sse_port = config.get("mcp", {}).get("sse_port", 8201)
-    mcp_bridge.mcp_http.settings.port = http_port
-    mcp_bridge.mcp_sse.settings.port = sse_port
-
-    threading.Thread(target=mcp_bridge.run_http_server, daemon=True).start()
-    threading.Thread(target=mcp_bridge.run_sse_server, daemon=True).start()
-    time.sleep(0.5)
-    logging.getLogger(__name__).info("MCP streamable-http on port %d, SSE on port %d", http_port, sse_port)
 
     # Mount static files
     from fastapi.staticfiles import StaticFiles
@@ -200,16 +214,6 @@ def main():
                 print("  Aborted.\n")
                 sys.exit(1)
 
-    print(f"\n  agentchattr")
-    print(f"  Web UI:  http://{'localhost' if host == '0.0.0.0' else host}:{port}" + ("  (also on this PC's LAN IP; other devices are refused)" if host == "0.0.0.0" else ""))
-    print(f"  MCP HTTP: http://127.0.0.1:{http_port}/mcp  (Claude, Codex)")
-    print(f"  MCP SSE:  http://127.0.0.1:{sse_port}/sse   (Gemini)")
-    print(f"  Data:    {data_dir}")
-    print(f"  Agents auto-trigger on @mention")
-    if config.get("server", {}).get("auto_shutdown", True):
-        print(f"  Auto-shutdown when the browser is closed and no agents are connected")
-    print()  # the session token is deliberately never printed or logged
-
     logging.getLogger("uvicorn.access").addFilter(_RedactTokenFilter())
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level=logging.getLevelName(_log_level()).lower(), access_log=_log_level() <= logging.INFO))
 
@@ -217,7 +221,31 @@ def main():
         server.should_exit = True
 
     set_shutdown_hook(_request_shutdown)
-    server.run()
+    transports = []
+    try:
+        for transport in mcp_bridge.create_transport_servers(http_port, sse_port):
+            thread = threading.Thread(target=_run_mcp_transport, args=(transport,), daemon=True)
+            thread.start()
+            transports.append((transport, thread))
+        try:
+            _wait_for_mcp_transports(transports)
+        except RuntimeError as exc:
+            logging.getLogger(__name__).error("%s AgentChattr startup aborted.", exc)
+            sys.exit(1)
+
+        print(f"\n  agentchattr")
+        print(f"  Web UI:  http://{'localhost' if host == '0.0.0.0' else host}:{port}" + ("  (also on this PC's LAN IP; other devices are refused)" if host == "0.0.0.0" else ""))
+        print(f"  MCP HTTP: http://127.0.0.1:{http_port}/mcp  (Claude, Codex)")
+        print(f"  MCP SSE:  http://127.0.0.1:{sse_port}/sse   (Gemini)")
+        print(f"  Data:    {data_dir}")
+        print(f"  Agents auto-trigger on @mention")
+        if config.get("server", {}).get("auto_shutdown", True):
+            print(f"  Auto-shutdown when the browser is closed and no agents are connected")
+        print()  # the session token is deliberately never printed or logged
+        server.run()
+    finally:
+        for transport, _ in transports:
+            transport.should_exit = True
 
 
 if __name__ == "__main__":
