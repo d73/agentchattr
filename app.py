@@ -431,6 +431,10 @@ def _install_security_middleware(token: str, cfg: dict):
                     status_code=403,
                 )
 
+            # This exact service route checks its dedicated credential in the handler.
+            if request.method == "POST" and _re.fullmatch(r"/api/orchestrator/jobs/[0-9]+/close", path):
+                return await call_next(request)
+
             # --- Token check ---
             # Allow registered agents to authenticate via Bearer token
             # for /api/messages and /api/send (no browser session needed).
@@ -463,6 +467,9 @@ def configure(cfg: dict, session_token: str = ""):
 
     data_dir = cfg.get("server", {}).get("data_dir", "./data")
     Path(data_dir).mkdir(parents=True, exist_ok=True)
+    if isinstance(cfg.get("orchestrator"), dict):
+        from orchestrator_bridge import prepare_credentials
+        prepare_credentials(Path(data_dir))
 
     log_path = Path(data_dir) / "agentchattr_log.jsonl"
     legacy_log_path = Path(data_dir) / "room_log.jsonl"
@@ -2072,6 +2079,32 @@ async def get_jobs(channel: str = "", status: str = ""):
     ch = channel if channel else None
     st = status if status else None
     return jobs.list_all(channel=ch, status=st)
+
+
+@app.get("/api/orchestrator/status")
+async def get_orchestrator_status():
+    from orchestrator_bridge import status_snapshot
+    return JSONResponse(await asyncio.to_thread(status_snapshot, config), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/orchestrator/jobs/{job_id}/close")
+async def close_orchestrator_job(job_id: int, request: Request):
+    from orchestrator_bridge import authorized_closeout
+
+    scope = config.get("orchestrator", {})
+    if not authorized_closeout(config, request.headers.get("authorization", "")):
+        return JSONResponse({"error": "orchestrator closeout credential required"}, status_code=403)
+    if (not isinstance(scope, dict) or type(scope.get("closeout_job_id")) is not int
+            or scope["closeout_job_id"] != job_id):
+        return JSONResponse({"error": "Job is outside the configured closeout scope"}, status_code=404)
+    job = jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+    if job["status"] == "open":
+        job = jobs.update_status(job_id, "done", expected_status="open")
+    if job is None or job["status"] != "done":
+        return JSONResponse({"error": "Job could not be closed from its current state"}, status_code=409)
+    return {"id": job_id, "status": "done"}
 
 
 @app.post("/api/messages/{msg_id}/demote")
