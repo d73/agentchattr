@@ -350,6 +350,26 @@ Each agent instance gets its own MCP proxy (auto-assigned port) that injects the
 
 MCP instructions tell agents: if you are addressed in chat, respond in chat (don't take the answer back to the terminal). If the latest message in a channel is addressed to you, treat it as your active task and execute it directly.
 
+### Local plugins
+
+Enable a trusted plugin in `config.local.toml` and restart AgentChattr:
+
+```toml
+[plugins.example]
+path = "../my-plugin"
+
+[plugins.example.settings]
+mode = "local"
+```
+
+Paths are relative to `config.local.toml`. Remove the plugin table and restart to unload it. An invalid plugin is skipped. The AgentChattr header warning shows the full path to `plugins.log` in the configured data directory.
+
+A plugin directory contains `__init__.py` with `HOST_API_VERSION = 1` and `register(host)`. A plugin can register an `APIRouter`, a mapping of tool suffixes to callables, and relative CSS and JavaScript assets. The host prefixes API paths with `/api/plugins/<id>/` and MCP names with `<id>_`. The optional synchronous `startup(host)` hook runs after registration is validated and before capabilities are made available. The plugin receives its settings, the data directory, a logger, and Job and agent service operations.
+
+Plugin HTTP routes require a browser session by default. To authenticate a single route with a dedicated service credential, pass `service_auth={(method, path): validator}` to `host.add_routes`. The `path` is the relative route template as declared on the router. The validator receives the request and returns `True` to authorize it. Core loopback and Origin checks run first.
+
+Plugin Python runs with the server’s OS permissions. Plugin scripts and styles load into the AgentChattr page and share its origin. Enable only code you trust.
+
 ### Optional orchestrator status and closeout
 
 For a local Phase 2 coordinator, configure `[orchestrator]` in `config.local.toml`.

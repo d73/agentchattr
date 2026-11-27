@@ -105,8 +105,8 @@ def load_config(root: Path | None = None) -> dict:
 
     config.local.toml is gitignored and intended for user-specific agents
     (e.g. local LLM endpoints) that shouldn't be committed.
-    Only the [agents] section is merged — local entries are added alongside
-    (not replacing) the agents defined in config.toml.
+    Local [agents] entries are added alongside the built-ins. The [plugins]
+    table is local-only, with relative paths based on the config directory.
 
     AGENTCHATTR_* environment variables override values from config.toml
     (see module docstring for the list).
@@ -116,11 +116,21 @@ def load_config(root: Path | None = None) -> dict:
 
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
+    config.pop("plugins", None)
 
     local_path = root / "config.local.toml"
     if local_path.exists():
         with open(local_path, "rb") as f:
             local = tomllib.load(f)
+
+        plugins = local.get("plugins", {})
+        if not isinstance(plugins, dict):
+            print("  Warning: Ignoring [plugins]: it must be a table")
+        elif plugins:
+            config["plugins"] = plugins
+            for entry in plugins.values():
+                if isinstance(entry, dict) and isinstance(entry.get("path"), str) and entry["path"]:
+                    entry["path"] = str(local_path.parent / entry["path"])
 
         # Merge [agents] section — local agents are added ONLY if they don't already exist.
         # This protects the "holy trinity" (claude, codex, gemini) from being overridden.
