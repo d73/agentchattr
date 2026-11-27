@@ -1068,12 +1068,19 @@ mcp_sse = _create_server(8201)   # SSE for Gemini
 # (store is set by run.py before starting)
 
 
-def run_http_server():
-    """Block — run streamable-http MCP in a background thread."""
-    mcp_http.run(transport="streamable-http")
+def create_transport_servers(http_port: int, sse_port: int):
+    """Build the two Uvicorn servers so the launcher can observe readiness."""
+    import uvicorn
 
-
-def run_sse_server():
-    """Block — run SSE MCP in a background thread."""
-    mcp_sse.run(transport="sse")
+    servers = []
+    for mcp, app_factory, port in (
+        (mcp_http, mcp_http.streamable_http_app, http_port),
+        (mcp_sse, mcp_sse.sse_app, sse_port),
+    ):
+        mcp.settings.port = port
+        servers.append(uvicorn.Server(uvicorn.Config(
+            app_factory(), host=mcp.settings.host, port=port,
+            log_level=mcp.settings.log_level.lower(),
+        )))
+    return servers
 
