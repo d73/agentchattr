@@ -15,9 +15,16 @@ function setup(text) {
 }
 test('summary autocomplete sorts, scrolls and selects without sending',()=>{
   const s=setup('/summary @');
-  assert.deepEqual(s.menu.children.map(r=>r.dataset.name),['agy','all agents','c1','c2','c10','zeta']);
+  assert.deepEqual(s.menu.children.map(r=>r.dataset.name),['agy','all','c1','c2','c10','zeta']);
   assert.equal(s.key('ArrowDown'),true);assert.equal(s.key('ArrowDown'),true);assert.deepEqual(s.scrolled,['nearest','nearest']);
   assert.equal(s.key('Enter'),true);assert.equal(s.input.value,'/summary @c1 ');
+});
+test('selecting all displays the short label and inserts the broadcast mention', () => {
+  const s = setup('hello @al');
+  assert.equal(s.menu.children.length, 1);
+  assert.match(s.menu.children[0].innerHTML, /class="mention-name">all<\/span>/);
+  assert.equal(s.key('Enter'), true);
+  assert.equal(s.input.value, 'hello @all ');
 });
 test('escape cancels and ordinary mentions use the same sorted menu',()=>{
   const s=setup('hello @');assert.equal(s.menu.children[0].dataset.name,'agy');
