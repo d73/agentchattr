@@ -787,12 +787,6 @@ body.archive-no-select * {
     position: relative;
 }
 
-.job-reply-target-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
 .job-reply-target-btn {
     border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
     background: color-mix(in srgb, var(--accent) 8%, var(--white-02));
@@ -806,11 +800,17 @@ body.archive-no-select * {
     align-items: center;
     gap: 6px;
     cursor: pointer;
-    max-width: 100%;
+    flex-shrink: 0;
+    max-width: 45%;
+    margin-top: 1px;
 }
 
 .job-reply-target-btn:hover {
     background: color-mix(in srgb, var(--accent) 14%, var(--white-02));
+}
+
+.job-reply-target-btn.hidden {
+    display: none;
 }
 
 .job-reply-target-btn.no-target {
@@ -822,26 +822,8 @@ body.archive-no-select * {
     display: none;
 }
 
-.job-reply-target-clear {
-    border: 1px solid var(--border);
-    background: var(--white-03);
-    color: var(--text-dim);
-    border-radius: var(--radius-full);
-    width: 20px;
-    height: 20px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-family: inherit;
-    font-size: 13px;
-    line-height: 1;
-    cursor: pointer;
-}
-
-.job-reply-target-clear:hover {
-    color: var(--text);
-    border-color: color-mix(in srgb, var(--text) 45%, var(--border));
-    background: var(--white-06);
+.job-reply-target-btn svg {
+    flex-shrink: 0;
 }
 
 .job-reply-target-prefix {
@@ -926,24 +908,65 @@ body.archive-no-select * {
 
 #job-mention-menu.hidden { display: none; }
 
-.job-input-row textarea {
+#job-mention-menu.job-recipient-menu {
+    right: auto;
+    box-sizing: border-box;
+    margin-bottom: 0;
+    outline: none;
+}
+
+.job-recipient-empty .mention-dot {
+    height: 2px;
+    background-color: var(--text-dim);
+}
+
+.job-recipient-check {
+    margin-left: auto;
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    #job-mention-menu.job-recipient-menu {
+        animation: job-recipient-open var(--duration-fast) ease-out;
+    }
+}
+
+@keyframes job-recipient-open {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.job-message-box {
+    display: flex;
+    align-items: flex-start;
     flex: 1;
+    min-width: 0;
+    gap: 6px;
+    padding: 4px 6px;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
+}
+
+.job-message-box:focus-within {
+    border-color: var(--accent);
+}
+
+.job-input-row textarea {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 0;
     color: var(--text);
-    padding: 6px 8px;
+    padding: 2px 2px;
     font-family: inherit;
     font-size: 13px;
     resize: none;
     outline: none;
-    min-height: 32px;
+    min-height: 22px;
     max-height: 120px;
     overflow-y: auto;
-}
-
-.job-input-row textarea:focus {
-    border-color: var(--accent);
 }
 
 .job-input-row textarea.job-starter-prefill {

@@ -6,7 +6,7 @@
     <title>agentchattr</title>
     <link rel="stylesheet" href="/static/style.css?v=264">
     <link rel="stylesheet" href="/static/sessions.css?v=223">
-    <link rel="stylesheet" href="/static/jobs.css?v=225">
+    <link rel="stylesheet" href="/static/jobs.css?v=226">
     <link rel="stylesheet" href="/static/orchestrator.css?v=2">
     <link rel="icon" href="/static/favicon.ico">
 </head>
@@ -157,19 +157,21 @@
                     </div>
                     <div class="jobs-conv-messages" id="jobs-conv-messages"></div>
                     <div class="jobs-conv-input">
-                        <div id="job-mention-menu" class="mention-menu hidden"></div>
+                        <div id="job-mention-menu" class="mention-menu hidden" role="listbox" aria-label="Agents" tabindex="-1"></div>
                         <div id="job-attachments" class="job-attachments"></div>
                         <div id="job-attachment-status" class="attachment-status" role="status"></div>
-                        <div class="job-reply-target-row hidden" id="job-reply-target-row">
-                            <button class="job-reply-target-btn" id="job-reply-target-btn" type="button" onclick="cycleJobReplyTarget()" title="Reply target">
-                                <span class="job-reply-target-prefix">To</span>
-                                <span class="job-reply-target-dot" id="job-reply-target-dot"></span>
-                                <span class="job-reply-target-name" id="job-reply-target-name"></span>
-                            </button>
-                            <button class="job-reply-target-clear hidden" id="job-reply-target-clear" type="button" onclick="clearJobReplyTarget(event)" title="Clear reply target" aria-label="Clear reply target">&times;</button>
-                        </div>
                         <div class="job-input-row">
-                            <textarea id="jobs-conv-input-text" placeholder="Message..." rows="1"></textarea>
+                            <div class="job-message-box">
+                                <button class="job-reply-target-btn hidden" id="job-reply-target-btn" type="button"
+                                    title="Choose reply target" aria-haspopup="listbox" aria-expanded="false" aria-controls="job-mention-menu">
+                                    <span class="job-reply-target-prefix">To</span>
+                                    <span class="job-reply-target-dot" id="job-reply-target-dot"></span>
+                                    <span class="job-reply-target-name" id="job-reply-target-name"></span>
+                                    <svg width="9" height="6" viewBox="0 0 9 6" aria-hidden="true"><path d="M1 1l3.5 3.5L8 1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                </button>
+                                <textarea id="jobs-conv-input-text" placeholder="Message..." rows="1"
+                                    aria-label="Job message" aria-autocomplete="list" aria-controls="job-mention-menu"></textarea>
+                            </div>
                             <button id="job-send" onclick="sendJobMessage()">Send</button>
                         </div>
                     </div>
@@ -447,7 +449,7 @@
     <script src="/static/sessions.js?v=224"></script>
     <script src="/static/attachments.js?v=5"></script>
     <script src="/static/action-errors.js?v=1"></script>
-    <script src="/static/jobs.js?v=228"></script>
+    <script src="/static/jobs.js?v=229"></script>
     <script src="/static/channels.js?v=228"></script>
     <script src="/static/rules-panel.js?v=225"></script>
     <script src="/static/mention-alerts.js?v=1"></script>

@@ -32,6 +32,7 @@ let jobUploads = 0;
 let jobMentionVisible = false;
 let jobMentionIndex = 0;
 let jobMentionStart = -1;
+let jobRecipientOffset = null;
 let _draggedJobId = null;
 let _draggedJobStatus = null;
 let _pendingJobReflowTops = null;
@@ -203,6 +204,7 @@ function setupJobsInput() {
     const input = document.getElementById('jobs-conv-input-text');
     if (!input) return;
     input.addEventListener('keydown', (e) => {
+        if (e.isComposing) return;
         if (e.key === 'Enter' && !e.shiftKey && !jobMentionVisible) {
             e.preventDefault();
             sendJobMessage();
@@ -291,19 +293,14 @@ function resolveJobDefaultRecipient(job, messages = []) {
 }
 
 function updateJobReplyTargetUI() {
-    const row = document.getElementById('job-reply-target-row');
     const btn = document.getElementById('job-reply-target-btn');
     const dot = document.getElementById('job-reply-target-dot');
     const nameEl = document.getElementById('job-reply-target-name');
-    const clearBtn = document.getElementById('job-reply-target-clear');
-    if (!row || !btn || !dot || !nameEl || !clearBtn) return;
-    if (!activeJobId) {
-        row.classList.add('hidden');
-        return;
-    }
-    const opts = getJobRecipientOptions();
+    if (!btn || !dot || !nameEl) return;
+    const opts = activeJobId ? getJobRecipientOptions() : [];
     if (opts.length === 0) {
-        row.classList.add('hidden');
+        btn.classList.add('hidden');
+        if (jobRecipientOffset !== null) closeJobMentionMenu();
         return;
     }
     const hasStored = Object.prototype.hasOwnProperty.call(jobReplyTargets, activeJobId);
@@ -321,14 +318,13 @@ function updateJobReplyTargetUI() {
     if (selected) {
         dot.style.background = selected.color || 'var(--accent)';
         nameEl.textContent = selected.label || selected.name;
-        btn.title = `Reply target: ${selected.label || selected.name} (Tab to cycle)`;
+        btn.title = `Choose reply target (currently ${selected.label || selected.name})`;
     } else {
         nameEl.textContent = 'none';
-        btn.title = 'Reply target: none (Tab to choose)';
+        btn.title = 'Choose reply target';
     }
     btn.classList.toggle('no-target', !selected);
-    clearBtn.classList.toggle('hidden', !selected);
-    row.classList.remove('hidden');
+    btn.classList.remove('hidden');
 }
 
 function cycleJobReplyTarget(step = 1) {
@@ -347,15 +343,6 @@ function cycleJobReplyTarget(step = 1) {
     document.getElementById('jobs-conv-input-text')?.focus();
 }
 
-function clearJobReplyTarget(event) {
-    event?.preventDefault?.();
-    event?.stopPropagation?.();
-    if (!activeJobId) return;
-    jobReplyTargets[activeJobId] = null;
-    updateJobReplyTargetUI();
-    document.getElementById('jobs-conv-input-text')?.focus();
-}
-
 // ---------------------------------------------------------------------------
 // Jobs panel toggle and view switching
 // ---------------------------------------------------------------------------
@@ -370,6 +357,8 @@ function toggleJobsPanel() {
             window.closeSidePanels?.('jobs');
             showJobsListView();
             renderJobsList();
+        } else {
+            closeJobMentionMenu();
         }
     });
 }
@@ -385,6 +374,7 @@ function showJobsListView(onDone) {
     const listView = document.getElementById('jobs-list-view');
     const convView = document.getElementById('jobs-conversation-view');
     activeJobId = null;
+    closeJobMentionMenu();
     updateJobReplyTargetUI();
     if (!convView.classList.contains('hidden')) {
         _animateJobViewSwitch(convView, listView, 'back', onDone);
@@ -881,6 +871,7 @@ async function openJobConversation(jobId) {
     if (activeJobId !== jobId) clearJobAttachments();
     const job = jobsData.find(a => a.id === jobId);
     if (!job) return;
+    closeJobMentionMenu();
     activeJobId = jobId;
     markJobRead(jobId);
 
@@ -1145,6 +1136,7 @@ async function sendJobMessage() {
     const input = document.getElementById('jobs-conv-input-text');
     const text = input.value.trim();
     if (jobUploads > 0 || (!text && jobPendingAttachments.length === 0)) return;
+    closeJobMentionMenu();
     const explicitTargets = _extractJobMentionTargets(text);
     const hasBroadcastMention = /@(?:all|both)\b/i.test(text);
     let outboundText = text;
@@ -1969,43 +1961,104 @@ function markJobRead(jobId) {
 
 function setupJobMentions() {
     const input = document.getElementById('jobs-conv-input-text');
-    if (!input) return;
+    const menu = document.getElementById('job-mention-menu');
+    const button = document.getElementById('job-reply-target-btn');
+    if (!input || !menu || !button) return;
 
     input.addEventListener('input', updateJobMentionMenu);
-    input.addEventListener('keydown', (e) => {
-        if (jobMentionVisible) {
-            const menu = document.getElementById('job-mention-menu');
-            const items = menu.querySelectorAll('.mention-item');
-            if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                jobMentionIndex = (jobMentionIndex - 1 + items.length) % items.length;
-                items.forEach((el, i) => el.classList.toggle('active', i === jobMentionIndex));
-                return;
-            }
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                jobMentionIndex = (jobMentionIndex + 1) % items.length;
-                items.forEach((el, i) => el.classList.toggle('active', i === jobMentionIndex));
-                return;
-            }
-            if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                e.preventDefault();
-                const active = items[jobMentionIndex];
-                if (active) selectJobMention(active.dataset.name);
-                return;
-            }
-            if (e.key === 'Escape') {
-                menu.classList.add('hidden');
-                jobMentionVisible = false;
-                return;
-            }
+    button.addEventListener('click', (e) => {
+        if (jobRecipientOffset !== null) {
+            closeJobMentionMenu();
+            button.focus();
+            return;
         }
-        // Note: Enter-to-send is handled by setupJobsInput() — don't duplicate here
+        const offset = e.detail ? e.clientX - button.getBoundingClientRect().left : 0;
+        openJobRecipientMenu(offset);
     });
+    button.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        openJobRecipientMenu(0);
+    });
+    const handlePickerKeys = (e) => {
+        if (!jobMentionVisible || e.isComposing) return;
+        const items = menu.children;
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            const step = e.key === 'ArrowUp' ? -1 : 1;
+            highlightJobMention(menu, (jobMentionIndex + step + items.length) % items.length);
+            items[jobMentionIndex]?.scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+            e.preventDefault();
+            if (items[jobMentionIndex]) chooseJobMention(items[jobMentionIndex].dataset.name);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            const restoreButton = jobRecipientOffset !== null;
+            closeJobMentionMenu();
+            if (restoreButton) button.focus();
+        }
+    };
+    input.addEventListener('keydown', handlePickerKeys);
+    menu.addEventListener('keydown', handlePickerKeys);
+    document.addEventListener('pointerdown', (e) => {
+        if (!jobMentionVisible || menu.contains(e.target) || button.contains(e.target)) return;
+        if (jobRecipientOffset === null && input.contains(e.target)) return;
+        closeJobMentionMenu();
+    });
+    window.addEventListener('resize', positionJobRecipientMenu);
+}
+
+function closeJobMentionMenu() {
+    const menu = document.getElementById('job-mention-menu');
+    menu.classList.add('hidden');
+    menu.removeAttribute('aria-activedescendant');
+    document.getElementById('jobs-conv-input-text').removeAttribute('aria-activedescendant');
+    document.getElementById('job-reply-target-btn').setAttribute('aria-expanded', 'false');
+    jobMentionVisible = false;
+    jobRecipientOffset = null;
+}
+
+function positionJobRecipientMenu() {
+    if (jobRecipientOffset === null) return;
+    const menu = document.getElementById('job-mention-menu');
+    const composer = menu.parentElement.getBoundingClientRect();
+    const panel = document.getElementById('jobs-panel').getBoundingClientRect();
+    const button = document.getElementById('job-reply-target-btn').getBoundingClientRect();
+    const gap = 4;
+    const inset = 8;
+    const width = Math.min(224, composer.width - 2 * inset);
+    const anchor = button.left - composer.left + jobRecipientOffset;
+    menu.style.width = `${width}px`;
+    menu.style.left = `${Math.max(inset, Math.min(anchor, composer.width - width - inset))}px`;
+    menu.style.bottom = `${composer.bottom - button.top + gap}px`;
+    menu.style.maxHeight = `${Math.max(0, Math.min(200, button.top - panel.top - gap - inset))}px`;
+}
+
+function highlightJobMention(menu, index) {
+    jobMentionIndex = index;
+    Array.from(menu.children).forEach((row, i) => {
+        row.classList.toggle('active', i === index);
+    });
+    const control = jobRecipientOffset === null ? document.getElementById('jobs-conv-input-text') : menu;
+    control.setAttribute('aria-activedescendant', menu.children[index].id);
+}
+
+function openJobRecipientMenu(offset) {
+    const options = getJobRecipientOptions();
+    if (!activeJobId || options.length === 0) return;
+    const selected = _normalizeJobRecipient(jobReplyTargets[activeJobId], options);
+    options.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true })
+        || a.name.localeCompare(b.name));
+    options.push({ name: '', label: 'No recipient' });
+    closeJobMentionMenu();
+    jobRecipientOffset = offset;
+    showJobMentionMenu(options, 0, selected);
+    positionJobRecipientMenu();
+    document.getElementById('job-reply-target-btn').setAttribute('aria-expanded', 'true');
+    document.getElementById('job-mention-menu').focus({ preventScroll: true });
 }
 
 function updateJobMentionMenu() {
-    const menu = document.getElementById('job-mention-menu');
     const input = document.getElementById('jobs-conv-input-text');
     const text = input.value;
     const cursor = input.selectionStart;
@@ -2018,8 +2071,7 @@ function updateJobMentionMenu() {
     }
 
     if (atPos < 0 || (atPos > 0 && /\w/.test(text[atPos - 1]))) {
-        menu.classList.add('hidden');
-        jobMentionVisible = false;
+        closeJobMentionMenu();
         return;
     }
 
@@ -2032,32 +2084,69 @@ function updateJobMentionMenu() {
     );
 
     if (matches.length === 0) {
-        menu.classList.add('hidden');
-        jobMentionVisible = false;
+        closeJobMentionMenu();
         return;
     }
 
-    menu.innerHTML = '';
-    jobMentionIndex = Math.min(jobMentionIndex, matches.length - 1);
+    const index = jobRecipientOffset === null ? Math.min(jobMentionIndex, matches.length - 1) : 0;
+    if (jobRecipientOffset !== null) closeJobMentionMenu();
+    showJobMentionMenu(matches, index);
+}
 
+function showJobMentionMenu(matches, index, selectedRecipient) {
+    const menu = document.getElementById('job-mention-menu');
+    const isRecipient = jobRecipientOffset !== null;
+    menu.classList.toggle('job-recipient-menu', isRecipient);
+    menu.setAttribute('aria-label', isRecipient ? 'Reply target' : 'Agents');
+    if (!isRecipient) {
+        for (const property of ['width', 'left', 'bottom', 'max-height']) menu.style.removeProperty(property);
+    }
+    menu.replaceChildren();
     matches.forEach((item, i) => {
         const row = document.createElement('div');
-        row.className = 'mention-item' + (i === jobMentionIndex ? ' active' : '');
+        row.id = `job-mention-option-${i}`;
+        row.className = 'mention-item';
+        row.setAttribute('role', 'option');
+        const selected = item.name === selectedRecipient;
+        row.setAttribute('aria-selected', String(selected));
         row.dataset.name = item.name;
-        row.innerHTML = `<span class="mention-dot" style="background: ${item.color}"></span><span class="mention-name">${window.escapeHtml(item.label)}</span>`;
-        row.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            selectJobMention(item.name);
-        });
-        row.addEventListener('mouseenter', () => {
-            jobMentionIndex = i;
-            menu.querySelectorAll('.mention-item').forEach((el, j) => el.classList.toggle('active', j === i));
-        });
+        row.classList.toggle('job-recipient-empty', isRecipient && !item.name);
+        const dot = document.createElement('span');
+        dot.className = 'mention-dot';
+        if (item.name) dot.style.background = item.color || 'var(--accent)';
+        const label = document.createElement('span');
+        label.className = 'mention-name';
+        label.textContent = item.label;
+        row.append(dot, label);
+        if (selected) {
+            const check = document.createElement('span');
+            check.className = 'job-recipient-check';
+            check.setAttribute('aria-hidden', 'true');
+            check.textContent = '✓';
+            row.appendChild(check);
+        }
+        row.addEventListener('mousedown', (e) => e.preventDefault());
+        row.addEventListener('click', () => chooseJobMention(item.name));
+        row.addEventListener('mouseenter', () => highlightJobMention(menu, i));
         menu.appendChild(row);
     });
 
+    highlightJobMention(menu, index);
     menu.classList.remove('hidden');
     jobMentionVisible = true;
+}
+
+function chooseJobMention(name) {
+    if (jobRecipientOffset === null) {
+        selectJobMention(name);
+        return;
+    }
+    if (activeJobId) {
+        jobReplyTargets[activeJobId] = _normalizeJobRecipient(name) || null;
+        updateJobReplyTargetUI();
+    }
+    closeJobMentionMenu();
+    document.getElementById('jobs-conv-input-text').focus();
 }
 
 function selectJobMention(name) {
@@ -2072,8 +2161,7 @@ function selectJobMention(name) {
     const newPos = jobMentionStart + mention.length;
     input.setSelectionRange(newPos, newPos);
     input.focus();
-    document.getElementById('job-mention-menu').classList.add('hidden');
-    jobMentionVisible = false;
+    closeJobMentionMenu();
 }
 
 // ---------------------------------------------------------------------------
@@ -2115,7 +2203,6 @@ window.openJobConversation = openJobConversation;
 window.openJobFromBreadcrumb = openJobFromBreadcrumb;
 window.sendJobMessage = sendJobMessage;
 window.cycleJobReplyTarget = cycleJobReplyTarget;
-window.clearJobReplyTarget = clearJobReplyTarget;
 window.startDeleteJobMessage = startDeleteJobMessage;
 window.confirmDeleteJobMessage = confirmDeleteJobMessage;
 window.cancelDeleteJobMessage = cancelDeleteJobMessage;
