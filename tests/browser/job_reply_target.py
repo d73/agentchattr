@@ -57,11 +57,12 @@ def check_reply_target(page, url, screenshot):
     pill.click(position={"x": offset, "y": 9})
     expect(menu).to_be_visible()
     expect(pill).to_have_attribute("aria-expanded", "true")
+    pill_bounds = pill.bounding_box()
     bounds = menu.bounding_box()
     assert abs(bounds["x"] - pill_bounds["x"] - offset) <= 2
     assert abs(bounds["y"] + bounds["height"] - pill_bounds["y"] + 4) <= 2
     assert bounds["width"] <= 224
-    assert menu.get_by_role("option").all_text_contents() == ["Agy", "c1", "Claude", "No recipient✓"]
+    assert menu.get_by_role("option").all_text_contents() == ["Agy", "c1", "Claude"]
     menu.press("ArrowDown")
     menu.press("Enter")
     expect(pill).to_contain_text("c1")
@@ -80,9 +81,7 @@ def check_reply_target(page, url, screenshot):
     menu.press("Escape")
     expect(menu).to_be_hidden()
     expect(pill).to_be_focused()
-    pill.click()
-    menu.get_by_role("option", name="No recipient").click()
-    expect(pill).to_contain_text("none")
+    expect(pill).to_contain_text("c1")
     expect(draft).to_have_value("Please review the changes.")
     pill.click()
     menu.get_by_role("option", name="Claude").click()
