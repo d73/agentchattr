@@ -1,4 +1,4 @@
-"""Verify the current Codex roster and registered identities in Job messages."""
+"""Verify session-bound delivery and visibility for Job messages."""
 
 import json
 from pathlib import Path
@@ -12,8 +12,8 @@ import mcp_bridge as bridge
 from registry import RuntimeRegistry
 
 
-class CodingRosterTests(unittest.TestCase):
-    def test_presence_and_bound_job_assignment(self):
+class BoundJobMessageTests(unittest.TestCase):
+    def test_presence_and_bound_job_delivery(self):
         parent = Path(__file__).resolve().parents[2]
         temp = parent if parent.name.casefold() == "temp" else parent / "Temp"
         temp.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,6 @@ class CodingRosterTests(unittest.TestCase):
             registry.seed({"codex": {}, "claude": {}})
             first = registry.register("codex", requested_name="manual-a")
             other = registry.register("codex", requested_name="manual-b")
-            offline = registry.register("codex", requested_name="idle-without-heartbeat")
             reviewer = registry.register("claude")
             jobs = JobStore(str(Path(directory) / "jobs.json"))
             job = jobs.create("Fixture", "job", "general", "fixture", status="open")["id"]
@@ -36,12 +35,7 @@ class CodingRosterTests(unittest.TestCase):
             with (patch.object(bridge, "registry", registry), patch.object(bridge, "jobs", jobs),
                   patch.object(bridge, "agents", triggers), patch.object(bridge, "router", None),
                   patch.object(bridge, "_presence", live)):
-                rows = json.loads(bridge.chat_coding_roster())
-                self.assertEqual({first["name"]: "busy", other["name"]: "available"},
-                                 {row["name"]: row["availability"] for row in rows})
-                self.assertNotIn(offline["name"], {row["name"] for row in rows})
-                self.assertTrue(all(set(row) == {"name", "identity", "availability"} for row in rows))
-                self.assertTrue(bridge.chat_send("orch", "Assignment", job_id=job,
+                self.assertTrue(bridge.chat_send("fixture", "Assignment", job_id=job,
                                                 recipient=other["name"],
                                                 recipient_identity=other["identity_id"]).startswith("Sent"))
 
@@ -55,11 +49,11 @@ class CodingRosterTests(unittest.TestCase):
                 self.assertEqual("Assignment", json.loads(bridge.chat_read(sender=other["name"], job_id=job,
                                                                            ctx=auth(other)))[1]["text"])
                 bridge.chat_send(other["name"], "Ack", job_id=job, ctx=auth(other))
-                events = json.loads(bridge.chat_read(sender="orch", job_id=job))
+                events = json.loads(bridge.chat_read(sender="fixture", job_id=job))
                 self.assertEqual(other["identity_id"], events[-1]["sender_identity"])
                 registry.deregister(other["name"])
                 replacement = registry.register("codex", requested_name=other["name"])
-                self.assertTrue(bridge.chat_send("orch", "Stale assignment", job_id=job,
+                self.assertTrue(bridge.chat_send("fixture", "Stale assignment", job_id=job,
                                                 recipient=other["name"],
                                                 recipient_identity=other["identity_id"]).startswith("Error"))
                 replacement_messages = json.loads(bridge.chat_read(sender=other["name"], job_id=job,

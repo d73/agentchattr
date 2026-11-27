@@ -81,6 +81,34 @@
 
 /* .jobs-group-header, .jobs-group-items — shared in style.css */
 
+.job-group-filters {
+    display: flex;
+    gap: 0.35rem;
+    overflow-x: auto;
+    padding: 0.35rem 0.5rem;
+    scrollbar-width: thin;
+}
+
+.job-group-filters button {
+    flex: none;
+    border: 1px solid var(--border-color);
+    border-radius: 0.35rem;
+    padding: 0.25rem 0.5rem;
+    color: inherit;
+    background: var(--bg-subtle);
+    font: inherit;
+    cursor: pointer;
+}
+
+.job-group-filters button[aria-pressed="true"] {
+    border-color: var(--accent);
+}
+
+.has-job-presentation .job-title,
+.has-job-presentation .job-origin {
+    font-size: 14px;
+}
+
 /* Individual job card */
 .job-card {
     padding: var(--sb-padding);

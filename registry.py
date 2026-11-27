@@ -251,12 +251,6 @@ class RuntimeRegistry:
                     if requested_slot < 1 or requested_slot in taken:
                         raise ValueError(f'Slot {requested_slot} already occupied or invalid')
                     slot = requested_slot
-                else:
-                    previous = self._instances.get(requested_name) or self._reclaimable.get(requested_name)
-                    if previous and previous.base == base and previous.slot not in taken:
-                        # Relaunch this worker in its own slot so it cannot replace a
-                        # different worker that has yet to reconnect after a restart.
-                        slot = previous.slot
 
             # No validation can fail after this point: expire stale sessions only
             # once the requested name and slot are known to be available.

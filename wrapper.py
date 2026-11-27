@@ -440,26 +440,18 @@ def _register_instance(server_port: int, base: str, label: str | None = None, na
 
 
 def _register_at_startup(server_port, base, label, name, timeout=40):
-    """Wait for the server to listen or the previous identity lease to expire."""
-    from urllib.error import URLError
-
+    """Allow window-close grace, forced shutdown, and the identity lease to expire."""
     deadline = time.monotonic() + timeout
     announced = False
     while True:
         try:
             return _register_instance(server_port, base, label, name)
-        except (NameInUseError, URLError) as exc:
-            if isinstance(exc, NameInUseError):
-                reason = f"Name {name} is in use."
-            elif isinstance(exc.reason, ConnectionRefusedError):
-                reason = f"AgentChattr is not accepting connections on port {server_port}."
-            else:
-                raise
+        except NameInUseError:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise
             if not announced:
-                print(f"  {reason} Retrying for up to {timeout:g} seconds...", flush=True)
+                print(f"  Name {name} is in use. Retrying for up to {timeout:g} seconds...", flush=True)
                 announced = True
             time.sleep(min(1, remaining))
 
@@ -670,7 +662,6 @@ def main():
     parser.add_argument("--no-restart", action="store_true", help="Do not restart on exit")
     parser.add_argument("--label", type=str, default=None, help="Custom display label")
     parser.add_argument("--name", type=str, default=None, help="Requested chat identity (lowercase letters, digits and hyphens)")
-    parser.add_argument("--working-directory", type=Path, help="Override the agent's working directory for this launch")
     # Per-project isolation flags (must match the server's flags so wrappers
     # launched separately connect to the right instance). Values are consumed
     # by apply_cli_overrides() above; listing here so --help shows them.
@@ -688,10 +679,6 @@ def main():
     agent = args.agent
     agent_cfg = config.get("agents", {}).get(agent, {})
     cwd = agent_cfg.get("cwd", ".")
-    if args.working_directory is not None:
-        if not args.working_directory.is_dir():
-            parser.error("the agent working directory must be an existing directory")
-        cwd = str(args.working_directory.resolve())
     command = agent_cfg.get("command", agent)
     data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -701,15 +688,8 @@ def main():
     try:
         registration = _register_at_startup(server_port, agent, args.label, args.name)
     except Exception as exc:
-        if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, ConnectionRefusedError):
-            print(f"  This agent couldn't start because it couldn't reach AgentChattr on port {server_port}.")
-            if os.environ.get("TERMGRID_BRIDGE_PORT") or os.environ.get("TERMGRID_BRIDGE_TOKEN"):
-                print("  Start AgentChattr, then click Restart in this pane's header.")
-            else:
-                print("  Start AgentChattr, then run this command again.")
-        else:
-            print(f"  Registration failed ({exc}).")
-            print("  Wrapper cannot continue without a registered identity.")
+        print(f"  Registration failed ({exc}).")
+        print("  Wrapper cannot continue without a registered identity.")
         sys.exit(1)
 
     assigned_name = registration["name"]

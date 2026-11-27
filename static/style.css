@@ -4518,7 +4518,7 @@ a.file-attachment:hover { border-color: var(--accent); }
 .help-pulse { animation: helpPulse 1s ease 3; }
 
 /* Needs-input state: pill flashes when the CLI is waiting on the user (e.g. a permission prompt) */
-.status-pill.needs-input {
+.status-pill.needs-input, .job-card.needs-input {
     border-color: var(--agent-color, #fbbf24);
     animation: needs-input-flash 1s ease-in-out infinite;
 }
@@ -4530,7 +4530,7 @@ a.file-attachment:hover { border-color: var(--accent); }
     }
 }
 /* "Flash" option (Settings > Needs attention): a hard on/off blink instead of the soft highlight pulse. */
-:root[data-attention="flash"] .status-pill.needs-input {
+:root[data-attention="flash"] :is(.status-pill, .job-card).needs-input {
     animation: needs-input-blink 0.7s steps(1, end) infinite;
 }
 @keyframes needs-input-blink {
@@ -4539,7 +4539,7 @@ a.file-attachment:hover { border-color: var(--accent); }
 }
 @media (prefers-reduced-motion: reduce) {
     /* Flash is an explicit opt-in, so it still blinks (slowly, <3 Hz); only the default pulse is suppressed. */
-    :root:not([data-attention="flash"]) .status-pill.needs-input { animation: none; box-shadow: 0 0 8px 2px var(--agent-color, #fbbf24); }
+    :root:not([data-attention="flash"]) :is(.status-pill, .job-card).needs-input { animation: none; box-shadow: 0 0 8px 2px var(--agent-color, #fbbf24); }
 }
 
 /* Channel attention (Settings > Channel attention): the channel entry glows or flashes when your input is needed there. */

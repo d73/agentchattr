@@ -215,7 +215,7 @@ def chat_send(
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
     Optionally attach a local image by providing image_path (absolute path).
     Optionally reply to a message by providing reply_to (message ID).
-    A coordinator can bind a Job assignment to a registered Codex worker with recipient and recipient_identity.
+    A Job reply can be bound to a registered agent session with recipient and recipient_identity.
     Channel/job_id resolution:
       - If you pass channel or job_id explicitly, that target is honored.
       - If you omit both, the message is routed to the last channel or
@@ -269,7 +269,7 @@ def chat_send(
         if (not job or not job_uid or not job_channel or job.get("uid") != job_uid
                 or job.get("channel") != job_channel or job.get("type") != "job"
                 or job.get("status") != "open" or str(job.get("assignee", "")).casefold() != sender.casefold()):
-            return "Error: the selected Job is no longer open and assigned to this coordinator."
+            return "Error: the selected Job is no longer open and assigned to this sender."
         job_scope = {key: job[key] for key in ("uid", "channel", "type", "status", "assignee")}
 
     # Job-scoped send: post into a job conversation instead of main timeline
@@ -277,8 +277,8 @@ def chat_send(
         target = registry.get_instance(recipient) if registry and recipient else None
         if (not job_id or not jobs or not recipient_identity or not target
                 or target["identity_id"] != recipient_identity or target["state"] != "active"
-                or target["base"] != "codex" or not is_online(recipient)):
-            return "Error: the bound Codex recipient is no longer present."
+                or not is_online(recipient)):
+            return "Error: the bound recipient is no longer present."
     if job_id and jobs:
         # Detect suggestion type from [suggestion] prefix
         text = message.strip()
@@ -683,6 +683,7 @@ def chat_read(
             "channel": job.get("channel", ""),
             "created_by": job.get("created_by", ""),
             "assignee": job.get("assignee", ""),
+            "anchor_msg_id": job.get("anchor_msg_id"),
         }]
         authenticated = _authenticated_instance(ctx)
         caller_identity = authenticated["identity_id"] if authenticated else None
@@ -805,37 +806,6 @@ def chat_who() -> str:
     """Check who's currently online in agentchattr."""
     online = _get_online()
     return f"Online: {', '.join(online)}" if online else "Nobody online."
-
-
-def chat_coding_roster() -> str:
-    """List live, registered Codex sessions and their current availability."""
-    if registry is None:
-        return "Error: the agent registry is unavailable."
-    status = agents.get_status() if agents is not None else {}
-    online = set(_get_online())
-    rows = []
-    for name, instance in registry.get_all().items():
-        if instance["base"] != "codex" or instance["state"] != "active" or name not in online:
-            continue
-        activity = status.get(name, {})
-        availability = "unknown"
-        if activity.get("needs_input") or activity.get("busy") is True:
-            availability = "busy"
-        elif activity.get("busy") is False:
-            availability = "available"
-        rows.append({"name": name, "identity": instance["identity_id"], "availability": availability})
-    return json.dumps(rows, ensure_ascii=False)
-
-
-def chat_coordinator_jobs(channel: str, assignee: str) -> str:
-    """List open and done Jobs assigned to a coordinator in one channel, oldest first."""
-    if not jobs or not channel.strip() or not assignee.strip():
-        return "Error: a Job store, channel, and assignee are required."
-    selected = [job for job in jobs.list_all(channel=channel)
-                if job.get("type") == "job" and job["status"] in {"open", "done"}
-                and str(job.get("assignee", "")).casefold() == assignee.casefold()]
-    selected.sort(key=lambda job: job["id"])
-    return json.dumps([{key: job[key] for key in ("id", "uid", "status")} for job in selected])
 
 
 def _touch_presence(name: str):
@@ -1067,8 +1037,7 @@ def chat_summary(
 
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
-    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job, chat_coding_roster,
-    chat_coordinator_jobs,
+    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
 ]
 
 
@@ -1094,23 +1063,14 @@ mcp_sse = _create_server(8201)   # SSE for Gemini
 # (store is set by run.py before starting)
 
 
-def create_transport_servers(http_port: int, sse_port: int, plugin_tools=()):
-    """Build the two Uvicorn servers so the launcher can observe readiness."""
-    import uvicorn
+def run_http_server(plugin_tools=()):
+    """Block — run streamable-http MCP in a background thread."""
+    server = _create_server(mcp_http.settings.port, plugin_tools) if plugin_tools else mcp_http
+    server.run(transport="streamable-http")
 
-    http, sse = mcp_http, mcp_sse
-    if plugin_tools:
-        http = _create_server(http_port, plugin_tools)
-        sse = _create_server(sse_port, plugin_tools)
-    servers = []
-    for mcp, app_factory, port in (
-        (http, http.streamable_http_app, http_port),
-        (sse, sse.sse_app, sse_port),
-    ):
-        mcp.settings.port = port
-        servers.append(uvicorn.Server(uvicorn.Config(
-            app_factory(), host=mcp.settings.host, port=port,
-            log_level=mcp.settings.log_level.lower(),
-        )))
-    return servers
+
+def run_sse_server(plugin_tools=()):
+    """Block — run SSE MCP in a background thread."""
+    server = _create_server(mcp_sse.settings.port, plugin_tools) if plugin_tools else mcp_sse
+    server.run(transport="sse")
 

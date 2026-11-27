@@ -128,21 +128,6 @@ class StableIdentityTests(unittest.TestCase):
         self.assertIsNone(self.reg.resolve_token(first["token"]))
         self.assertEqual(self.reg.resolve_token(fresh["token"])["name"], "c2")
 
-    def test_named_worker_relaunch_after_restart_keeps_other_workers_reclaimable(self):
-        workers = {
-            name: self.reg.register("codex", requested_name=name)
-            for name in (f"c{i}" for i in range(1, 9))
-        }
-        restarted = self.restart()
-
-        fresh = restarted.register("codex", requested_name="c8")
-
-        self.assertEqual(fresh["slot"], workers["c8"]["slot"])
-        self.assertIsNone(restarted.resolve_token(workers["c8"]["token"]))
-        for name in workers.keys() - {"c8"}:
-            with self.subTest(name=name):
-                self.assertEqual(restarted.resolve_token(workers[name]["token"])["name"], name)
-
     def test_failed_name_validation_does_not_expire_other_instances(self):
         first = self.reg.register("codex", requested_name="c2")
         second = self.reg.register("codex", requested_name="builder")
