@@ -440,18 +440,26 @@ def _register_instance(server_port: int, base: str, label: str | None = None, na
 
 
 def _register_at_startup(server_port, base, label, name, timeout=40):
-    """Allow window-close grace, forced shutdown, and the identity lease to expire."""
+    """Wait for the server to listen or the previous identity lease to expire."""
+    from urllib.error import URLError
+
     deadline = time.monotonic() + timeout
     announced = False
     while True:
         try:
             return _register_instance(server_port, base, label, name)
-        except NameInUseError:
+        except (NameInUseError, URLError) as exc:
+            if isinstance(exc, NameInUseError):
+                reason = f"Name {name} is in use."
+            elif isinstance(exc.reason, ConnectionRefusedError):
+                reason = f"AgentChattr is not accepting connections on port {server_port}."
+            else:
+                raise
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise
             if not announced:
-                print(f"  Name {name} is in use. Retrying for up to {timeout:g} seconds...", flush=True)
+                print(f"  {reason} Retrying for up to {timeout:g} seconds...", flush=True)
                 announced = True
             time.sleep(min(1, remaining))
 
