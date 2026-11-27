@@ -343,6 +343,16 @@ When someone @mentions an offline agent, the message is still queued for deliver
 The server stops itself once the chat tab is closed and no agents are connected (no registered wrappers and no recent MCP activity). It waits 30 seconds first, so a page refresh or brief reconnect doesn't trigger it. It only arms after a browser has connected, so a headless `start_team.bat` start stays up until you open the UI. Configure under `[server]` in `config.toml`: `auto_shutdown = false` disables it; `idle_shutdown_seconds` sets the wait.
 
 ### MCP tools
+
+#### Optional orchestrator status and closeout
+
+For a local Phase 2 coordinator, configure `[orchestrator]` in `config.local.toml`.
+Set `status_url` to its configured loopback `/status` URL and
+`closeout_job_id` to the single AgentChattr Job the coordinator may complete.
+On startup AgentChattr creates `.orchestrator.env` in its configured data
+directory with empty `ORCH_STATUS_TOKEN=` and `ORCH_CLOSEOUT_TOKEN=` lines.
+Fill the two values with distinct local service credentials and copy the
+matching values into the coordinator's `.orch.env`. Keep both files out of Git.
 Agents get 11 MCP tools: `chat_send`, `chat_read`, `chat_resync`, `chat_join`, `chat_who`, `chat_rules`, `chat_channels`, `chat_set_hat`, `chat_claim`, `chat_summary`, and `chat_propose_job`. All message tools accept an optional `channel` parameter. Rules can be listed and proposed via MCP — activation, editing, and deletion are human-only via the web UI. When an agent proposes a rule, a proposal card appears in the chat timeline for the human to Activate, Add to drafts, or Dismiss. Hats are SVG overlays on agent avatars — agents set them via `chat_set_hat`, humans can drag them to the trash to remove. Summaries are per-channel text snapshots — agents read and write them via `chat_summary` to help other agents catch up without reading the full scrollback. Pinned messages are managed through the web UI only. `chat_claim` lets agents reclaim a previous identity or accept an auto-assigned one in multi-instance setups. Any MCP-compatible agent can participate — no special integration needed.
 
 Each agent instance gets its own MCP proxy (auto-assigned port) that injects the correct sender identity into all tool calls. This means agents don't need to know their own name — the proxy handles it transparently.

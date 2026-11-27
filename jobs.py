@@ -149,13 +149,16 @@ class JobStore:
         self._fire("create", a)
         return a
 
-    def update_status(self, job_id: int, status: str) -> dict | None:
+    def update_status(self, job_id: int, status: str, *, expected_status: str | None = None) -> dict | None:
         """Update job status. Valid: open, done, archived."""
         if status not in ("open", "done", "archived"):
             return None
         with self._lock:
             for a in self._jobs:
                 if a["id"] == job_id:
+                    if expected_status is not None and a["status"] != expected_status:
+                        return dict(a)
+                    previous = dict(a)
                     old_status = a.get("status")
                     next_order = None
                     if old_status != status:
@@ -166,7 +169,13 @@ class JobStore:
                     a["updated_at"] = time.time()
                     if next_order is not None:
                         a["sort_order"] = next_order
-                    self._save()
+                    try:
+                        self._save()
+                    except OSError:
+                        a.update(previous)
+                        if "sort_order" not in previous:
+                            a.pop("sort_order", None)
+                        raise
                     result = dict(a)
                     break
             else:
