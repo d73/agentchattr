@@ -440,26 +440,18 @@ def _register_instance(server_port: int, base: str, label: str | None = None, na
 
 
 def _register_at_startup(server_port, base, label, name, timeout=40):
-    """Wait for the server to listen or the previous identity lease to expire."""
-    from urllib.error import URLError
-
+    """Allow window-close grace, forced shutdown, and the identity lease to expire."""
     deadline = time.monotonic() + timeout
     announced = False
     while True:
         try:
             return _register_instance(server_port, base, label, name)
-        except (NameInUseError, URLError) as exc:
-            if isinstance(exc, NameInUseError):
-                reason = f"Name {name} is in use."
-            elif isinstance(exc.reason, ConnectionRefusedError):
-                reason = f"AgentChattr is not accepting connections on port {server_port}."
-            else:
-                raise
+        except NameInUseError:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise
             if not announced:
-                print(f"  {reason} Retrying for up to {timeout:g} seconds...", flush=True)
+                print(f"  Name {name} is in use. Retrying for up to {timeout:g} seconds...", flush=True)
                 announced = True
             time.sleep(min(1, remaining))
 
@@ -701,15 +693,8 @@ def main():
     try:
         registration = _register_at_startup(server_port, agent, args.label, args.name)
     except Exception as exc:
-        if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, ConnectionRefusedError):
-            print(f"  This agent couldn't start because it couldn't reach AgentChattr on port {server_port}.")
-            if os.environ.get("TERMGRID_BRIDGE_PORT") or os.environ.get("TERMGRID_BRIDGE_TOKEN"):
-                print("  Start AgentChattr, then click Restart in this pane's header.")
-            else:
-                print("  Start AgentChattr, then run this command again.")
-        else:
-            print(f"  Registration failed ({exc}).")
-            print("  Wrapper cannot continue without a registered identity.")
+        print(f"  Registration failed ({exc}).")
+        print("  Wrapper cannot continue without a registered identity.")
         sys.exit(1)
 
     assigned_name = registration["name"]

@@ -5,7 +5,6 @@ __pycache__/
 *.pyc
 *.pyo
 .env
-.orchestrator.env
 config.local.toml
 *.log
 .DS_Store

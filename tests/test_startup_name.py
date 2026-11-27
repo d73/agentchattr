@@ -8,49 +8,12 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from urllib.error import URLError
 
 import app
-import wrapper
 from registry import RuntimeRegistry
 
 
 class StartupNameTests(unittest.TestCase):
-    def test_registration_retries_refused_connection_and_occupied_name(self):
-        registration = {'name': 'c2'}
-        refused = URLError(ConnectionRefusedError())
-        occupied = wrapper.NameInUseError('Name already in use: c2')
-        with (
-            patch.object(wrapper, '_register_instance', side_effect=[refused, occupied, registration]) as register,
-            patch.object(wrapper.time, 'monotonic', side_effect=[0, 0, 1]),
-            patch.object(wrapper.time, 'sleep') as sleep,
-        ):
-            self.assertEqual(wrapper._register_at_startup(8300, 'codex', None, 'c2'), registration)
-        self.assertEqual(register.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
-
-    def test_registration_stops_retrying_if_server_stays_unavailable(self):
-        refused = URLError(ConnectionRefusedError())
-        with (
-            patch.object(wrapper, '_register_instance', side_effect=refused) as register,
-            patch.object(wrapper.time, 'monotonic', side_effect=[0, 0, 1]),
-            patch.object(wrapper.time, 'sleep') as sleep,
-            self.assertRaises(URLError),
-        ):
-            wrapper._register_at_startup(8300, 'codex', None, 'c2', timeout=1)
-        self.assertEqual(register.call_count, 2)
-        sleep.assert_called_once_with(1)
-
-    def test_registration_does_not_retry_an_ambiguous_request_timeout(self):
-        with (
-            patch.object(wrapper, '_register_instance', side_effect=URLError(TimeoutError())) as register,
-            patch.object(wrapper.time, 'sleep') as sleep,
-            self.assertRaises(URLError),
-        ):
-            wrapper._register_at_startup(8300, 'codex', None, 'c2')
-        register.assert_called_once()
-        sleep.assert_not_called()
-
     def test_registration_endpoint_uses_requested_identity_and_rejects_duplicate(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = RuntimeRegistry(tmp)

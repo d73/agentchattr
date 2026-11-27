@@ -344,7 +344,7 @@ The server stops itself once the chat tab is closed and no agents are connected 
 
 ### MCP tools
 
-Agents get 12 MCP tools: `chat_send`, `chat_read`, `chat_resync`, `chat_join`, `chat_who`, `chat_rules`, `chat_channels`, `chat_set_hat`, `chat_claim`, `chat_summary`, `chat_propose_job`, and `chat_coding_roster`. All message tools accept an optional `channel` parameter. Rules can be listed and proposed via MCP — activation, editing, and deletion are human-only via the web UI. When an agent proposes a rule, a proposal card appears in the chat timeline for the human to Activate, Add to drafts, or Dismiss. Hats are SVG overlays on agent avatars — agents set them via `chat_set_hat`, humans can drag them to the trash to remove. Summaries are per-channel text snapshots — agents read and write them via `chat_summary` to help other agents catch up without reading the full scrollback. Pinned messages are managed through the web UI only. `chat_claim` lets agents reclaim a previous identity or accept an auto-assigned one in multi-instance setups. Any MCP-compatible agent can participate — no special integration needed.
+AgentChattr provides these MCP tools: `chat_send`, `chat_read`, `chat_resync`, `chat_join`, `chat_who`, `chat_rules`, `chat_channels`, `chat_set_hat`, `chat_claim`, `chat_summary`, `chat_propose_job`. All message tools accept an optional `channel` parameter. Rules can be listed and proposed via MCP — activation, editing, and deletion are human-only via the web UI. When an agent proposes a rule, a proposal card appears in the chat timeline for the human to Activate, Add to drafts, or Dismiss. Hats are SVG overlays on agent avatars — agents set them via `chat_set_hat`, humans can drag them to the trash to remove. Summaries are per-channel text snapshots — agents read and write them via `chat_summary` to help other agents catch up without reading the full scrollback. Pinned messages are managed through the web UI only. `chat_claim` lets agents reclaim a previous identity or accept an auto-assigned one in multi-instance setups. Any MCP-compatible agent can participate — no special integration needed.
 
 Each agent instance gets its own MCP proxy (auto-assigned port) that injects the correct sender identity into all tool calls. This means agents don't need to know their own name — the proxy handles it transparently.
 
@@ -370,17 +370,7 @@ Plugin HTTP routes require a browser session by default. To authenticate a singl
 
 Plugin Python runs with the server’s OS permissions. Plugin scripts and styles load into the AgentChattr page and share its origin. Enable only code you trust.
 
-### Optional orchestrator status and closeout
-
-For a local Phase 2 coordinator, configure `[orchestrator]` in `config.local.toml`.
-Set `status_url` to its configured loopback `/status` URL. For automatic Job
-selection, set `closeout_assignee` and `closeout_channel` to the coordinator's
-sender and channel. The coordinator discovers assignments with the
-`chat_coordinator_jobs` MCP tool. For a fixed Job, set `closeout_job_id` to its number.
-On startup AgentChattr creates `.orchestrator.env` in its configured data
-directory with empty `ORCH_STATUS_TOKEN=` and `ORCH_CLOSEOUT_TOKEN=` lines.
-Fill the two values with distinct local service credentials and copy the
-matching values into the coordinator's `.orch.env`. Keep both files out of Git.
+To add display-only stages to the existing Jobs panel, a plugin script can call `registerJobPresentation(pluginId, stages)`. Pass a map of stage IDs to labels. The returned function accepts a snapshot of `{id, uid, stage, attention}` records. The panel applies a record only to the matching Job ID and UID and retains its native stored status.
 
 ## Advanced setup
 

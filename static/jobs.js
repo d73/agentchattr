@@ -38,6 +38,34 @@ let _draggedJobStatus = null;
 let _pendingJobReflowTops = null;
 let _pendingJobReflowTimer = null;
 const _expandedGroups = new Set(['open']); // track which collapsible groups are open across re-renders
+const jobPresentations = new Map();
+let jobGroupFilter = null;
+
+function registerJobPresentation(id, stages) {
+    const presentation = { stages: new Map(Object.entries(stages)), rows: new Map() };
+    jobPresentations.set(id, presentation);
+    document.getElementById('jobs-panel')?.classList.add('has-job-presentation');
+    renderJobsList();
+    return rows => {
+        const next = new Map(rows.map(row => [row.id, row]));
+        if (next.size === presentation.rows.size && [...next].every(([id, row]) => {
+            const prior = presentation.rows.get(id);
+            return prior?.stage === row.stage && prior?.attention === row.attention && prior?.uid === row.uid;
+        })) return;
+        presentation.rows = next;
+        renderJobsList();
+    };
+}
+
+function jobPresentation(job) {
+    for (const [id, presentation] of jobPresentations) {
+        const row = presentation.rows.get(job.id);
+        if (row && row.uid === job.uid && presentation.stages.has(row.stage)) {
+            return { key: `${id}-${row.stage}`, attention: Boolean(row.attention) };
+        }
+    }
+    return { key: job.status, attention: false };
+}
 
 // ---------------------------------------------------------------------------
 // Message Renderers
@@ -582,9 +610,36 @@ function renderJobsList() {
         { key: 'done', label: 'ACTIVE', items: [] },
         { key: 'archived', label: 'CLOSED', items: [] },
     ];
+    for (const [id, presentation] of jobPresentations) {
+        for (const [stage, label] of presentation.stages) {
+            groups.push({ key: `${id}-${stage}`, label, items: [], readOnly: true });
+        }
+    }
     for (const a of channelJobs) {
-        const g = groups.find(g => g.key === a.status);
+        const g = groups.find(g => g.key === jobPresentation(a).key);
         if (g) g.items.push(a);
+    }
+
+    if (jobPresentations.size) {
+        const filters = document.createElement('div');
+        filters.className = 'job-group-filters';
+        filters.setAttribute('role', 'group');
+        filters.setAttribute('aria-label', 'Filter Jobs by status');
+        for (const { key, label } of groups) {
+            const filter = document.createElement('button');
+            filter.type = 'button';
+            filter.textContent = label;
+            filter.setAttribute('aria-pressed', String(jobGroupFilter === key));
+            filter.onclick = () => {
+                jobGroupFilter = jobGroupFilter === key ? null : key;
+                renderJobsList();
+                const replacement = [...list.querySelectorAll('.job-group-filters button')]
+                    .find(button => button.textContent === label);
+                replacement?.focus();
+            };
+            filters.appendChild(filter);
+        }
+        list.appendChild(filters);
     }
 
     // Ghost card only when there are zero jobs total
@@ -603,6 +658,7 @@ function renderJobsList() {
     }
 
     for (const group of groups) {
+        if (jobGroupFilter && group.key !== jobGroupFilter) continue;
         // Sort by explicit manual order first; fallback to recency.
         group.items.sort(_compareJobsForList);
 
@@ -630,7 +686,7 @@ function renderJobsList() {
 
         // Drop target: drag a card from another group onto this header to change its status
         header.addEventListener('dragover', (e) => {
-            if (!_draggedJobId || _draggedJobStatus === group.key) return;
+            if (group.readOnly || !_draggedJobId || _draggedJobStatus === group.key) return;
             e.preventDefault();
             header.classList.add('drop-target');
         });
@@ -642,7 +698,7 @@ function renderJobsList() {
             e.stopPropagation();
             header.classList.remove('drop-target');
             const draggedId = _draggedJobId;
-            if (!draggedId || _draggedJobStatus === group.key) return;
+            if (group.readOnly || !draggedId || _draggedJobStatus === group.key) return;
             const oldStatus = _draggedJobStatus;
             try {
                 await fetch(`/api/jobs/${draggedId}`, {
@@ -669,6 +725,7 @@ function renderJobsList() {
         for (const a of group.items) {
             const card = document.createElement('div');
             card.className = 'job-card';
+            if (jobPresentation(a).attention) card.classList.add('needs-input');
             card.dataset.id = a.id;
             card.onclick = () => openJobConversation(a.id);
             card.addEventListener('selectstart', (e) => e.preventDefault());
@@ -679,18 +736,21 @@ function renderJobsList() {
             const unreadHtml = unread > 0
                 ? `<span class="job-unread-dot" title="Unread messages">${unread > 99 ? '99+' : unread}</span>`
                 : '';
+            const channelHtml = jobPresentations.size && a.channel
+                ? `<span class="job-origin">#${window.escapeHtml(a.channel)}</span>` : '';
 
             card.innerHTML = `
                 <div class="job-card-header">
                     <span class="job-status-dot ${a.status}"></span>
                     <span class="job-title">${window.escapeHtml(a.title)}</span>
+                    ${channelHtml}
                     <span class="job-msg-count">${msgCount > 0 ? msgCount : ''}</span>
                     ${unreadHtml}
                 </div>
             `;
 
 
-            card.draggable = true;
+            card.draggable = !group.readOnly;
             card.addEventListener('dragstart', (e) => {
                 let ids = [card.dataset.id];
                 if (group.key === 'archived') {
