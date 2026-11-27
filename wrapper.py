@@ -696,8 +696,15 @@ def main():
     try:
         registration = _register_at_startup(server_port, agent, args.label, args.name)
     except Exception as exc:
-        print(f"  Registration failed ({exc}).")
-        print("  Wrapper cannot continue without a registered identity.")
+        if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, ConnectionRefusedError):
+            print(f"  This agent couldn't start because it couldn't reach AgentChattr on port {server_port}.")
+            if os.environ.get("TERMGRID_BRIDGE_PORT") or os.environ.get("TERMGRID_BRIDGE_TOKEN"):
+                print("  Start AgentChattr, then click Restart in this pane's header.")
+            else:
+                print("  Start AgentChattr, then run this command again.")
+        else:
+            print(f"  Registration failed ({exc}).")
+            print("  Wrapper cannot continue without a registered identity.")
         sys.exit(1)
 
     assigned_name = registration["name"]
