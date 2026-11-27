@@ -353,8 +353,10 @@ MCP instructions tell agents: if you are addressed in chat, respond in chat (don
 ### Optional orchestrator status and closeout
 
 For a local Phase 2 coordinator, configure `[orchestrator]` in `config.local.toml`.
-Set `status_url` to its configured loopback `/status` URL and
-`closeout_job_id` to the single AgentChattr Job the coordinator may complete.
+Set `status_url` to its configured loopback `/status` URL. For automatic Job
+selection, set `closeout_assignee` and `closeout_channel` to the coordinator's
+sender and channel. The coordinator discovers assignments with the
+`chat_coordinator_jobs` MCP tool. For a fixed Job, set `closeout_job_id` to its number.
 On startup AgentChattr creates `.orchestrator.env` in its configured data
 directory with empty `ORCH_STATUS_TOKEN=` and `ORCH_CLOSEOUT_TOKEN=` lines.
 Fill the two values with distinct local service credentials and copy the

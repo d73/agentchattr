@@ -2097,14 +2097,23 @@ async def close_orchestrator_job(job_id: int, request: Request):
     scope = config.get("orchestrator", {})
     if not authorized_closeout(config, request.headers.get("authorization", "")):
         return JSONResponse({"error": "orchestrator closeout credential required"}, status_code=403)
-    if (not isinstance(scope, dict) or type(scope.get("closeout_job_id")) is not int
-            or scope["closeout_job_id"] != job_id):
-        return JSONResponse({"error": "Job is outside the configured closeout scope"}, status_code=404)
     job = jobs.get(job_id)
     if job is None:
         return JSONResponse({"error": "Job not found"}, status_code=404)
+    if not isinstance(scope, dict):
+        return JSONResponse({"error": "Job is outside the configured closeout scope"}, status_code=404)
+    fixed = type(scope.get("closeout_job_id")) is int and scope["closeout_job_id"] == job_id
+    auto = (job.get("type") == "job" and isinstance(scope.get("closeout_assignee"), str)
+            and bool(scope["closeout_assignee"])
+            and str(job.get("assignee", "")).casefold() == scope["closeout_assignee"].casefold()
+            and isinstance(scope.get("closeout_channel"), str) and bool(scope["closeout_channel"])
+            and job.get("channel") == scope["closeout_channel"]
+            and bool(job.get("uid")) and job["uid"] == request.headers.get("x-orch-job-uid"))
+    if not (fixed or auto):
+        return JSONResponse({"error": "Job is outside the configured closeout scope"}, status_code=404)
     if job["status"] == "open":
-        job = jobs.update_status(job_id, "done", expected_status="open")
+        expected_scope = {key: job[key] for key in ("uid", "channel", "type", "assignee")} if not fixed else None
+        job = jobs.update_status(job_id, "done", expected_status="open", expected_scope=expected_scope)
     if job is None or job["status"] != "done":
         return JSONResponse({"error": "Job could not be closed from its current state"}, status_code=409)
     return {"id": job_id, "status": "done"}

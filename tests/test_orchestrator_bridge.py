@@ -45,3 +45,17 @@ class OrchestratorBridgeTests(unittest.TestCase):
                 self.assertEqual(403, client.get("/api/orchestrator/status").status_code)
                 state = client.get("/api/orchestrator/status", headers={"X-Session-Token": browser}).json()
                 self.assertEqual("offline", state["daemon"]["state"])
+
+                chat.config["orchestrator"].pop("closeout_job_id")
+                chat.config["orchestrator"].update(closeout_assignee="orch", closeout_channel="general")
+                chat.jobs.update_assignee(other["id"], "orch")
+                path = f"/api/orchestrator/jobs/{other['id']}/close"
+                for uid in ("", job["uid"]):
+                    self.assertEqual(404, client.post(path, headers={**headers, "X-Orch-Job-Uid": uid}).status_code)
+                outside = chat.jobs.create("Wrong channel", "job", "other", "fixture",
+                                           assignee="orch", status="open")
+                self.assertEqual(404, client.post(f"/api/orchestrator/jobs/{outside['id']}/close",
+                                                 headers={**headers, "X-Orch-Job-Uid": outside["uid"]}).status_code)
+                scoped = {**headers, "X-Orch-Job-Uid": other["uid"]}
+                for _ in range(2):
+                    self.assertEqual({"id": other["id"], "status": "done"}, client.post(path, headers=scoped).json())
