@@ -142,6 +142,25 @@ def main():
     mcp_bridge._ROLES_FILE = data_dir / "roles.json"
     mcp_bridge._load_roles()
 
+    plugins = None
+    if config.get("plugins"):
+        from copy import deepcopy
+        from plugin_host import PluginHost, Services
+
+        plugins = PluginHost(data_dir)
+        services = Services(
+            list_jobs=lambda **filters: deepcopy(jobs.list_all(**filters)),
+            get_job=lambda job_id: deepcopy(jobs.get(job_id)),
+            update_job_status=lambda *args, **kwargs: deepcopy(jobs.update_status(*args, **kwargs)),
+            registered_agents=lambda: deepcopy(registry.get_all()),
+            agent_status=lambda: deepcopy(app_agents.get_status()),
+            online_agents=mcp_bridge._get_online,
+        )
+        plugins.load(config["plugins"], services, core_routes=app.router.routes,
+                     core_tools=(tool.__name__ for tool in mcp_bridge._ALL_TOOLS))
+        plugins.install_http(app)
+        app.state.plugins = plugins
+
     http_port = config.get("mcp", {}).get("http_port", 8200)
     sse_port = config.get("mcp", {}).get("sse_port", 8201)
 
@@ -164,6 +183,8 @@ def main():
         client_ip = request.client.host if request.client else ""
         if not is_local_client(client_ip):
             return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+        if plugins is not None:
+            html = plugins.render_assets(html)
         injected = html.replace(
             "</head>",
             f'<script>window.__SESSION_TOKEN__="{session_token}";</script>\n</head>',
@@ -223,7 +244,7 @@ def main():
     set_shutdown_hook(_request_shutdown)
     transports = []
     try:
-        for transport in mcp_bridge.create_transport_servers(http_port, sse_port):
+        for transport in mcp_bridge.create_transport_servers(http_port, sse_port, plugins.tools if plugins else ()):
             thread = threading.Thread(target=_run_mcp_transport, args=(transport,), daemon=True)
             thread.start()
             transports.append((transport, thread))
@@ -246,6 +267,8 @@ def main():
     finally:
         for transport, _ in transports:
             transport.should_exit = True
+        if plugins is not None:
+            plugins.close()
 
 
 if __name__ == "__main__":

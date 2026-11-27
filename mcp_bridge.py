@@ -1072,7 +1072,7 @@ _ALL_TOOLS = [
 ]
 
 
-def _create_server(port: int) -> FastMCP:
+def _create_server(port: int, plugin_tools=()) -> FastMCP:
     server = FastMCP(
         "agentchattr",
         host="127.0.0.1",
@@ -1082,6 +1082,8 @@ def _create_server(port: int) -> FastMCP:
     )
     for func in _ALL_TOOLS:
         server.tool()(func)
+    for name, func in plugin_tools:
+        server.tool(name=name)(func)
     return server
 
 
@@ -1092,14 +1094,18 @@ mcp_sse = _create_server(8201)   # SSE for Gemini
 # (store is set by run.py before starting)
 
 
-def create_transport_servers(http_port: int, sse_port: int):
+def create_transport_servers(http_port: int, sse_port: int, plugin_tools=()):
     """Build the two Uvicorn servers so the launcher can observe readiness."""
     import uvicorn
 
+    http, sse = mcp_http, mcp_sse
+    if plugin_tools:
+        http = _create_server(http_port, plugin_tools)
+        sse = _create_server(sse_port, plugin_tools)
     servers = []
     for mcp, app_factory, port in (
-        (mcp_http, mcp_http.streamable_http_app, http_port),
-        (mcp_sse, mcp_sse.sse_app, sse_port),
+        (http, http.streamable_http_app, http_port),
+        (sse, sse.sse_app, sse_port),
     ):
         mcp.settings.port = port
         servers.append(uvicorn.Server(uvicorn.Config(

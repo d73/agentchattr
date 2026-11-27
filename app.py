@@ -1,6 +1,7 @@
 """agentchattr — FastAPI web UI + agent auto-trigger."""
 
 import asyncio
+from inspect import isawaitable
 import json
 import re as _re
 from atomic_io import atomic_write_text
@@ -27,6 +28,7 @@ from agents import AgentTrigger
 from registry import RuntimeRegistry
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
+from plugin_host import ASSET_PREFIX
 
 log = logging.getLogger(__name__)
 
@@ -430,6 +432,23 @@ def _install_security_middleware(token: str, cfg: dict):
                     {"error": "forbidden: origin not allowed"},
                     status_code=403,
                 )
+
+            plugins = getattr(request.app.state, "plugins", None)
+            if plugins is not None:
+                if request.method in {"GET", "HEAD"} and path.startswith(ASSET_PREFIX):
+                    return await call_next(request)
+                validator = plugins.service_validator(request, request.app.router.routes)
+                if validator is not None:
+                    try:
+                        authorized = validator(request)
+                        if isawaitable(authorized):
+                            authorized = await authorized
+                    except Exception:
+                        log.warning("Plugin service credential validator failed")
+                        authorized = False
+                    if authorized is not True:
+                        return JSONResponse({"error": "plugin service credential required"}, status_code=403)
+                    return await call_next(request)
 
             # This exact service route checks its dedicated credential in the handler.
             if request.method == "POST" and _re.fullmatch(r"/api/orchestrator/jobs/[0-9]+/close", path):
