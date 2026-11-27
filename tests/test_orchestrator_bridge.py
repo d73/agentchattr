@@ -12,7 +12,10 @@ import app as chat
 
 class OrchestratorBridgeTests(unittest.TestCase):
     def test_closeout_scope_persistence_and_idempotent_response(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as directory:
+        parent = Path(__file__).resolve().parents[2]
+        temp_root = parent if parent.name.casefold() == "temp" else parent / "Temp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
             config = {"server": {"data_dir": directory}, "orchestrator": {"closeout_job_id": 1}}
             token = "job-closeout-fixture-" * 2
             browser = "browser-session-fixture"
