@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/static/style.css?v=264">
     <link rel="stylesheet" href="/static/sessions.css?v=223">
     <link rel="stylesheet" href="/static/jobs.css?v=225">
+    <link rel="stylesheet" href="/static/orchestrator.css?v=1">
     <link rel="icon" href="/static/favicon.ico">
 </head>
 <body>
@@ -89,6 +90,17 @@
             </div>
         </div>
 
+        <section id="orch-panel" aria-label="Orchestrator" hidden>
+            <div class="orch-strip">
+                <span id="orch-health" class="orch-health" tabindex="0">
+                    <span class="orch-dot" aria-hidden="true"></span><span>orch</span>
+                </span>
+                <div id="orch-counters" class="orch-counters" aria-label="Pipeline"></div>
+                <div id="orch-capacity" class="orch-capacity" aria-label="Coding capacity"></div>
+                <button id="orch-toggle" type="button" aria-controls="orch-queue" aria-expanded="false"></button>
+            </div>
+            <div id="orch-queue" class="orch-queue" aria-label="Orchestrator queue" hidden></div>
+        </section>
         <div id="log-warning" class="log-warning" role="alert" hidden>
             <strong>⚠ Message log could not be saved</strong>
             <div>Messages are being delivered, but may be lost if the server stops.</div>
@@ -441,5 +453,6 @@
     <script src="/static/mention-alerts.js?v=1"></script>
     <script src="/static/channel-attention.js?v=1"></script>
     <script src="/static/chat.js?v=284"></script>
+    <script src="/static/orchestrator.js?v=1"></script>
 </body>
 </html>
