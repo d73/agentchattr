@@ -149,13 +149,16 @@ class JobStore:
         self._fire("create", a)
         return a
 
-    def update_status(self, job_id: int, status: str, *, expected_status: str | None = None) -> dict | None:
+    def update_status(self, job_id: int, status: str, *, expected_status: str | None = None,
+                      expected_scope: dict | None = None) -> dict | None:
         """Update job status. Valid: open, done, archived."""
         if status not in ("open", "done", "archived"):
             return None
         with self._lock:
             for a in self._jobs:
                 if a["id"] == job_id:
+                    if expected_scope and any(a.get(key) != value for key, value in expected_scope.items()):
+                        return None
                     if expected_status is not None and a["status"] != expected_status:
                         return dict(a)
                     previous = dict(a)
@@ -218,11 +221,14 @@ class JobStore:
                     timestamp: float | None = None,
                     time_str: str | None = None,
                     sender_identity: str | None = None,
-                    recipient_identity: str | None = None) -> dict | None:
+                    recipient_identity: str | None = None,
+                    expected_scope: dict | None = None) -> dict | None:
         """Add a message to a job's conversation. Returns the message."""
         with self._lock:
             for a in self._jobs:
                 if a["id"] == job_id:
+                    if expected_scope and any(a.get(key) != value for key, value in expected_scope.items()):
+                        return None
                     msg_id = len(a["messages"])
                     ts = timestamp if timestamp is not None else time.time()
                     msg = {

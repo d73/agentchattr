@@ -209,6 +209,8 @@ def chat_send(
     *,
     recipient: str = "",
     recipient_identity: str = "",
+    job_uid: str = "",
+    job_channel: str = "",
 ) -> str:
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
     Optionally attach a local image by providing image_path (absolute path).
@@ -261,6 +263,15 @@ def chat_send(
     if not message.strip() and not image_path:
         return "Empty message, not sent."
 
+    job_scope = None
+    if job_uid or job_channel:
+        job = jobs.get(job_id) if jobs and job_id else None
+        if (not job or not job_uid or not job_channel or job.get("uid") != job_uid
+                or job.get("channel") != job_channel or job.get("type") != "job"
+                or job.get("status") != "open" or str(job.get("assignee", "")).casefold() != sender.casefold()):
+            return "Error: the selected Job is no longer open and assigned to this coordinator."
+        job_scope = {key: job[key] for key in ("uid", "channel", "type", "status", "assignee")}
+
     # Job-scoped send: post into a job conversation instead of main timeline
     if recipient or recipient_identity:
         target = registry.get_instance(recipient) if registry and recipient else None
@@ -296,7 +307,7 @@ def chat_send(
         msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
                                attachments=job_attachments,
                                sender_identity=authenticated["identity_id"] if authenticated else None,
-                               recipient_identity=recipient_identity or None)
+                               recipient_identity=recipient_identity or None, expected_scope=job_scope)
         if msg is None:
             return f"Error: job #{job_id} not found."
         with _presence_lock:
@@ -665,6 +676,7 @@ def chat_read(
             "type": "job_header",
             "time": "",
             "job_id": job_id,
+            "uid": job.get("uid", ""),
             "title": title,
             "body": body,
             "status": job.get("status", ""),
@@ -813,6 +825,17 @@ def chat_coding_roster() -> str:
             availability = "available"
         rows.append({"name": name, "identity": instance["identity_id"], "availability": availability})
     return json.dumps(rows, ensure_ascii=False)
+
+
+def chat_coordinator_jobs(channel: str, assignee: str) -> str:
+    """List open and done Jobs assigned to a coordinator in one channel, oldest first."""
+    if not jobs or not channel.strip() or not assignee.strip():
+        return "Error: a Job store, channel, and assignee are required."
+    selected = [job for job in jobs.list_all(channel=channel)
+                if job.get("type") == "job" and job["status"] in {"open", "done"}
+                and str(job.get("assignee", "")).casefold() == assignee.casefold()]
+    selected.sort(key=lambda job: job["id"])
+    return json.dumps([{key: job[key] for key in ("id", "uid", "status")} for job in selected])
 
 
 def _touch_presence(name: str):
@@ -1045,6 +1068,7 @@ def chat_summary(
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
     chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job, chat_coding_roster,
+    chat_coordinator_jobs,
 ]
 
 
