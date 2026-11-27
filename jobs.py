@@ -216,7 +216,9 @@ class JobStore:
                     msg_type: str = "chat",
                     uid: str | None = None,
                     timestamp: float | None = None,
-                    time_str: str | None = None) -> dict | None:
+                    time_str: str | None = None,
+                    sender_identity: str | None = None,
+                    recipient_identity: str | None = None) -> dict | None:
         """Add a message to a job's conversation. Returns the message."""
         with self._lock:
             for a in self._jobs:
@@ -234,6 +236,10 @@ class JobStore:
                     }
                     if msg_type != "chat":
                         msg["type"] = msg_type
+                    if sender_identity:
+                        msg["sender_identity"] = sender_identity
+                    if recipient_identity:
+                        msg["recipient_identity"] = recipient_identity
                     a["messages"].append(msg)
                     old_updated_at = a["updated_at"]
                     a["updated_at"] = time.time()

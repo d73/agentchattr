@@ -206,10 +206,14 @@ def chat_send(
     channel: str = "",
     job_id: int = 0,
     ctx: Context | None = None,
+    *,
+    recipient: str = "",
+    recipient_identity: str = "",
 ) -> str:
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
     Optionally attach a local image by providing image_path (absolute path).
     Optionally reply to a message by providing reply_to (message ID).
+    A coordinator can bind a Job assignment to a registered Codex worker with recipient and recipient_identity.
     Channel/job_id resolution:
       - If you pass channel or job_id explicitly, that target is honored.
       - If you omit both, the message is routed to the last channel or
@@ -258,6 +262,12 @@ def chat_send(
         return "Empty message, not sent."
 
     # Job-scoped send: post into a job conversation instead of main timeline
+    if recipient or recipient_identity:
+        target = registry.get_instance(recipient) if registry and recipient else None
+        if (not job_id or not jobs or not recipient_identity or not target
+                or target["identity_id"] != recipient_identity or target["state"] != "active"
+                or target["base"] != "codex" or not is_online(recipient)):
+            return "Error: the bound Codex recipient is no longer present."
     if job_id and jobs:
         # Detect suggestion type from [suggestion] prefix
         text = message.strip()
@@ -282,8 +292,11 @@ def chat_send(
             filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
             shutil.copy2(str(src), str(upload_dir / filename))
             job_attachments = [{"name": src.name, "url": f"/uploads/{filename}"}]
+        authenticated = _authenticated_instance(ctx)
         msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
-                               attachments=job_attachments)
+                               attachments=job_attachments,
+                               sender_identity=authenticated["identity_id"] if authenticated else None,
+                               recipient_identity=recipient_identity or None)
         if msg is None:
             return f"Error: job #{job_id} not found."
         with _presence_lock:
@@ -302,11 +315,15 @@ def chat_send(
                     else:
                         targets.append(t)
                 targets = list(dict.fromkeys(targets))
+                if recipient_identity:
+                    targets = [target for target in targets if target == recipient]
                 chat_msg = f"{sender}: {text}" if text else ""
                 for target in targets:
                     if registry:
                         inst = registry.get_instance(target)
                         if inst and inst.get("state") == "pending":
+                            continue
+                        if recipient_identity and (not inst or inst["identity_id"] != recipient_identity):
                             continue
                     if agents.is_available(target):
                         agents.trigger_sync(target, message=chat_msg,
@@ -655,9 +672,16 @@ def chat_read(
             "created_by": job.get("created_by", ""),
             "assignee": job.get("assignee", ""),
         }]
+        authenticated = _authenticated_instance(ctx)
+        caller_identity = authenticated["identity_id"] if authenticated else None
         for m in msgs:
+            if (m.get("recipient_identity") and m.get("recipient_identity") != caller_identity
+                    and m.get("sender") != sender):
+                continue
             entry = {"id": m["id"], "sender": m["sender"], "text": m["text"],
                      "time": m.get("time", ""), "job_id": job_id}
+            if m.get("sender_identity"):
+                entry["sender_identity"] = m["sender_identity"]
             if m.get("attachments"):
                 entry["attachments"] = _resolve_attachments(m["attachments"])
             if m.get("type"):
@@ -769,6 +793,26 @@ def chat_who() -> str:
     """Check who's currently online in agentchattr."""
     online = _get_online()
     return f"Online: {', '.join(online)}" if online else "Nobody online."
+
+
+def chat_coding_roster() -> str:
+    """List live, registered Codex sessions and their current availability."""
+    if registry is None:
+        return "Error: the agent registry is unavailable."
+    status = agents.get_status() if agents is not None else {}
+    online = set(_get_online())
+    rows = []
+    for name, instance in registry.get_all().items():
+        if instance["base"] != "codex" or instance["state"] != "active" or name not in online:
+            continue
+        activity = status.get(name, {})
+        availability = "unknown"
+        if activity.get("needs_input") or activity.get("busy") is True:
+            availability = "busy"
+        elif activity.get("busy") is False:
+            availability = "available"
+        rows.append({"name": name, "identity": instance["identity_id"], "availability": availability})
+    return json.dumps(rows, ensure_ascii=False)
 
 
 def _touch_presence(name: str):
@@ -1000,7 +1044,7 @@ def chat_summary(
 
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
-    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
+    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job, chat_coding_roster,
 ]
 
 
