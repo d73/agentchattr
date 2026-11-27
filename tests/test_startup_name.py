@@ -57,7 +57,11 @@ class StartupNameTests(unittest.TestCase):
                 with self.subTest(filename=filename, args=args):
                     text = (source / filename).read_text(encoding='utf-8')
                     # Keep the launcher logic, replacing only its live server probe with a no-op.
-                    text = text.replace("import socket; socket.create_connection(('127.0.0.1', 8300), 1)", 'pass')
+                    text = text.replace(
+                        "import socket; from config_loader import load_config; "
+                        "socket.create_connection(('127.0.0.1', load_config()['server']['port']), 1)",
+                        'pass',
+                    )
                     for cli in ('codex', 'claude', 'qwen', 'kilo'):
                         text = text.replace(f'where {cli} >nul 2>&1', 'ver >nul')
                     script = windows / filename
@@ -66,6 +70,8 @@ class StartupNameTests(unittest.TestCase):
                                             capture_output=True, env=env, timeout=15,
                                             creationflags=subprocess.CREATE_NO_WINDOW)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('agentchattr server is already listening.', result.stdout)
+                    self.assertIn('Launching ', result.stdout)
                     self.assertEqual(json.loads((root / 'args.json').read_text()), expected)
 
 

@@ -220,6 +220,7 @@ def start_team(url, env, commands):
     inspect_agents(commands)
 
     if not server_ready(url):
+        print(f"Starting agentchattr at {url}...", flush=True)
         log_path = ROOT / "team-server.log"
         with log_path.open("ab") as log:
             server = subprocess.Popen(
@@ -232,6 +233,7 @@ def start_team(url, env, commands):
             if server.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError(f"Server did not become ready. See {log_path}")
             time.sleep(0.5)
+        print(f"agentchattr is ready at {url}.")
     else:
         print(f"Reusing the server at {url}")
 
@@ -241,6 +243,7 @@ def start_team(url, env, commands):
         if name in running_agents(process_inventory(), commands):
             print(f"{LABELS[name]}: already running; skipped.")
             continue
+        print(f"Launching {LABELS[name]}...", flush=True)
         # cmd /k keeps errors visible; each interactive CLI needs its own console.
         wrapper_args = [sys.executable, str(ROOT / "wrapper.py"), name]
         if name == "codex":

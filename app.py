@@ -2997,18 +2997,24 @@ def _read_local_version() -> str:
         return ""
 
 
+def _git_probe(*args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], cwd=Path(__file__).parent,
+        capture_output=True, text=True, timeout=5,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ).stdout.strip()
+
+
 def _compute_build_version() -> str:
     """Build string shown in Help: local date-time of the running code's last commit.
 
     Falls back to this server's start time (also local) when git isn't available.
     """
-    import subprocess
     from datetime import datetime
     try:
-        out = subprocess.run(
-            ["git", "log", "-1", "--format=%ct"],
-            cwd=Path(__file__).parent, capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
+        out = _git_probe("log", "-1", "--format=%ct")
         if out.isdigit():
             return datetime.fromtimestamp(int(out)).strftime("%Y-%m-%d %H:%M")
     except Exception:
@@ -3026,14 +3032,8 @@ async def get_build():
 
 def _detect_install_kind() -> str:
     """Detect how this copy was installed: official_git, fork, or unknown."""
-    import subprocess
     try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5,
-            cwd=Path(__file__).parent,
-        )
-        url = result.stdout.strip().lower()
+        url = _git_probe("remote", "get-url", "origin").lower()
         if "bcurts/agentchattr" in url:
             return "official_git"
         elif url:

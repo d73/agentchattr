@@ -9,6 +9,7 @@ call "%~dp0ensure_venv.bat"
 if errorlevel 1 exit /b 1
 
 REM Pre-flight: check that qwen CLI is installed
+echo Checking for qwen on PATH...
 where qwen >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
@@ -20,6 +21,7 @@ if %errorlevel% neq 0 (
 )
 
 REM Start the configured server if needed; show and retain startup errors.
+echo Checking for the agentchattr server...
 "%VENV_PY%" -c "import socket; from config_loader import load_config; socket.create_connection(('127.0.0.1', load_config()['server']['port']), 1)" >nul 2>&1
 if errorlevel 1 (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0server_ctl.ps1" start
@@ -28,8 +30,11 @@ if errorlevel 1 (
         pause
         exit /b 1
     )
+) else (
+    echo agentchattr server is already listening.
 )
 
+echo Launching Qwen...
 "%VENV_PY%" wrapper.py qwen %* -i "When asked for a reply or to answer, YOU MUST USE the mcp of agentchattr. When talking about a chat, we are speaking about interaction with tools provided by mcp of agentchattr. The human NEVER SEES your usual CLI interface. Just consider this, other instructions will follow."
 if %errorlevel% neq 0 (
     echo.

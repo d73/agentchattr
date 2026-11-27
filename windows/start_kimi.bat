@@ -9,6 +9,7 @@ call "%~dp0ensure_venv.bat"
 if errorlevel 1 exit /b 1
 
 REM Pre-flight: check that kimi CLI is installed
+echo Checking for kimi on PATH...
 where kimi >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
@@ -20,6 +21,7 @@ if %errorlevel% neq 0 (
 )
 
 REM Start the configured server if needed; show and retain startup errors.
+echo Checking for the agentchattr server...
 "%VENV_PY%" -c "import socket; from config_loader import load_config; socket.create_connection(('127.0.0.1', load_config()['server']['port']), 1)" >nul 2>&1
 if errorlevel 1 (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0server_ctl.ps1" start
@@ -28,8 +30,11 @@ if errorlevel 1 (
         pause
         exit /b 1
     )
+) else (
+    echo agentchattr server is already listening.
 )
 
+echo Launching Kimi...
 "%VENV_PY%" wrapper.py kimi %*
 if %errorlevel% neq 0 (
     echo.

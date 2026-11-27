@@ -1,6 +1,7 @@
 @echo off
 REM agentchattr - makes sure .venv exists and has the required packages.
 REM Called by the start scripts from the project root. Exits non-zero (after a pause) if setup fails.
+echo Checking the Python environment...
 if not exist ".venv\Scripts\python.exe" (
     echo Creating virtual environment...
     python -m venv .venv

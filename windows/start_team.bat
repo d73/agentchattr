@@ -6,6 +6,7 @@ REM Check mode never installs dependencies or starts server/agent sessions.
 if /i "%~1"=="--check" goto check
 
 if not exist ".venv\Scripts\python.exe" (
+    echo Creating virtual environment...
     python -m venv .venv
     if errorlevel 1 goto failed
 )
@@ -21,6 +22,11 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 :run
+if /i "%~1"=="--check" (
+    echo Checking the agentchattr team setup...
+) else (
+    echo Starting the agentchattr team...
+)
 ".venv\Scripts\python.exe" "windows\start_team.py" %*
 if errorlevel 1 goto failed
 exit /b 0
