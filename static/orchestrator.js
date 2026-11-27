@@ -16,12 +16,11 @@
     const symbols = {
         chevron: 'M5 9l7 7 7-7',
         capacity: 'M7 7h10v10H7zM9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4',
-        plus: 'M12 5v14M5 12h14',
-        approve: 'M5 12l5 5L20 7',
-        reject: 'M6 6l12 12M6 18L18 6',
+        lock: 'M6 11h12v10H6zM8 11V7a4 4 0 1 1 8 0v4m-4 4v2',
     };
     const array = value => Array.isArray(value) ? value : [];
-    const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+    const validCount = value => Number.isSafeInteger(value) && value >= 0;
+    const count = value => validCount(value) ? value : 0;
     const jobId = value => Number.isSafeInteger(value) && value > 0;
     let lastSnapshot;
     let lastRendered;
@@ -74,36 +73,49 @@
         }
     }
 
-    function actionButton(label, action, glyph, actionRef, enabled, iconOnly = false) {
-        const button = element('button', 'orch-action');
-        button.type = 'button';
-        button.dataset.action = action;
-        button.append(icon(glyph));
-        if (!iconOnly) button.append(element('span', '', label));
-        const handler = window.requestOrchestratorDecision;
-        const actionable = enabled && typeof actionRef === 'string' && typeof handler === 'function';
-        button.disabled = !actionable;
-        describe(button, actionable ? label : `${label} unavailable`);
-        if (actionable) button.addEventListener('click', () => handler(actionRef, action));
-        return button;
+    function staffingRange(data) {
+        const { minimum, recommended } = data || {};
+        if (!validCount(minimum) || !validCount(recommended) || recommended < minimum || recommended === 0) {
+            return null;
+        }
+        return `${minimum}–${recommended}`;
     }
 
-    function drawCapacity(data, online) {
-        const active = count(data?.active);
-        const recommended = count(data?.recommended);
-        const available = count(data?.available);
-        const shortfall = count(data?.shortfall);
-        const summary = element('span', '', `${active}/${recommended}`);
-        summary.tabIndex = 0;
-        describe(summary, `${active} active / ${recommended} recommended coders. ${available} available, ${shortfall} shortfall.`);
-        capacity.replaceChildren(icon(symbols.capacity), summary,
-            actionButton('Approve temporary workers', 'approve', symbols.plus, data?.worker_grant?.action_ref,
-                online && shortfall > 0, true));
+    function liveLabel(data, online) {
+        if (!validCount(data?.present)) return '— live';
+        return `${data.present} ${online ? 'live' : 'last seen'}`;
     }
 
-    function renderQueue(rows, online) {
+    function drawCapacity(data, online, activeJob) {
+        const range = staffingRange(data);
+        const live = liveLabel(data, online);
+        const parts = [];
+        if (validCount(data?.present)) {
+            let availability = `Codex pool: ${data.present} ${online ? 'online' : 'last seen online'}`;
+            if (validCount(data.live_free) && validCount(data.live_busy)) {
+                availability += ` (${data.live_free} free, ${data.live_busy} busy`;
+                if (count(data.live_unknown)) availability += `, ${data.live_unknown} unknown`;
+                availability += ')';
+            }
+            parts.push(availability);
+        } else {
+            parts.push('Live Codex count unavailable');
+        }
+        if (range) parts.push(`${activeJob ? `Job #${activeJob.id} range` : 'Staffing range'}: ${range} workers`);
+        if (validCount(data?.captured)) {
+            const onlineCount = validCount(data.captured_online) ? `, ${data.captured_online} online` : '';
+            parts.push(`Start pool: ${data.captured} captured${onlineCount}`);
+        }
+        parts.push('Pool locks at Start. Add sessions manually before Start.');
+        describe(capacity, parts.join('\n'));
+        capacity.tabIndex = 0;
+        capacity.replaceChildren(icon(symbols.capacity), element('span', '', `${live} · ${range || '—'}`));
+    }
+
+    function renderQueue(rows, staffing, online) {
+        const jobs = array(rows).filter(row => jobId(row?.id));
         const list = element('div', 'orch-queue-list');
-        for (const job of array(rows).filter(row => jobId(row?.id))) {
+        for (const job of jobs) {
             const row = element('div', 'orch-row');
             const [label, glyph] = Object.hasOwn(stages, job.stage) ? stages[job.stage] : stages.scoping;
             const open = element('button', 'orch-job-link', `Job #${job.id}`);
@@ -124,19 +136,17 @@
                 describe(link, `Open pull request #${pr.number}`);
                 actions.append(link);
             }
-            for (const gate of array(job.gates)) {
-                const allowed = array(gate?.allowed_actions);
-                const choices = ['approve', 'reject'];
-                for (const action of choices) {
-                    const required = gate?.action === 'local_confirm';
-                    if (!required && !allowed.includes(action)) continue;
-                    const label = action === 'approve' ? 'Approve' : 'Reject';
-                    const button = actionButton(label, action, symbols[action], gate?.action_ref, online && !required);
-                    const control = element('span');
-                    if (required) describe(control, 'Confirm this gate with the local coordinator');
-                    control.append(button);
-                    actions.append(control);
-                }
+            const waiting = job.awaiting_local === true ||
+                array(job.gates).some(gate => gate?.action === 'local_confirm');
+            if (waiting) {
+                const data = job.staffing || (jobs.length === 1 ? staffing : null);
+                const range = staffingRange(data);
+                if (range) actions.append(element('span', 'orch-job-staffing', `${range} workers (${liveLabel(data, online)})`));
+                const badge = element('span', 'orch-local-badge');
+                badge.append(icon(symbols.lock), element('span', '', 'Awaiting local confirm'));
+                badge.tabIndex = 0;
+                describe(badge, 'Use the local coordinator to confirm or start this Job');
+                actions.append(badge);
             }
             row.append(open, title, actions);
             list.append(row);
@@ -155,8 +165,10 @@
         health.dataset.state = state;
         describe(health, `Orchestrator ${state}`);
         drawCounters(snapshot.pipeline);
-        drawCapacity(snapshot.staffing, state === 'online');
-        renderQueue(snapshot.jobs, state === 'online');
+        const online = state === 'online';
+        const activeJob = array(snapshot.jobs).find(job => jobId(job?.id) && job.stage !== 'done');
+        drawCapacity(snapshot.staffing, online, activeJob);
+        renderQueue(snapshot.jobs, snapshot.staffing, online);
     }
 
     async function refresh() {
