@@ -66,6 +66,8 @@ _routing_refresh_lock = threading.Lock()
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
 
+DEFAULT_CHAT_FONT = "open-sans"
+CHAT_FONTS = frozenset({DEFAULT_CHAT_FONT, "roboto", "helvetica", "montserrat", "avenir", "mono"})
 DEFAULT_CHAT_FONT_SIZE = 14
 DEFAULT_THEME_MODE = "dark"
 DEFAULT_THEME_PALETTE = "indigo"
@@ -79,7 +81,7 @@ room_settings: dict = {
     # renaming the product itself. "" hides it.
     "subtitle": "",
     "username": "user",
-    "font": "sans",
+    "font": DEFAULT_CHAT_FONT,
     "font_size": DEFAULT_CHAT_FONT_SIZE,
     "theme_mode": DEFAULT_THEME_MODE,
     "theme_palette": DEFAULT_THEME_PALETTE,
@@ -244,6 +246,15 @@ def _settings_path() -> Path:
 ROOM_SUBTITLE_MAX = 40
 
 
+def _normalize_chat_font(value):
+    if not isinstance(value, str):
+        return None
+    # Older clients could save either of these IDs for the default sans stack.
+    if value in ("sans", "serif"):
+        return DEFAULT_CHAT_FONT
+    return value if value in CHAT_FONTS else None
+
+
 def _valid_chat_font_size(value):
     return type(value) is int and 10 <= value <= 32
 
@@ -304,6 +315,7 @@ def _load_settings():
     # settings.json is hand-editable, so the file bypasses every check the
     # live update path applies. Re-normalise on load rather than trust it.
     room_settings["subtitle"] = normalize_room_subtitle(room_settings.get("subtitle")) or ""
+    room_settings["font"] = _normalize_chat_font(room_settings.get("font")) or DEFAULT_CHAT_FONT
     if not _valid_chat_font_size(room_settings.get("font_size")):
         room_settings["font_size"] = DEFAULT_CHAT_FONT_SIZE
     if room_settings.get("theme_mode") not in THEME_MODES:
@@ -1775,8 +1787,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 apply_room_subtitle(new)
                 if "username" in new and isinstance(new["username"], str):
                     room_settings["username"] = new["username"].strip() or "user"
-                if "font" in new and new["font"] in ("mono", "serif", "sans"):
-                    room_settings["font"] = new["font"]
+                font = _normalize_chat_font(new.get("font"))
+                if font is not None:
+                    room_settings["font"] = font
                 if _valid_chat_font_size(new.get("font_size")):
                     room_settings["font_size"] = new["font_size"]
                 if new.get("theme_mode") in THEME_MODES:

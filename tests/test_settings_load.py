@@ -54,6 +54,25 @@ class SettingsLoadTests(unittest.TestCase):
         self.assertEqual(app.room_settings["title"], "mine")
         self.assertEqual(self.corrupt_copies(), [])
 
+    def test_chat_font_is_restored_or_migrated(self):
+        for value, expected in (
+            ("open-sans", "open-sans"),
+            ("roboto", "roboto"),
+            ("helvetica", "helvetica"),
+            ("montserrat", "montserrat"),
+            ("avenir", "avenir"),
+            ("mono", "mono"),
+            ("sans", "open-sans"),
+            ("serif", "open-sans"),
+            ("unknown", "open-sans"),
+            ([], "open-sans"),
+            (None, "open-sans"),
+        ):
+            with self.subTest(value=value):
+                self.path.write_text(json.dumps({"font": value}), "utf-8")
+                app._load_settings()
+                self.assertEqual(app.room_settings["font"], expected)
+
     def test_chat_font_size_is_restored_or_defaults(self):
         for stored, expected in (
             ({}, 14),
@@ -207,6 +226,22 @@ class SettingsLoadTests(unittest.TestCase):
         self.assertEqual(responses[1]["data"]["theme_palette"], "amber")
         saved = json.loads(self.path.read_text("utf-8"))
         self.assertEqual((saved["theme_mode"], saved["theme_palette"]), ("light", "amber"))
+
+    def test_approved_chat_fonts_round_trip_and_invalid_fonts_keep_the_selection(self):
+        fonts = ("roboto", "helvetica", "montserrat", "avenir", "mono", "sans", "open-sans", "montserrat")
+        frames = self.exchange_settings_frames([
+            {"type": "update_settings", "typography_request_id": str(index), "data": {"font": font}}
+            for index, font in enumerate((*fonts, "unknown", ["not-a-font"]))
+        ])
+        choices = [frame["data"]["font"] for frame in frames if "typography_request_id" in frame]
+        self.assertEqual(choices, [
+            "roboto", "helvetica", "montserrat", "avenir", "mono", "open-sans",
+            "open-sans", "montserrat", "montserrat", "montserrat",
+        ])
+        self.assertEqual(json.loads(self.path.read_text("utf-8"))["font"], "montserrat")
+        app.room_settings["font"] = "open-sans"
+        app._load_settings()
+        self.assertEqual(app.room_settings["font"], "montserrat")
 
 
 if __name__ == "__main__":
