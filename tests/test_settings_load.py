@@ -65,6 +65,29 @@ class SettingsLoadTests(unittest.TestCase):
         self.assertNotIn("agent_colors", app.room_settings)
         self.assertNotIn("ui_prefs", app.room_settings)
 
+    def test_per_agent_updates_keep_other_changes_and_ignore_stale_seed(self):
+        app.room_settings["agent_colors"] = {"claude": "#333333", "codex": "#222222"}
+        colors = app._save_agent_color_changes(
+            {"codex": "#444444", "invalid": "red"}, {"claude": "#111111"},
+        )
+        self.assertEqual(colors, {"claude": "#333333", "codex": "#444444"})
+        self.assertEqual(app._save_agent_color_changes({"codex": None}, None), {"claude": "#333333"})
+        self.assertEqual(json.loads(self.path.read_text("utf-8"))["agent_colors"], {"claude": "#333333"})
+
+    def test_uninitialized_colors_seed_once_and_apply_pending_reset(self):
+        app.room_settings.pop("agent_colors", None)
+        self.assertEqual(app._save_agent_color_changes(
+            {"codex": None}, {"claude": "#333333", "codex": "#222222"},
+        ), {"claude": "#333333"})
+
+    def test_failed_color_write_keeps_previous_settings(self):
+        previous = {"codex": "#222222"}
+        app.room_settings["agent_colors"] = previous
+        with mock.patch.object(app, "_save_settings", side_effect=OSError("fixture")):
+            with self.assertRaises(OSError):
+                app._save_agent_color_changes({"codex": "#444444"}, None)
+        self.assertIs(app.room_settings["agent_colors"], previous)
+
 
 if __name__ == "__main__":
     unittest.main()

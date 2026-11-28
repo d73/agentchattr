@@ -128,6 +128,26 @@ def _clean_agent_colors(raw) -> dict:
     }
 
 
+def _save_agent_color_changes(changes: dict, seed) -> dict:
+    """Persist one client's edits without replacing other clients' overrides."""
+    previous = room_settings.get("agent_colors")
+    colors = dict(previous) if previous is not None else _clean_agent_colors(seed)
+    colors.update(_clean_agent_colors(changes))
+    for name, color in changes.items():
+        if color is None and len(name) <= 64:
+            colors.pop(name, None)
+    room_settings["agent_colors"] = colors
+    try:
+        _save_settings()
+    except OSError:
+        if previous is None:
+            room_settings.pop("agent_colors", None)
+        else:
+            room_settings["agent_colors"] = previous
+        raise
+    return colors
+
+
 def _quarantine_corrupt(p: Path, reason) -> None:
     """Keep an unreadable state file for recovery instead of silently dropping it.
 
@@ -1683,6 +1703,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "history_earlier", "channel": ch, "messages": older, "has_more": more,
                 }))
 
+            elif event.get("type") == "agent_color_changes":
+                changes = event.get("changes")
+                request_id = event.get("request_id")
+                if not isinstance(changes, dict) or type(request_id) is not int:
+                    continue
+                ack = {"type": "agent_colors_saved", "request_id": request_id}
+                try:
+                    colors = _save_agent_color_changes(changes, event.get("seed"))
+                except OSError:
+                    log.exception("Could not save agent colors")
+                    await websocket.send_text(json.dumps(ack))
+                    continue
+                await websocket.send_text(json.dumps({**ack, "data": colors}))
+                await broadcast_settings()
+
             elif event.get("type") == "update_settings":
                 new = event.get("data", {})
                 if "title" in new and isinstance(new["title"], str):
@@ -1704,7 +1739,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     room_settings["contrast"] = new["contrast"]
                 if isinstance(new.get("ui_prefs"), dict):
                     room_settings["ui_prefs"] = _clean_ui_prefs(new["ui_prefs"])
-                if isinstance(new.get("agent_colors"), dict):
+                if "agent_colors" not in room_settings and isinstance(new.get("agent_colors"), dict):
                     room_settings["agent_colors"] = _clean_agent_colors(new["agent_colors"])
                 if "rules_refresh_interval" in new:
                     try:
