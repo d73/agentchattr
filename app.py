@@ -2009,6 +2009,14 @@ async def get_status():
     return status
 
 
+@app.get("/api/launcher/registrations")
+async def get_launcher_registrations():
+    """Return configured agent types with active registrations on this server."""
+    return {"registered_bases": sorted({
+        inst["base"] for inst in registry.get_all().values() if inst["state"] == "active"
+    })}
+
+
 @app.get("/api/browser-clients")
 async def get_browser_clients():
     """Number of open chat pages (WebSocket clients); lets launchers avoid opening a duplicate tab."""
