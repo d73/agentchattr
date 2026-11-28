@@ -117,11 +117,18 @@ def load_config(root: Path | None = None) -> dict:
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
     config.pop("plugins", None)
+    config.pop("job_approvals", None)
+    config.pop("operator", None)
 
     local_path = root / "config.local.toml"
     if local_path.exists():
         with open(local_path, "rb") as f:
             local = tomllib.load(f)
+
+        for local_only in ("operator", "job_approvals"):
+            values = local.get(local_only)
+            if isinstance(values, dict):
+                config[local_only] = values
 
         plugins = local.get("plugins", {})
         if not isinstance(plugins, dict):

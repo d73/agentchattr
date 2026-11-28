@@ -13,6 +13,7 @@ from typing import Callable
 from job_lifecycle import ACTIVE, CLOSED, DRAFTING, LEGACY_STATUS, TODO, core_status
 from job_lifecycle import new_lifecycle, next_lifecycle, validate_lifecycle
 from job_lifecycle import AWAITING_APPROVAL, PLANNING, READY
+from job_reopen import ReopenConflict, create_request, record_decision
 
 log = logging.getLogger(__name__)
 
@@ -151,6 +152,8 @@ class JobStore:
         public["lifecycle"] = deepcopy(job["lifecycle"])
         if "lifecycle_events" in job:
             public["lifecycle_events"] = deepcopy(job["lifecycle_events"])
+        if "reopen_requests" in job:
+            public["reopen_requests"] = deepcopy(job["reopen_requests"])
         if "imported_lifecycle_events" in job:
             public["imported_lifecycle_events"] = deepcopy(job["imported_lifecycle_events"])
         return public
@@ -431,7 +434,7 @@ class JobStore:
         return result
 
     def _commit_lifecycle_locked(self, job, updated, event, actor, actor_kind,
-                                 operation_id, reason, approved_reopen=False):
+                                 operation_id, reason, approved_reopen=False, *, reopen_requests=None):
         previous = dict(job)
         status = LEGACY_STATUS[updated["core_id"]]
         if status != job["status"]:
@@ -440,6 +443,11 @@ class JobStore:
         record = {"operation_id": operation_id, "event": event, "actor": actor, "actor_kind": actor_kind,
                   "approved_reopen": approved_reopen,
                   "time": now, "reason": reason, "before": deepcopy(job["lifecycle"]), "after": deepcopy(updated)}
+        if reopen_requests is not None:
+            approval = reopen_requests[-1]
+            record["reopen_approval"] = {key: deepcopy(approval[key])
+                                         for key in ("id", "approval_basis", "decisions")}
+            job["reopen_requests"] = reopen_requests
         job.update(status=status, lifecycle=deepcopy(updated), updated_at=now,
                    lifecycle_events=[*job.get("lifecycle_events", []), record])
         try:
@@ -449,6 +457,87 @@ class JobStore:
             job.update(previous)
             raise
         return self._snapshot(job)
+
+    def request_reopen(self, job_id, *, expected_uid, expected_version, requester, reason):
+        """Record a reopen request without changing the Job lifecycle."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("A reopen request requires a reason")
+        reason = reason.strip()
+        with self._lock:
+            job = next((item for item in self._jobs if item["id"] == job_id), None)
+            if job is None or job["uid"] != expected_uid:
+                raise ReopenConflict("Job no longer matches the requested identity")
+            state = job["lifecycle"]
+            if (type(expected_version) is not int or state["version"] != expected_version
+                    or state["core_id"] != CLOSED or state["close_outcome"] != "completed"):
+                raise ReopenConflict("Job is no longer at the requested completed version")
+            requests = job.get("reopen_requests", [])
+            current = requests[-1] if requests else None
+            if current and current["job_version"] == expected_version and current["status"] == "pending":
+                if (current["requester"], current["reason"]) != (requester, reason):
+                    raise ReopenConflict("A reopen request is already pending")
+                return {"request": deepcopy(current), "job": self._snapshot(job)}
+            current = create_request(request_id=str(uuid.uuid4()), job_uid=expected_uid,
+                                     job_version=expected_version, requester=requester,
+                                     reason=reason, now=time.time())
+            self._save_reopen_requests_locked(job, [*requests, current])
+            snapshot = self._snapshot(job)
+        self._fire("update", snapshot)
+        return {"request": deepcopy(current), "job": snapshot}
+
+    def decide_reopen(self, job_id, request_id, *, expected_uid, expected_version, actor, role, decision):
+        """Persist a verified decision and any resulting reopen atomically."""
+        with self._lock:
+            job = next((item for item in self._jobs if item["id"] == job_id), None)
+            if job is None or job["uid"] != expected_uid:
+                raise ReopenConflict("Job no longer matches the requested identity")
+            requests = job.get("reopen_requests", [])
+            current = requests[-1] if requests else None
+            if (not current or current["id"] != request_id or current["job_uid"] != expected_uid
+                    or type(expected_version) is not int or current["job_version"] != expected_version):
+                raise ReopenConflict("Reopen request no longer matches the Job")
+            state = job["lifecycle"]
+            try:
+                updated = record_decision(current, actor=actor, role=role, decision=decision, now=time.time())
+            except ValueError as exc:
+                raise ReopenConflict(str(exc)) from exc
+            if updated is current:
+                if current["status"] == "pending" and state["version"] != expected_version:
+                    raise ReopenConflict("Job has changed since the reopen request")
+                return {"request": deepcopy(current), "job": self._snapshot(job)}
+            if state["version"] != expected_version:
+                raise ReopenConflict("Job has changed since the reopen request")
+            replacement = [*requests[:-1], updated]
+            if updated["status"] == "approved":
+                next_state = next_lifecycle(state, "reopen", "human",
+                                            reason=updated["reason"], approved_reopen=True)
+                if next_state is None:
+                    raise ReopenConflict("Job can no longer be reopened")
+                if next_state["managed_by"] == "orch":
+                    # Orch clears this gate after persisting the fresh corrective task.
+                    next_state["flags"] = ["paused"]
+                kind = "human" if role == "owner" else "agent"
+                snapshot = self._commit_lifecycle_locked(
+                    job, next_state, "reopen", actor, kind, request_id, updated["reason"],
+                    approved_reopen=True, reopen_requests=replacement,
+                )
+            else:
+                self._save_reopen_requests_locked(job, replacement)
+                snapshot = self._snapshot(job)
+        self._fire("update", snapshot)
+        return {"request": deepcopy(updated), "job": snapshot}
+
+    def _save_reopen_requests_locked(self, job, requests):
+        original = job.get("reopen_requests")
+        job["reopen_requests"] = requests
+        try:
+            self._save()
+        except OSError:
+            if original is None:
+                job.pop("reopen_requests")
+            else:
+                job["reopen_requests"] = original
+            raise
 
     def update_title(self, job_id: int, title: str) -> dict | None:
         with self._lock:

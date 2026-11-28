@@ -7,6 +7,22 @@ REOPEN_WAIT_SECONDS = 30 * 60
 DELEGATE_ROLES = {"claude", "agy"}
 
 
+class ReopenConflict(ValueError):
+    """A request or decision no longer matches the current Job."""
+
+
+
+def delegate_role(config, instance):
+    """Authorize the exact active registrations configured as distinct delegates."""
+    configured = config.get("job_approvals", {})
+    claude = configured.get("claude_identity_id")
+    agy = configured.get("agy_identity_id")
+    if (not isinstance(claude, str) or not claude or not isinstance(agy, str) or not agy
+            or claude == agy or not instance or instance.get("state") != "active"):
+        return None
+    return {claude: "claude", agy: "agy"}.get(instance["identity_id"])
+
+
 def create_request(*, request_id: str, job_uid: str, job_version: int,
                    requester: str, reason: str, now: float) -> dict:
     """Create a request that the Job store will persist before displaying it."""
