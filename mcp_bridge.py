@@ -14,6 +14,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 # Shared state — set by run.py before starting
@@ -37,6 +39,7 @@ _presence_lock = threading.Lock()   # guards both _presence and _activity
 _renamed_from: set[str] = set()    # old names from renames — suppress leave messages
 _cursors: dict[str, dict[str, int]] = {}  # agent_name → {channel_name → last_id}
 _cursors_lock = threading.Lock()
+_cursor_save_lock = threading.Lock()
 _empty_read_count: dict[str, int] = {}  # sender → consecutive empty reads
 # Last channel (or job_id) each agent explicitly read from. chat_send
 # falls back to this when the caller omits the channel/job_id, so agents
@@ -510,18 +513,17 @@ def _load_cursors():
 
 
 def _save_cursors():
-    """Persist cursor state to disk atomically (write temp + rename)."""
+    """Serialize snapshots through replacement so a late save cannot roll state back."""
     if _CURSORS_FILE is None:
         return
     try:
-        with _cursors_lock:
-            snapshot = dict(_cursors)
-        _CURSORS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CURSORS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(snapshot), "utf-8")
-        os.replace(tmp, _CURSORS_FILE)  # atomic on POSIX
-    except Exception:
-        log.warning("Failed to save cursor state to %s", _CURSORS_FILE)
+        with _cursor_save_lock:
+            with _cursors_lock:
+                snapshot = json.dumps(_cursors)
+            _CURSORS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(_CURSORS_FILE, snapshot)
+    except OSError:
+        log.warning("Failed to save cursor state to %s", _CURSORS_FILE, exc_info=True)
 
 
 def _load_roles():
