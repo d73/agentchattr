@@ -247,7 +247,11 @@ class ScheduleStore:
             for i, s in enumerate(self._schedules):
                 if s.get("id") == schedule_id:
                     removed = self._schedules.pop(i)
-                    self._save()
+                    try:
+                        self._save()
+                    except OSError:
+                        self._schedules.insert(i, removed)
+                        raise
                     result = dict(removed)
                     break
             else:

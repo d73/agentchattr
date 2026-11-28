@@ -6,6 +6,7 @@ import time
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -17,6 +18,82 @@ from schedules import ScheduleStore
 def _store():
     tmp = tempfile.mkdtemp()
     return ScheduleStore(str(Path(tmp) / "schedules.json"))
+
+
+class OneShotDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        import app
+        from store import MessageStore
+
+        self.app = app
+        folder = self.enterContext(tempfile.TemporaryDirectory())
+        self.schedule_path = Path(folder) / "schedules.json"
+        self.message_path = Path(folder) / "messages.jsonl"
+        self.schedules = ScheduleStore(str(self.schedule_path))
+        self.messages = MessageStore(str(self.message_path))
+        self.delivered = Mock()
+        self.messages.on_message(self.delivered)
+        self.enterContext(patch.object(app, "store", self.messages))
+        with patch("schedules.time.time", return_value=100):
+            self.schedule = self.schedules.create("ping", ["codex"], one_shot=True, send_at=200)
+
+    def test_one_shot_does_not_repost_after_cleanup_write_fails(self):
+        self.app._post_scheduled_message(self.schedule, "user", "@codex ping", "general")
+        with patch("schedules.atomic_write_text", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                self.schedules.delete(self.schedule["id"])
+        self.assertIsNotNone(self.schedules.get(self.schedule["id"]))
+
+        from store import MessageStore
+
+        restarted_schedules = ScheduleStore(str(self.schedule_path))
+        restarted_messages = MessageStore(str(self.message_path))
+        restarted_messages.on_message(self.delivered)
+        with patch("schedules.time.time", return_value=201):
+            pending, = restarted_schedules.run_due()
+            with patch.object(self.app, "store", restarted_messages):
+                self.app._post_scheduled_message(pending, "user", "@codex ping", "general")
+            restarted_schedules.delete(pending["id"])
+
+        self.assertEqual(len(restarted_messages.get_recent()), 1)
+        self.delivered.assert_called_once()
+        self.assertEqual(restarted_schedules.list_all(), [])
+
+    def test_scheduled_mentions_route_to_the_target(self):
+        from router import Router
+
+        agents = Mock()
+        agents.trigger = AsyncMock()
+        self.messages.on_message(lambda msg: asyncio.run(self.app._handle_new_message(msg)))
+        with (
+            patch.object(self.app, "router", Router(["codex", "claude"], default_mention="none")),
+            patch.object(self.app, "registry", None),
+            patch.object(self.app, "agents", agents),
+            patch.object(self.app, "session_engine", None),
+            patch.object(self.app, "_last_active_channel", "general"),
+            patch.object(self.app, "broadcast", AsyncMock()),
+            patch.object(self.app, "_unarchive_for_activity", return_value=False),
+            patch("mcp_bridge.is_online", return_value=True),
+        ):
+            for once in (True, False):
+                with self.subTest(one_shot=once):
+                    agents.trigger.reset_mock()
+                    schedule = {**self.schedule, "one_shot": once}
+                    self.app._post_scheduled_message(schedule, "user", "@codex ping", "ops")
+                    agents.trigger.assert_awaited_once_with(
+                        "codex", message="user: @codex ping", channel="ops", prompt="",
+                    )
+
+    def test_one_shot_is_only_delivered_after_message_is_persisted(self):
+        with patch("store.atomic_write_text", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                self.app._post_scheduled_message(self.schedule, "user", "@codex ping", "general")
+        self.delivered.assert_not_called()
+        self.assertEqual(self.messages.get_recent(), [])
+
+        self.app._post_scheduled_message(self.schedule, "user", "@codex ping", "general")
+        self.delivered.assert_called_once()
+        self.assertEqual(self.messages.get_recent()[0]["id"], 0)
 
 
 class OneShotIsNotADailyRuleTests(unittest.TestCase):
