@@ -160,6 +160,7 @@ class JobStore:
     def _snapshot(job):
         public = dict(job)
         public.pop("_orch_gates", None)
+        public.pop("_orch_workflow_history", None)
         coordinator = orch_coordinator(job)
         if coordinator is not None:
             public["orch_coordinator"] = coordinator
@@ -231,6 +232,58 @@ class JobStore:
         return next((job for job in self._jobs
                      if job.get("uid") == uid and job["lifecycle"]["managed_by"] == "orch"), None)
 
+    def orch_workflow_state(self, job_uid):
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            if job is None:
+                return None
+            return (self._snapshot(job), deepcopy(job.get("_orch_gates", [])),
+                    deepcopy(job.get("_orch_workflow_history", {})))
+
+    def activate_orch_workflow(self, job_uid, *, coordinator):
+        if not isinstance(coordinator, str) or not coordinator.strip():
+            return None
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            bound = orch_coordinator(job) if job is not None else None
+            if job is None or (bound and bound.casefold() != coordinator.casefold()):
+                return None
+            changed = not job.get("orch_workflow_active")
+            if changed:
+                previous = dict(job)
+                job["orch_workflow_active"] = True
+                if not bound:
+                    job["orch_coordinator"] = coordinator
+                try:
+                    self._save()
+                except OSError:
+                    job.clear()
+                    job.update(previous)
+                    raise
+            snapshot = self._snapshot(job)
+        if changed:
+            self._fire("update", snapshot)
+        return {"job_uid": job_uid, "channel": snapshot["channel"], "workflow_active": True}
+
+    def remember_orch_workflow_message(self, job_uid, message):
+        """Retain a history snapshot even if the original chat message is removed."""
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            previous = job.get("_orch_workflow_history") if job else None
+            key = str(message["id"])
+            if (job is None or job["channel"] != message["channel"]
+                    or key in (previous or {})):
+                return
+            job["_orch_workflow_history"] = {**(previous or {}), key: deepcopy(message)}
+            try:
+                self._save()
+            except OSError:
+                if previous is None:
+                    del job["_orch_workflow_history"]
+                else:
+                    job["_orch_workflow_history"] = previous
+                raise
+
     @staticmethod
     def _stage_version(job):
         for event in reversed(job.get("lifecycle_events", [])):
@@ -298,7 +351,7 @@ class JobStore:
                     and not (gate == "staffing" and current["choice"] == "Wait")):
                 return None
             binding = {"job_uid": job_uid, "gate": gate, "revision": revision}
-            decision_id = add_card(job["channel"], binding)
+            decision_id = add_card(job["channel"], binding, job.get("source_msg_id"))
             record = dict(binding, decision_id=decision_id, choices=list(choices), choice=None,
                           actor=None, decided_at=None, coordinator=coordinator, operation_id=operation_id,
                           text=text, stage_version=stage_version)

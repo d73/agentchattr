@@ -18,6 +18,7 @@ from atomic_io import atomic_write_text
 from job_lifecycle import ACTIVE
 from jobs import orch_coordinator
 from job_reopen import ReopenConflict, delegate_role
+from orch_workflow import record_reply as record_orch_reply, reply_metadata as orch_reply_metadata
 
 from attachment_storage import copy_image_attachment
 
@@ -260,11 +261,13 @@ def chat_send(
     recipient_identity: str = "",
     job_uid: str = "",
     job_channel: str = "",
+    workflow_requires_reply: bool = False,
 ) -> str:
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
     Optionally attach a local image by providing image_path (absolute path).
     Optionally reply to a message by providing reply_to (message ID).
     A Job reply can be bound to a registered agent session with recipient and recipient_identity.
+    Set workflow_requires_reply for a question to the human in a bound main-channel Orch conversation.
     Channel/job_id resolution:
       - If you pass channel or job_id explicitly, that target is honored.
       - If you omit both, the message is routed to the last channel or
@@ -347,6 +350,7 @@ def chat_send(
             return "Error: the bound recipient is no longer present."
     job_send = bool(job_id and jobs)
     reply_id = None
+    workflow_metadata = None
     if job_send:
         if jobs.get(job_id) is None:
             return f"Error: job #{job_id} not found."
@@ -354,6 +358,17 @@ def chat_send(
         if store.get_by_id(reply_to) is None:
             return f"Message #{reply_to} not found."
         reply_id = reply_to
+        try:
+            workflow_metadata = orch_reply_metadata(jobs, store, channel, reply_id)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        if workflow_metadata and not authenticated:
+            return "Error: an authenticated agent session is required to reply to an Orch workflow through MCP."
+    if workflow_requires_reply:
+        binding = (workflow_metadata or {}).get("orch_workflow")
+        if not binding or binding.get("recipient", "").casefold() != sender.casefold():
+            return "Error: only the assigned Orch workflow recipient can request a human reply here."
+        binding["requires_reply"] = True
 
     attachments = []
     attachment_path = None
@@ -419,17 +434,22 @@ def chat_send(
 
     # Determine message type and metadata based on choices
     msg_type = "chat"
-    metadata = None
+    metadata = workflow_metadata
     clean_choices = [c for c in (choices if choices else []) if isinstance(c, str) and c.strip()]
     if clean_choices:
         msg_type = "decision"
-        metadata = {"choices": clean_choices, "resolved": False}
+        metadata = {**(metadata or {}), "choices": clean_choices, "resolved": False}
 
     msg = store.add(sender, message.strip(), attachments=attachments,
                     reply_to=reply_id, channel=channel,
                     msg_type=msg_type, metadata=metadata,
                     sender_kind="agent" if authenticated else "human",
                     sender_identity=sender_identity, sender_base=sender_base)
+    if workflow_metadata:
+        try:
+            record_orch_reply(jobs, msg)
+        except OSError:
+            log.exception("Could not retain Orch workflow message %s in Job history", msg["id"])
     _touch_presence(sender)
     result = f"Sent (id={msg['id']})"
     if msg.get("persistence_error"):
@@ -538,6 +558,8 @@ def _serialize_messages(msgs: list[dict], *, has_more: bool = False) -> str:
         metadata = m.get("metadata")
         if m.get("type") == "decision" and isinstance(metadata, dict) and "job_reopen" in metadata:
             entry["job_reopen"] = metadata["job_reopen"]
+        if isinstance(metadata, dict) and "orch_workflow" in metadata:
+            entry["orch_workflow"] = metadata["orch_workflow"]
         out.append(entry)
     if out and has_more:
         out[-1]["has_more"] = True
