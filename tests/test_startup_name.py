@@ -20,8 +20,17 @@ class StartupNameTests(unittest.TestCase):
             registry = RuntimeRegistry(tmp)
             registry.seed({"codex": {}})
             existing = registry.register("codex", requested_name="c1")
+            registry_path = Path(tmp) / "registry.json"
             changes = []
             registry.on_change(lambda: changes.append(registry.get_all_names()))
+            failed_replacements = 0
+
+            def replace(source, destination):
+                nonlocal failed_replacements
+                if Path(destination) == registry_path:
+                    failed_replacements += 1
+                    raise PermissionError("locked")
+                return os.replace(source, destination)
 
             async def body():
                 return {"base": "codex", "name": "c2"}
@@ -29,19 +38,19 @@ class StartupNameTests(unittest.TestCase):
             request = SimpleNamespace(json=body)
             with (
                 patch.object(app, "registry", registry),
-                patch.object(atomic_io.os, "replace", side_effect=PermissionError("locked")),
-                patch.object(atomic_io.time, "sleep") as retry,
+                patch.object(atomic_io, "os", wraps=os) as writer_os,
                 self.assertLogs("app", level="ERROR"),
             ):
+                writer_os.replace.side_effect = replace
                 result = asyncio.run(app.register_agent(request))
 
             self.assertEqual(result.status_code, 503)
-            self.assertEqual(retry.call_count, 5)
+            self.assertEqual(failed_replacements, 6)
             self.assertEqual(registry.get_all_names(), ["c1"])
             self.assertEqual(changes, [])
             restored = RuntimeRegistry(tmp)
             self.assertEqual(restored.resolve_token(existing["token"])["name"], "c1")
-            self.assertNotIn("c2", json.loads((Path(tmp) / "registry.json").read_text())["instances"])
+            self.assertNotIn("c2", json.loads(registry_path.read_text())["instances"])
 
     def test_registration_endpoint_uses_requested_identity_and_rejects_duplicate(self):
         with tempfile.TemporaryDirectory() as tmp:
