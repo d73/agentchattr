@@ -54,7 +54,7 @@ def publish_orch_workflow(jobs, store, job_uid, *, coordinator, operation_id, ki
     state = jobs.orch_workflow_state(job_uid)
     if state is None or not _owned_by(state[0], coordinator):
         return None
-    job, gates, retained = state
+    job, gates, retained, _ = state
     parent_id = job.get("source_msg_id") if parent_message_id is None else parent_message_id
     binding = {"job_uid": job_uid, "kind": kind, "revision": revision, "prompt_id": None}
     if recipient is not None:
@@ -94,6 +94,13 @@ def _prompt_result(job, message):
     return {**binding, "channel": job["channel"]}
 
 
+def _prompt_open(state, prompt_id):
+    job, gates, _, completed = state
+    return (prompt_id not in completed
+            and job["lifecycle"]["core_id"] != "core.closed"
+            and all(gate["decision_id"] <= prompt_id for gate in gates))
+
+
 def reply_metadata(jobs, store, channel, reply_to):
     """Resolve a reply from its closest persisted Job anchor in the same channel."""
     parent = store.get_by_id(reply_to) if type(reply_to) is int else None
@@ -106,7 +113,10 @@ def reply_metadata(jobs, store, channel, reply_to):
             if (parent["channel"] != channel or state is None or state[0]["channel"] != channel
                     or _job_message(store, state[0], binding["prompt_id"]) is None):
                 raise ValueError("Orch workflow reply must use its Job's current channel and prompt")
-            return {"orch_workflow": {key: value for key, value in binding.items() if key != "requires_reply"}}
+            reply = {key: value for key, value in binding.items() if key != "requires_reply"}
+            if _workflow_binding(parent) and not _prompt_open(state, binding["prompt_id"]):
+                reply["closed"] = True
+            return {"orch_workflow": reply}
         ancestor_id = parent.get("reply_to")
         if parent["channel"] != channel or type(ancestor_id) is not int or ancestor_id >= parent["id"]:
             break
@@ -129,7 +139,7 @@ def read_orch_workflow(jobs, store, job_uid, *, coordinator, prompt_id):
     state = jobs.orch_workflow_state(job_uid)
     if state is None or not _owned_by(state[0], coordinator):
         return None
-    job, _, retained = state
+    job, _, retained, _ = state
     messages = _bound_messages(store, job, retained)
     prompt = messages.get(prompt_id)
     if prompt is None or _workflow_binding(prompt)["prompt_id"] != prompt_id:
@@ -137,8 +147,21 @@ def read_orch_workflow(jobs, store, job_uid, *, coordinator, prompt_id):
     fields = ("id", "uid", "reply_to", "text", "sender", "sender_kind", "sender_identity", "timestamp", "time")
     replies = [{key: message.get(key) for key in fields}
                for message_id, message in sorted(messages.items())
-               if message_id != prompt_id and _workflow_binding(message)["prompt_id"] == prompt_id]
-    return {**_prompt_result(job, prompt), "replies": replies}
+               if message_id != prompt_id and _workflow_binding(message)["prompt_id"] == prompt_id
+               and not _workflow_binding(message).get("closed")]
+    return {**_prompt_result(job, prompt), "completed": not _prompt_open(state, prompt_id), "replies": replies}
+
+
+def complete_orch_workflow(jobs, store, job_uid, *, coordinator, prompt_id):
+    state = jobs.orch_workflow_state(job_uid)
+    if state is None or not _owned_by(state[0], coordinator) or type(prompt_id) is not int:
+        return None
+    job, _, retained, _ = state
+    prompt = _job_message(store, job, prompt_id) or retained.get(str(prompt_id))
+    binding = _workflow_binding(prompt) if prompt is not None else None
+    if not binding or binding["job_uid"] != job_uid or binding["prompt_id"] != prompt_id:
+        return None
+    return jobs.complete_orch_workflow_prompt(job_uid, coordinator=coordinator, prompt_id=prompt_id)
 
 
 def _history_entry(job, kind, text, *, event_id=None, time=None, message_id=None, revision=None, choice=None, actor=None):
@@ -148,7 +171,7 @@ def _history_entry(job, kind, text, *, event_id=None, time=None, message_id=None
 
 
 def _pending_actions(store, state, messages):
-    job, gates, _ = state
+    job, gates, _, _ = state
     stage = job["lifecycle"]["stage_id"]
     actions = []
     answered = set()
@@ -159,14 +182,10 @@ def _pending_actions(store, state, messages):
         while parent_id in messages and parent_id not in answered and parent_id < message["id"]:
             answered.add(parent_id)
             parent_id = messages[parent_id].get("reply_to")
-    latest_gate_id = max((gate["decision_id"] for gate in gates), default=-1)
-    last_stage_change = max((event["time"] for event in job.get("lifecycle_events", [])
-                             if event["before"]["stage_id"] != event["after"]["stage_id"]), default=0)
     for message_id, message in messages.items():
         binding = _workflow_binding(message)
-        if (binding.get("requires_reply") and job["lifecycle"]["core_id"] != "core.closed"
-                and message_id not in answered and message_id > latest_gate_id
-                and message["timestamp"] >= last_stage_change
+        if (binding.get("requires_reply") and not binding.get("closed")
+                and message_id not in answered and _prompt_open(state, binding["prompt_id"])
                 and _job_message(store, job, message_id)):
             actions.append((message_id, binding["kind"], "Reply requested"))
     latest_revision = gates[-1]["revision"] if gates else None
@@ -195,7 +214,7 @@ def list_orch_workflow_actions(jobs, store, *, coordinator):
         state = jobs.orch_workflow_state(job["uid"])
         if state is None:
             continue
-        job, _, retained = state
+        job, _, retained, _ = state
         for message_id, kind, label in _pending_actions(store, state, _bound_messages(store, job, retained)):
             result.append({"job_uid": job["uid"], "job_id": job["id"], "title": job["title"],
                            "channel": job["channel"], "message_id": message_id, "kind": kind, "label": label})
@@ -206,7 +225,7 @@ def history(jobs, store, job_uid):
     state = jobs.orch_workflow_state(job_uid)
     if state is None:
         return None
-    job, gates, retained = state
+    job, gates, retained, _ = state
     entries = []
     messages = _bound_messages(store, job, retained)
     for message in messages.values():

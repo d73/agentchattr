@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 import app
 import mcp_bridge
 from jobs import JobStore
-from orch_workflow import history, list_orch_workflow_actions, publish_orch_workflow
+from orch_workflow import complete_orch_workflow, history, list_orch_workflow_actions, publish_orch_workflow
 from orch_workflow import read_orch_workflow, record_reply, reply_metadata
 from run import _publish_orch_gate
 from store import MessageStore
@@ -135,7 +135,26 @@ class OrchWorkflowTests(unittest.TestCase):
                                     gate="brief", revision=2, choices=["Approve", "Revise"],
                                     text="Review the revised brief", operation_id="brief:2")
         self.assertEqual(prompt["prompt_id"], self.store.get_by_id(second["decision_id"])["reply_to"])
+        late = self.reply("tools", prompt["prompt_id"], "Old revision question?", ask=True)
+        self.assertTrue(late["metadata"]["orch_workflow"]["closed"])
         self.assertEqual([second["decision_id"]], [entry["message_id"] for entry in self.status()])
+
+    def test_activation_changes_only_the_orch_browser_composer(self):
+        manual = self.jobs.create("Manual", "job", "tools", "owner")
+        web = FastAPI()
+        web.add_api_route("/api/jobs/{job_id}/messages", app.post_job_message, methods=["POST"])
+        with patch.multiple(app, app=web, jobs=self.jobs, store=self.store, session_token=None,
+                            router=Mock(get_targets=Mock(return_value=[]))):
+            app._install_security_middleware("browser-fixture", {})
+            with TestClient(web, client=("127.0.0.1", 50000)) as client:
+                token = {"X-Session-Token": "browser-fixture"}
+                body = {"text": "A reply"}
+                legacy = f"/api/jobs/{self.job['id']}/messages"
+                self.assertEqual(200, client.post(legacy, headers=token, json=body).status_code)
+                self.activate()
+                self.assertEqual(409, client.post(legacy, headers=token, json=body).status_code)
+                unrelated = f"/api/jobs/{manual['id']}/messages"
+                self.assertEqual(200, client.post(unrelated, headers=token, json=body).status_code)
 
     def test_history_routes_authorize_and_resolve_exact_messages_and_intake_is_suppressed(self):
         other = self.create_job("elsewhere")
@@ -226,3 +245,32 @@ class OrchWorkflowTests(unittest.TestCase):
         self.assertEqual("registered-writer", replies[0]["sender_identity"])
         self.assertEqual("@orch same scope", self.store.get_by_id(self.store.last_id)["text"])
         self.assertEqual([], self.status())
+
+    def test_late_question_cannot_restore_attention_after_completion_or_replacement(self):
+        self.activate()
+        prompt_id = self.publish()["prompt_id"]
+        first = self.reply("tools", prompt_id, "Which checks?", ask=True)
+        self.assertEqual(first["id"], self.status()[0]["message_id"])
+        other = self.create_job("tools")
+        self.activate(other)
+        self.assertIsNone(complete_orch_workflow(self.jobs, self.store, other["uid"],
+                                                coordinator="orch", prompt_id=prompt_id))
+        completed = complete_orch_workflow(self.jobs, self.store, self.job["uid"],
+                                          coordinator="ORCH", prompt_id=prompt_id)
+        self.assertTrue(completed["completed"])
+        self.assertEqual(completed, complete_orch_workflow(self.jobs, self.store, self.job["uid"],
+                                                           coordinator="orch", prompt_id=prompt_id))
+        self.assertEqual([], self.status())
+        late = self.reply("tools", prompt_id, "Which branch?", ask=True)
+        self.assertTrue(late["metadata"]["orch_workflow"]["closed"])
+        self.assertEqual([first["id"]], [row["id"] for row in self.read(self.job, prompt_id)["replies"]])
+
+        # A freshly issued gate also supersedes the previous question root if
+        # gate publication lands before an explicit completion can be delivered.
+        other_prompt = self.publish(other)["prompt_id"]
+        other = self.transition(other, "submit_brief")
+        card = _publish_orch_gate(self.jobs, self.store, other["uid"], coordinator="orch",
+                                  gate="brief", revision=1, choices=["Approve", "Revise"],
+                                  text="Review the brief", operation_id="brief:1")
+        self.reply("tools", other_prompt, "Late question for another root?", ask=True)
+        self.assertEqual([card["decision_id"]], [row["message_id"] for row in self.status()])

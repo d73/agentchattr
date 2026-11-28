@@ -368,7 +368,8 @@ def chat_send(
         binding = (workflow_metadata or {}).get("orch_workflow")
         if not binding or binding.get("recipient", "").casefold() != sender.casefold():
             return "Error: only the assigned Orch workflow recipient can request a human reply here."
-        binding["requires_reply"] = True
+        if not binding.get("closed"):
+            binding["requires_reply"] = True
 
     attachments = []
     attachment_path = None

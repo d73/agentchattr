@@ -161,6 +161,7 @@ class JobStore:
         public = dict(job)
         public.pop("_orch_gates", None)
         public.pop("_orch_workflow_history", None)
+        public.pop("_orch_workflow_completed", None)
         coordinator = orch_coordinator(job)
         if coordinator is not None:
             public["orch_coordinator"] = coordinator
@@ -238,7 +239,27 @@ class JobStore:
             if job is None:
                 return None
             return (self._snapshot(job), deepcopy(job.get("_orch_gates", [])),
-                    deepcopy(job.get("_orch_workflow_history", {})))
+                    deepcopy(job.get("_orch_workflow_history", {})),
+                    set(job.get("_orch_workflow_completed", [])))
+
+    def complete_orch_workflow_prompt(self, job_uid, *, coordinator, prompt_id):
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            bound = orch_coordinator(job) if job is not None else None
+            if not bound or bound.casefold() != coordinator.casefold():
+                return None
+            previous = job.get("_orch_workflow_completed")
+            if prompt_id not in (previous or []):
+                job["_orch_workflow_completed"] = [*(previous or []), prompt_id]
+                try:
+                    self._save()
+                except OSError:
+                    if previous is None:
+                        del job["_orch_workflow_completed"]
+                    else:
+                        job["_orch_workflow_completed"] = previous
+                    raise
+            return {"job_uid": job_uid, "channel": job["channel"], "prompt_id": prompt_id, "completed": True}
 
     def activate_orch_workflow(self, job_uid, *, coordinator):
         if not isinstance(coordinator, str) or not coordinator.strip():

@@ -1104,6 +1104,9 @@ async def _handle_new_message(msg: dict):
     # Summary cards are channel history, not new requests to their mentions.
     if msg_type == "summary":
         return
+    workflow = (msg.get("metadata") or {}).get("orch_workflow")
+    if workflow and workflow.get("closed"):
+        return
 
     # Check for slash commands — use stripped text (sans @mentions)
     if stripped == "/continue":
@@ -1220,7 +1223,6 @@ async def _handle_new_message(msg: dict):
                            "errors": ["Invalid JSON in session block"], "valid": False},
             )
 
-    workflow = (msg.get("metadata") or {}).get("orch_workflow")
     recipient = workflow and workflow.get("recipient")
     if recipient and (not sender_is_agent or workflow["prompt_id"] == msg.get("id")):
         raw_targets = [recipient]
