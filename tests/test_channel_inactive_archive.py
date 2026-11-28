@@ -1,9 +1,13 @@
 import asyncio
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from fastapi import WebSocketDisconnect
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -11,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 import app
 from jobs import JobStore
+from schedules import ScheduleStore
 from store import MessageStore
 
 
@@ -36,6 +41,73 @@ class ChannelActivityTests(unittest.TestCase):
         log.write_text('{"id": 0, "sender": "a", "text": "x", "timestamp": 10.0}\n', encoding="utf-8")
 
         self.assertEqual(MessageStore(str(log)).channel_activity(), {"general": 10.0})
+
+
+class ChannelRenameTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.jobs = JobStore(str(self.root / "jobs.json"))
+        self.schedules = ScheduleStore(str(self.root / "schedules.json"))
+        self.messages = MessageStore(str(self.root / "messages.jsonl"))
+        for name, value in (("jobs", self.jobs), ("schedules", self.schedules),
+                            ("store", self.messages), ("_save_settings", MagicMock()),
+                            ("_on_job_change", MagicMock()), ("_on_schedule_change", MagicMock()),
+                            ("room_settings", {"channels": ["general", "ops"], "archived_channels": ["ops"]})):
+            self.enterContext(patch.object(app, name, value))
+        self.enterContext(patch("mcp_bridge.migrate_cursors_rename"))
+        self.job = self.jobs.create("Review", "job", "ops", "derek", status="archived")
+        self.schedule = self.schedules.create("Review", ["reviewer"], channel="ops", interval_seconds=60)
+        self.messages.add("derek", "Review", channel="ops")
+
+    def test_persists_jobs_and_schedules_under_the_renamed_channel(self):
+        self.jobs.create("Other", "job", "general", "derek")
+        self.schedules.create("Other", ["reviewer"], channel="general", interval_seconds=120)
+
+        receive = AsyncMock(side_effect=[
+            json.dumps({"type": "channel_rename", "old_name": "ops", "new_name": "release"}),
+            WebSocketDisconnect(),
+        ])
+        socket = MagicMock(query_params={"token": "test"},
+                           client=SimpleNamespace(host="127.0.0.1"),
+                           accept=AsyncMock(), send_text=AsyncMock(), receive_text=receive)
+        rules = MagicMock()
+        rules.list_all.return_value = []
+        with patch.multiple(app, ws_clients=set(), rules=rules, session_token="test",
+                            registry=None, config={}, broadcast_status=AsyncMock()):
+            asyncio.run(app.websocket_endpoint(socket))
+
+        self.assertEqual(app.room_settings["channels"], ["general", "release"])
+        self.assertEqual(app.room_settings["archived_channels"], ["release"])
+        frames = [json.loads(call.args[0]) for call in socket.send_text.await_args_list]
+        [rename] = [frame for frame in frames if frame["type"] == "channel_renamed"]
+        self.assertEqual(rename["data"]["channels"], ["general", "release"])
+        jobs = JobStore(str(self.root / "jobs.json"))
+        self.assertEqual(jobs.list_all(channel="ops"), [])
+        self.assertEqual(jobs.list_all(channel="release"), [dict(self.job, channel="release")])
+        self.assertEqual(len(jobs.list_all(channel="general")), 1)
+        schedules = ScheduleStore(str(self.root / "schedules.json"))
+        self.assertEqual(schedules.get(self.schedule["id"]), dict(self.schedule, channel="release"))
+        self.assertEqual({schedule["channel"] for schedule in schedules.list_all()}, {"general", "release"})
+        messages = MessageStore(str(self.root / "messages.jsonl"))
+        self.assertEqual(len(messages.get_recent(channel="release")), 1)
+        app._on_job_change.assert_called_once_with("update", dict(self.job, channel="release"))
+        app._on_schedule_change.assert_called_once_with(
+            "update", dict(self.schedule, channel="release"))
+
+    def test_retry_after_store_write_failure_finishes_the_rename(self):
+        with patch.object(self.jobs, "_save", side_effect=OSError("write failed")):
+            with self.assertRaises(OSError):
+                app._rename_channel_references("ops", "release")
+        self.assertEqual(app.room_settings["channels"], ["general", "ops"])
+        self.assertEqual(self.jobs.get(self.job["id"])["channel"], "ops")
+        app._save_settings.assert_not_called()
+
+        app._rename_channel_references("ops", "release")
+
+        self.assertEqual(self.jobs.get(self.job["id"])["channel"], "release")
+        self.assertEqual(self.schedules.get(self.schedule["id"])["channel"], "release")
+        app._on_job_change.assert_called_once_with("update", dict(self.job, channel="release"))
+        app._on_schedule_change.assert_called_once()
 
 
 class InactiveHoursTests(unittest.TestCase):
