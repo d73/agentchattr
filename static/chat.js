@@ -517,6 +517,7 @@ function init() {
         status: document.getElementById('agent-pill-order-status'),
         label: item => item.textContent,
     });
+    window.HeaderToolbar.setup(saveAppearanceSettings);
     setupUserColorSetting();
     setupAttentionStyleSetting();
     if (window.ChannelAttention) window.ChannelAttention.setup();
@@ -2621,6 +2622,9 @@ function applySettings(data, appearanceRequestId) {
             input.value = data.font_size;
         }
         applyChatFontSize(data.font_size);
+    }
+    if (data.toolbar_order && !pendingAppearanceSettings.has('toolbar_order')) {
+        window.HeaderToolbar.apply(data.toolbar_order);
     }
     if (data.ui_prefs && typeof data.ui_prefs === 'object') {
         applyUiPrefs(data.ui_prefs);

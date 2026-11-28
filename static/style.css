@@ -362,6 +362,13 @@ header h1 {
     gap: 12px;
 }
 
+#header-toolbar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: inherit;
+}
+
 #agent-status {
     display: flex;
     gap: 12px;
@@ -537,7 +544,6 @@ header h1 {
 @media (max-width: 700px) {
     header { flex-wrap: wrap; gap: 8px; }
     .header-right { width: 100%; min-width: 0; gap: 6px; }
-    .header-right > button { flex-shrink: 0; }
     #agent-status { flex: 1; min-width: 0; max-width: none; padding-inline: 8px; }
 
     #content-area { position: relative; }
@@ -852,6 +858,12 @@ header h1 {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+#header-toolbar > [data-reorderable]:enabled {
+    cursor: grab;
+    user-select: none;
+}
+#header-toolbar.is-reordering > [data-reorderable] { cursor: grabbing; }
 
 /* --- Toast notifications --- */
 .toast {
