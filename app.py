@@ -724,12 +724,13 @@ def _expire_crashed_agents(now: float) -> set[str]:
         if not registry.deregister(name, reclaimable=True, identity_id=instance["identity_id"],
                                    last_seen_before=cutoff):
             continue
+        if not mcp_bridge.purge_identity(name, require_unregistered=True):
+            continue
         if registry.is_registered(name):
             continue
-        log.info("Crash timeout: deregistering %s (no heartbeat for %ss)",
-                 name, registry.HEARTBEAT_TIMEOUT)
-        mcp_bridge.purge_identity(name)
         registry.clean_renames_for(name)
+        log.info("Crash timeout: deregistered %s (no heartbeat for %ss)",
+                 name, registry.HEARTBEAT_TIMEOUT)
         store.add(name, f"{name} disconnected (timeout)", msg_type="leave",
                   channel=_agent_last_channel.get(name, _last_active_channel))
         expired.add(name)

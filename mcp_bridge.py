@@ -581,9 +581,11 @@ def migrate_identity(old_name: str, new_name: str):
     _save_cursors()
 
 
-def purge_identity(name: str):
-    """Remove all runtime state for a deregistered agent (presence, activity, cursors, roles)."""
+def purge_identity(name: str, *, require_unregistered: bool = False) -> bool:
+    """Clear runtime state, optionally skipping names that have returned to the registry."""
     with _presence_lock:
+        if require_unregistered and registry and registry.is_registered(name):
+            return False
         _presence.pop(name, None)
         _activity.pop(name, None)
         _activity_known.pop(name, None)
@@ -603,6 +605,7 @@ def purge_identity(name: str):
     except OSError:
         log.exception("Failed to persist role removal for %s", name)
     _save_cursors()
+    return True
 
 
 def migrate_cursors_rename(old_name: str, new_name: str):
