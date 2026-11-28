@@ -1318,7 +1318,7 @@ async function loadJobMessages(jobId, container = document.getElementById('jobs-
             const convView = document.getElementById('jobs-conversation-view');
             const hasBrief = !!convView.querySelector('.job-brief-card');
             if (!hasBrief && !readOnly) {
-                container.innerHTML = '<div class="jobs-empty" style="font-size:12px; padding:16px">No messages yet. Start the conversation!</div>';
+                container.innerHTML = '<div class="jobs-empty job-thread-empty">No messages yet. Start the conversation!</div>';
             }
             return msgs;
         }

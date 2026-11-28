@@ -75,11 +75,15 @@ class SettingsLoadTests(unittest.TestCase):
 
     def test_chat_font_size_is_restored_or_defaults(self):
         for stored, expected in (
-            ({}, 14),
+            ({}, 13),
+            ({"font_size": 10}, 10),
+            ({"font_size": 14}, 14),
             ({"font_size": 18}, 18),
-            ({"font_size": 33}, 14),
-            ({"font_size": "18"}, 14),
-            ({"font_size": True}, 14),
+            ({"font_size": 32}, 32),
+            ({"font_size": 9}, 13),
+            ({"font_size": 33}, 13),
+            ({"font_size": "18"}, 13),
+            ({"font_size": True}, 13),
         ):
             with self.subTest(stored=stored):
                 app.room_settings.pop("font_size", None)

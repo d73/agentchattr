@@ -178,7 +178,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 14px var(--space-lg) 10px;
-    font-size: 15px;
+    font-size: var(--fs-base);
     font-weight: var(--fw-semibold);
     color: var(--text);
 }
@@ -187,7 +187,7 @@
     background: none;
     border: none;
     color: var(--text-dim);
-    font-size: 20px;
+    font-size: var(--fs-2xl);
     cursor: pointer;
     padding: 0 var(--space-xs);
 }
@@ -298,7 +298,7 @@
 }
 
 .session-role-pill {
-    font-size: 10px;
+    font-size: var(--fs-2xs);
     padding: 1px 6px;
     border-radius: var(--radius-sm);
     background: var(--accent-soft);
@@ -339,7 +339,7 @@
     background: none;
     border: none;
     color: var(--text-dim);
-    font-size: 18px;
+    font-size: var(--fs-xl);
     cursor: pointer;
     padding: 2px 6px;
 }
@@ -493,7 +493,7 @@
 }
 
 .session-draft-meta {
-    font-size: 10px;
+    font-size: var(--fs-2xs);
     color: color-mix(in srgb, var(--text-dim) 88%, transparent);
     margin-left: auto;
     white-space: nowrap;
@@ -608,7 +608,7 @@
     align-items: center;
     padding: 1px 7px;
     border-radius: var(--radius-full);
-    font-size: 10px;
+    font-size: var(--fs-2xs);
     font-weight: var(--fw-medium);
     color: var(--text-muted);
     background: var(--white-06);

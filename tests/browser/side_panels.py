@@ -150,7 +150,7 @@ def check_panels(page, url, screenshots):
     expect(settings.get_by_role("button", name="Reset color")).to_be_visible()
     appearance.locator("summary").click()
     font_size = appearance.get_by_role("spinbutton", name="Font Size")
-    expect(font_size).to_have_value("14")
+    expect(font_size).to_have_value("13")
     assert font_size.evaluate("el => el.closest('.settings-field').previousElementSibling.querySelector('label').textContent") == "Font"
     assert sockets
 
@@ -184,25 +184,25 @@ def check_panels(page, url, screenshots):
     assert [frame["data"] for frame in font_updates] == [{"font": key} for key in families]
 
     sockets[-1].send(json.dumps({
-        "type": "settings", "data": {"font": "sans", "font_size": 14},
+        "type": "settings", "data": {"font": "sans", "font_size": 13},
         "typography_request_id": font_updates[0]["typography_request_id"],
     }))
     expect(page.locator("body")).to_have_attribute("data-chat-font", "mono")
     sockets[-1].send(json.dumps({
-        "type": "settings", "data": {"font": "mono", "font_size": 14},
+        "type": "settings", "data": {"font": "mono", "font_size": 13},
         "typography_request_id": font_updates[-1]["typography_request_id"],
     }))
     sockets[-1].send(json.dumps({"type": "settings", "data": {"font": "unknown"}}))
     expect(font).to_have_value("mono")
 
     appearance.get_by_role("button", name="Increase font size").click()
-    expect(font_size).to_have_value("15")
-    expect(page.locator("#input")).to_have_css("font-size", "15px")
+    expect(font_size).to_have_value("14")
+    expect(page.locator("#input")).to_have_css("font-size", "14px")
     font_size.fill("20")
     expect(page.locator("#input")).to_have_css("font-size", "20px")
     expect(font_size).to_be_focused()
     size_updates = [frame for frame in socket_frames if "font_size" in frame.get("data", {})]
-    assert [frame["data"] for frame in size_updates] == [{"font_size": 15}, {"font_size": 20}]
+    assert [frame["data"] for frame in size_updates] == [{"font_size": 14}, {"font_size": 20}]
 
     for update in size_updates:
         sockets[-1].send(json.dumps({
@@ -318,6 +318,97 @@ def assert_theme_contrast(page):
         }));
     }""")
     assert all(ratio >= 4.5 for ratio in ratios.values()), ratios
+
+
+def check_font_scale(page, url, screenshots):
+    sockets, updates = [], []
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def connect(socket):
+        sockets.append(socket)
+        socket.on_message(lambda frame: updates.append(json.loads(frame)))
+        socket.send(json.dumps({"type": "history_complete", "has_more": {}}))
+
+    mock_chat_routes(page, connect)
+    page.route("**/api/sessions/active", lambda route: route.fulfill(body="null", content_type="application/json"))
+    page.route("**/api/version_check", lambda route: route.fulfill(json={"state": "current"}))
+    page.goto(url)
+    expect(page.locator("#input")).to_have_css("font-size", "13px")
+    page.evaluate("""() => {
+        agentConfig = {codex: {label: 'Codex', color: '#60a5fa'}};
+        channelList = ['general', 'agentchattr'];
+        renderChannelTabs();
+        const message = {id: 401, type: 'chat', sender: 'Codex', sender_kind: 'agent',
+            channel: 'general', time: '04:20', text: 'The Job History review found one item to follow up.'};
+        appendMessage(message, {history: true});
+        appendJobMessage(message);
+        const job = {id: 2, title: 'Review the Job timeline', channel: 'general', status: 'open'};
+        document.getElementById('job-history-brief').hidden = true;
+        renderOrchJobHistory(job, {entries: [{kind: 'deadline_missed', revision: 2,
+            time: 1795856180, problem: true, reason_code: 'evidence_deadline'}]});
+    }""")
+    page.locator("#settings-toggle").click()
+    appearance = page.locator('[data-section="appearance"]')
+    appearance.locator("summary").click()
+    font_size = appearance.get_by_role("spinbutton", name="Font Size")
+    expect(font_size).to_have_value("13")
+
+    reading = (
+        "#messages .chat-bubble .msg-text", "#input", ".job-msg-text", "#jobs-conv-input-text",
+        ".job-history-milestone", "#job-history-brief",
+    )
+    metadata = (
+        "#messages .msg-sender", "#messages .msg-num", ".channel-tab", ".channel-sidebar-row",
+        ".settings-field label", ".jobs-conv-title", ".session-info",
+        "#job-history-timeline .job-history-meta", ".job-msg-time",
+    )
+    for theme in ("dark", "light"):
+        sockets[-1].send(json.dumps({"type": "settings", "data": {"theme_mode": theme}}))
+        expect(page.locator("html")).to_have_attribute("data-theme", theme)
+        for size in (10, 13, 18, 28, 32):
+            font_size.fill(str(size))
+            for selector in reading:
+                expect(page.locator(selector).first).to_have_css("font-size", f"{size}px")
+            scaled = [page.locator(selector).first.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
+                      for selector in metadata]
+            assert all(9 <= value <= 18 for value in scaled), (theme, size, scaled)
+            if size == 10:
+                small = scaled
+            elif size == 28:
+                large = scaled
+                assert all(high > low for low, high in zip(small, large)), (small, large)
+            elif size == 32:
+                assert scaled == large, (scaled, large)
+            if size == 32 or size == 28 and screenshots:
+                font_size.press("Enter")
+            if screenshots and size == 28:
+                page.screenshot(path=screenshots / f"font-scale-{theme}-28.png", animations="disabled")
+        last = next(frame for frame in reversed(updates) if "font_size" in frame.get("data", {}))
+        assert last["data"]["font_size"] == 32
+        sockets[-1].send(json.dumps({
+            "type": "settings", "data": {"theme_mode": theme, "font_size": 32},
+            "typography_request_id": last["typography_request_id"],
+        }))
+
+    page.set_viewport_size({"width": 360, "height": 740})
+    expect(appearance).to_be_visible()
+    assert page.locator("#settings-bar").evaluate("el => el.scrollWidth <= el.clientWidth")
+    assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+    page.evaluate("""() => {
+        toggleSettings();
+        setSidePanelOpen('jobs', true);
+        document.getElementById('jobs-list-view').classList.add('hidden');
+        document.getElementById('jobs-conversation-view').classList.remove('hidden');
+        document.getElementById('jobs-conversation-view').classList.add('orch-job-history-mode');
+        document.getElementById('orch-job-history').hidden = false;
+    }""")
+    history = page.locator("#orch-job-history")
+    expect(history.get_by_text("Evidence deadline passed")).to_be_visible()
+    assert history.evaluate("el => el.scrollWidth <= el.clientWidth")
+    if screenshots:
+        page.screenshot(path=screenshots / "font-scale-light-history-32.png", animations="disabled")
+    assert not errors, errors
 
 
 def check_themes(page, url, screenshots):
@@ -520,8 +611,9 @@ def main():
             url = f"http://127.0.0.1:{server.server_port}/static/index.html"
             check_panels(page, url, args.screenshots)
             check_themes(browser.new_page(viewport={"width": 1280, "height": 900}), url, args.screenshots)
+            check_font_scale(browser.new_page(viewport={"width": 1280, "height": 900}), url, args.screenshots)
             browser.close()
-        print("PASS: five panel shells, Settings behavior, and all eight palettes with Auto and reconnect")
+        print("PASS: Settings, panels, eight palettes, reconnect and relative font scaling in Dark and Light")
     finally:
         server.shutdown()
         server.server_close()
