@@ -216,6 +216,19 @@ class ArchiveRoundTripTests(unittest.TestCase):
         self.assertEqual(links, {"local-breadcrumb": unrelated["id"],
                                  "shared-breadcrumb": target_job["id"]})
 
+    def test_imported_breadcrumb_without_a_matching_job_does_not_link_to_local_job(self):
+        unrelated = self.target_jobs.create("Unrelated", "job", "general", "ben")
+        self.source_store.add("system", "Deleted job", "job_created", uid="deleted-breadcrumb",
+                              metadata={"job_id": unrelated["id"], "source": "archive"})
+
+        blob = archive.build_export(self.source_store, self.source_jobs, self.source_rules,
+                                    self.source_summaries, app_version="test")
+        archive.import_archive(blob, self.target_store, self.target_jobs,
+                               self.target_rules, self.target_summaries, ["general"])
+
+        reloaded = MessageStore(str(self.root / "target" / "messages.jsonl"))
+        self.assertEqual(reloaded.get_recent()[0]["metadata"], {"source": "archive"})
+
     def test_rejects_newer_schema_version(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
