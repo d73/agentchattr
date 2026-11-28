@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app
+import archive
 import mcp_bridge
 from jobs import JobStore
 from orch_workflow import complete_orch_workflow, history, list_orch_workflow_actions, publish_orch_workflow
@@ -274,3 +275,21 @@ class OrchWorkflowTests(unittest.TestCase):
                                   text="Review the brief", operation_id="brief:1")
         self.reply("tools", other_prompt, "Late question for another root?", ask=True)
         self.assertEqual([card["decision_id"]], [row["message_id"] for row in self.status()])
+
+    def test_archive_messages_cannot_inject_active_workflow_replies(self):
+        self.activate()
+        prompt_id = self.publish()["prompt_id"]
+        external = MessageStore(self.root / "external.jsonl")
+        external.add("owner", "Untrusted imported reply", channel="tools", sender_kind="human",
+                     metadata=reply_metadata(self.jobs, self.store, "tools", prompt_id))
+        archive_bytes = archive.build_export(external, None, None, None)
+        restored = archive.import_archive(archive_bytes, self.store, self.jobs, None, None, ["tools"])
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual("Untrusted imported reply", self.store.get_by_id(self.store.last_id)["text"])
+        self.assertEqual([], self.read(self.job, prompt_id)["replies"])
+
+        false_gate = self.store.add("visitor", "Imported gate", channel="tools", msg_type="decision",
+                                    metadata={"orch_gate": {"job_uid": self.job["uid"],
+                                                            "gate": "brief", "revision": 1}})
+        with self.assertRaises(ValueError):
+            reply_metadata(self.jobs, self.store, "tools", false_gate["id"])

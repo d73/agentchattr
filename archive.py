@@ -282,8 +282,10 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                     metadata = {key: value for key, value in metadata.items() if key != "job_id"}
             source_uid = None
             if isinstance(metadata, dict):
+                # Archive message IDs are local to the exporting server. A
+                # restored message cannot authorize an active workflow reply.
+                metadata = {key: value for key, value in metadata.items() if key != "orch_workflow"}
                 if msg.get("type") == "job_proposal":
-                    metadata = dict(metadata)
                     metadata.pop("source_msg_id", None)
                     source_uid = metadata.get("source_msg_uid")
                 elif msg.get("type") == "decision" and isinstance(metadata.get("orch_intake"), dict):

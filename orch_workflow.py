@@ -20,7 +20,8 @@ def _message_binding(message):
     if metadata.get("orch_workflow"):
         return metadata["orch_workflow"]
     for field, kind in (("orch_gate", "gate"), ("job_reopen", "reopen")):
-        if binding := metadata.get(field):
+        binding = metadata.get(field)
+        if isinstance(binding, dict) and isinstance(binding.get("job_uid"), str):
             return {"job_uid": binding["job_uid"], "kind": kind,
                     "revision": binding.get("revision"), "prompt_id": message["id"]}
     return None
@@ -33,11 +34,23 @@ def _job_message(store, job, message_id):
     return None
 
 
-def _belongs_to_job(job, message):
+def _belongs_to_job(state, message):
+    job, gates, _, _ = state
     if message["id"] == job.get("source_msg_id"):
         return True
-    binding = _message_binding(message)
-    return binding is not None and binding["job_uid"] == job["uid"]
+    metadata = message.get("metadata") or {}
+    workflow = metadata.get("orch_workflow")
+    if workflow:
+        return workflow.get("job_uid") == job["uid"]
+    if gate := metadata.get("orch_gate"):
+        return any(message["id"] == recorded["decision_id"] and gate == {
+            key: recorded[key] for key in ("job_uid", "gate", "revision")
+        } for recorded in gates)
+    if reopen := metadata.get("job_reopen"):
+        return any(message["uid"] == f"job-reopen-{request['id']}"
+                   and reopen.get("job_uid") == job["uid"] and reopen.get("request_id") == request["id"]
+                   for request in job.get("reopen_requests", []))
+    return False
 
 
 def publish_orch_workflow(jobs, store, job_uid, *, coordinator, operation_id, kind,
@@ -69,7 +82,7 @@ def publish_orch_workflow(jobs, store, job_uid, *, coordinator, operation_id, ki
         message = next((entry for entry in retained.values() if entry["uid"] == uid), None)
     if message is None:
         parent = _job_message(store, job, parent_id)
-        if parent_id is not None and (parent is None or not _belongs_to_job(job, parent)):
+        if parent_id is not None and (parent is None or not _belongs_to_job(state, parent)):
             return None
         if kind == "revise" and not any(
             gate["decision_id"] == parent_id and gate["revision"] == revision and gate["choice"] == "Revise"
@@ -110,8 +123,9 @@ def reply_metadata(jobs, store, channel, reply_to):
             state = jobs.orch_workflow_state(binding["job_uid"])
             if state is None and (parent.get("metadata") or {}).get("job_reopen"):
                 return None
+            root = _job_message(store, state[0], binding["prompt_id"]) if state is not None else None
             if (parent["channel"] != channel or state is None or state[0]["channel"] != channel
-                    or _job_message(store, state[0], binding["prompt_id"]) is None):
+                    or root is None or not _belongs_to_job(state, parent) or not _belongs_to_job(state, root)):
                 raise ValueError("Orch workflow reply must use its Job's current channel and prompt")
             reply = {key: value for key, value in binding.items() if key != "requires_reply"}
             if _workflow_binding(parent) and not _prompt_open(state, binding["prompt_id"]):
@@ -266,6 +280,6 @@ def history_context(jobs, store, job_uid, message_id):
         return None
     job = state[0]
     message = _job_message(store, job, message_id)
-    if message is None or not _belongs_to_job(job, message):
+    if message is None or not _belongs_to_job(state, message):
         return None
     return {"channel": job["channel"], "message": message, "messages": store.get_message_context(message)}
