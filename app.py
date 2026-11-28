@@ -68,7 +68,7 @@ session_token: str = ""
 
 DEFAULT_CHAT_FONT = "open-sans"
 CHAT_FONTS = frozenset({DEFAULT_CHAT_FONT, "roboto", "helvetica", "montserrat", "avenir", "mono"})
-DEFAULT_CHAT_FONT_SIZE = 14
+DEFAULT_CHAT_FONT_SIZE = 13
 DEFAULT_THEME_MODE = "dark"
 DEFAULT_THEME_PALETTE = "indigo"
 THEME_MODES = (DEFAULT_THEME_MODE, "light", "auto")
