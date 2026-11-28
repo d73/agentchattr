@@ -82,7 +82,8 @@ class StableIdentityTests(unittest.TestCase):
     def test_explicit_relaunch_preserves_profile_when_expiring_previous_instance(self):
         first = self.reg.register("codex", requested_name="builder")
         self.reg.set_label("builder", "Team Builder")
-        with patch("registry.time.time", return_value=first["registered_at"] + 16):
+        since = self.reg._instances[first["name"]].last_seen
+        with patch("registry.time.monotonic", return_value=since + 16):
             restored = self.reg.register("codex", requested_name="builder")
         self.assertEqual(restored["label"], "Team Builder")
         self.assertEqual(restored["_expired"], ["builder"])
