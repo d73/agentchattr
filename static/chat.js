@@ -503,7 +503,6 @@ function init() {
     setupPaste();
     setupScroll();
     setupSidePanelGrips();
-    setupSettingsSections();
     setupSettingsKeys();
     setupUserColorSetting();
     setupAttentionStyleSetting();
@@ -2588,10 +2587,9 @@ function toggleSettings() {
     }
     window.MentionAlerts.render();
     window._preserveScroll(() => {
+        for (const section of bar.querySelectorAll('.settings-section[open]')) section.open = false;
         setSidePanelOpen('settings', true);
-        const profile = bar.querySelector('[data-section="profile"]');
-        const focusTarget = profile.open ? document.getElementById('setting-username') : profile.querySelector('summary');
-        focusTarget.focus({ preventScroll: true });
+        bar.querySelector('.settings-section summary').focus({ preventScroll: true });
     });
 }
 
@@ -2646,29 +2644,6 @@ function setupSidePanelGrips() {
         });
         window.addEventListener('resize', updateGrip);
         updateGrip();
-    }
-}
-
-function setupSettingsSections() {
-    const sections = [...document.querySelectorAll('#settings-bar .settings-section')];
-    const key = 'agentchattr-settings-open-section';
-    try {
-        const saved = localStorage.getItem(key);
-        if (saved !== null) {
-            for (const section of sections) section.open = section.dataset.section === saved;
-        } else {
-            // Older versions saved a separate flag for each subsection.
-            for (const section of sections) {
-                const previous = localStorage.getItem('agentchattr-settings-section-' + section.dataset.section);
-                if (previous !== null) section.open = previous === 'true';
-            }
-        }
-    } catch {}
-    for (const section of sections) {
-        section.addEventListener('toggle', () => {
-            const open = sections.find(candidate => candidate.open);
-            try { localStorage.setItem(key, open?.dataset.section ?? ''); } catch {}
-        });
     }
 }
 
