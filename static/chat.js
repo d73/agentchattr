@@ -65,19 +65,87 @@ let _savedInactiveHours = null;   // last idle threshold (hours) received from t
 let channelUnread = {};  // { channelName: count }
 let agentHats = {};  // { agent_name: svg_string }
 window.customRoles = [];  // saved custom roles from settings
-let colorOverrides = {};
-try { colorOverrides = JSON.parse(localStorage.getItem('agentchattr-color-overrides') || '{}') || {}; } catch (e) {}
+const COLOR_CACHE_KEY = 'agentchattr-color-overrides';
+const COLOR_CHANGES_KEY = 'agentchattr-agent-color-changes';
 
-// Persist overrides locally (cache) and on the server (survives origin/browser changes).
-let _colorsDirty = false;  // a color change that could not be sent (offline); retried after reconnect
-function saveColorOverrides() {
-    try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
-    if (typeof ws !== 'undefined' && ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'update_settings', data: { agent_colors: colorOverrides } }));
-        _colorsDirty = false;
-    } else {
-        _colorsDirty = true;
+function readColorMap(key, session = false) {
+    try {
+        const storage = session ? sessionStorage : localStorage;
+        const value = JSON.parse(storage.getItem(key));
+        if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    } catch (e) {}
+    return {};
+}
+
+let savedAgentColors = readColorMap(COLOR_CACHE_KEY);
+const pendingAgentColors = new Map(Object.entries(readColorMap(COLOR_CHANGES_KEY, true)));
+let colorOverrides = agentColorsWithPendingChanges();
+let receivedColorSettings = false;
+let latestAgentColorRevision = -1;
+let agentColorSeed;
+let nextColorRequest = 0;
+let colorRequest = null;
+
+function agentColorsWithPendingChanges() {
+    const colors = { ...savedAgentColors, ...Object.fromEntries(pendingAgentColors) };
+    for (const [name, color] of pendingAgentColors) {
+        if (color === null) delete colors[name];
     }
+    return colors;
+}
+
+function setAgentColorOverride(name, color) {
+    pendingAgentColors.set(name, color);
+    persistPendingAgentColors();
+    colorOverrides = agentColorsWithPendingChanges();
+    sendPendingAgentColors();
+}
+
+function persistPendingAgentColors() {
+    try {
+        sessionStorage.setItem(COLOR_CHANGES_KEY, JSON.stringify(Object.fromEntries(pendingAgentColors)));
+    } catch (e) {}
+}
+
+function applyAgentColorSettings(colors, revision = 0) {
+    if (revision >= latestAgentColorRevision && colors && typeof colors === 'object' && !Array.isArray(colors)) {
+        latestAgentColorRevision = revision;
+        savedAgentColors = colors;
+        agentColorSeed = undefined;
+        try { localStorage.setItem(COLOR_CACHE_KEY, JSON.stringify(savedAgentColors)); } catch (e) {}
+    } else if (!receivedColorSettings) {
+        agentColorSeed = savedAgentColors;
+    }
+    receivedColorSettings = true;
+    colorOverrides = agentColorsWithPendingChanges();
+    refreshAgentColors();
+    sendPendingAgentColors();
+}
+
+function sendPendingAgentColors() {
+    if (!receivedColorSettings || colorRequest || ws?.readyState !== WebSocket.OPEN) return;
+    if (!pendingAgentColors.size && agentColorSeed === undefined) return;
+    const changes = Object.fromEntries(pendingAgentColors);
+    const requestId = ++nextColorRequest;
+    ws.send(JSON.stringify({
+        type: 'agent_color_changes', request_id: requestId, changes, seed: agentColorSeed,
+    }));
+    colorRequest = { id: requestId, changes };
+}
+
+function handleAgentColorsSaved(event) {
+    if (event.request_id !== colorRequest?.id) return;
+    const { changes } = colorRequest;
+    colorRequest = null;
+    if (!event.data) {
+        showToast('Agent colors could not be saved. Pending changes will retry on reconnect.', 'error');
+        return;
+    }
+    for (const [name, color] of Object.entries(changes)) {
+        if (pendingAgentColors.get(name) === color) pendingAgentColors.delete(name);
+    }
+    persistPendingAgentColors();
+    applyAgentColorSettings(event.data, event.revision);
 }
 let schedulesList = [];  // array of schedule objects from server
 
@@ -158,7 +226,6 @@ function collectUiPrefs() {
     return out;
 }
 let _seededUiPrefs = false;
-let _seededColors = false;
 let _uiPrefsTimer = null;
 let _serverUiPrefs = {};          // last state received from the server
 const _dirtyUiPrefs = new Set();  // keys edited locally but not yet sent
@@ -907,6 +974,8 @@ function handleServerEvent(event) {
         updateStatus(event.data);
     } else if (event.type === 'typing') {
         updateTyping(event.agent, event.active);
+    } else if (event.type === 'agent_colors_saved') {
+        handleAgentColorsSaved(event);
     } else if (event.type === 'settings') {
         applySettings(event.data);
     } else if (event.type === 'delete') {
@@ -1069,6 +1138,9 @@ function connectWebSocket() {
 
     socket.onclose = (e) => {
         if (ws !== socket) return;
+        receivedColorSettings = false;
+        latestAgentColorRevision = -1;
+        colorRequest = null;
         // Server sends 4003 when session token is invalid (server restarted).
         // Auto-reload to pick up the fresh token from the new HTML page.
         if (e.code === 4003) {
@@ -2029,8 +2101,7 @@ function showPillPopover(pillEl, opts) {
 
     // --- Color picker handlers ---
     const applyColorOverride = (color) => {
-        colorOverrides[opts.name] = color;
-        saveColorOverrides();
+        setAgentColorOverride(opts.name, color);
         // Update pill color
         const pillToUpdate = document.getElementById(`status-${opts.name}`);
         if (pillToUpdate) pillToUpdate.style.setProperty('--agent-color', color);
@@ -2072,8 +2143,7 @@ function showPillPopover(pillEl, opts) {
     if (resetBtn) {
         resetBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            delete colorOverrides[opts.name];
-            saveColorOverrides();
+            setAgentColorOverride(opts.name, null);
             const defaultColor = opts.color || '#888';
             const pillToUpdate = document.getElementById(`status-${opts.name}`);
             if (pillToUpdate) pillToUpdate.style.setProperty('--agent-color', defaultColor);
@@ -2372,21 +2442,7 @@ function applySettings(data) {
         _seededUiPrefs = true;
         saveUiPrefs();
     }
-    if (data.agent_colors && typeof data.agent_colors === 'object') {
-        if (_colorsDirty) {
-            // A local change made while disconnected wins over the server copy; resend it now.
-            saveColorOverrides();
-        } else {
-            // Server-owned and authoritative (an empty map is an explicit Reset).
-            colorOverrides = Object.assign({}, data.agent_colors);
-            try { localStorage.setItem('agentchattr-color-overrides', JSON.stringify(colorOverrides)); } catch (e) {}
-            refreshAgentColors();
-        }
-    } else if (!_seededColors) {
-        // Server never initialized: seed once per page load from this browser's legacy overrides.
-        _seededColors = true;
-        saveColorOverrides();
-    }
+    applyAgentColorSettings(data.agent_colors, data.agent_colors_revision);
     if (data.max_agent_hops !== undefined) {
         const hopsInput = document.getElementById('setting-hops');
         if (document.activeElement !== hopsInput) hopsInput.value = data.max_agent_hops;
