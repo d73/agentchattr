@@ -46,8 +46,8 @@ def core_status(value):
     return CORE_STATUS.get(value) if isinstance(value, str) else None
 
 
-def new_lifecycle(core=TODO, *, stage=None):
-    return {"core_id": core, "stage_id": stage, "managed_by": "manual",
+def new_lifecycle(core=TODO, *, stage=None, managed_by="manual"):
+    return {"core_id": core, "stage_id": stage, "managed_by": managed_by,
             "flags": [], "close_outcome": None, "version": 0}
 
 

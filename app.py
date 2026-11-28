@@ -25,7 +25,7 @@ from rules import RuleStore
 from summaries import SummaryStore
 from jobs import JobStore
 from schedules import ScheduleStore, parse_schedule_spec
-from router import Router
+from router import Router, without_code
 from agents import AgentTrigger
 from registry import RuntimeRegistry
 from session_store import SessionStore, validate_session_template
@@ -1200,11 +1200,16 @@ async def _handle_new_message(msg: dict):
                            "errors": ["Invalid JSON in session block"], "valid": False},
             )
 
-    raw_targets = router.get_targets(text, channel, sender_is_agent=sender_is_agent)
+    raw_targets = router.get_targets(
+        text, channel, sender_is_agent=sender_is_agent,
+        allow_default=not (msg_type == "chat" and _has_orch_mention(text)),
+    )
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
     targets = []
     for t in raw_targets:
+        if t == "orch":
+            continue
         if registry:
             targets.extend(registry.resolve_to_instances(t))
         else:
@@ -1554,8 +1559,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 if reply_to is not None:
                     reply_to = int(reply_to)
 
-                store.add(sender, text, attachments=attachments, reply_to=reply_to,
-                          channel=channel, sender_kind="human")
+                message = store.add(sender, text, attachments=attachments, reply_to=reply_to,
+                                    channel=channel, sender_kind="human")
+                try:
+                    _offer_orch_intake(message)
+                except OSError:
+                    log.exception("Could not persist the Orch intake card for message %s", message["id"])
 
             elif event.get("type") == "delete":
                 ids = event.get("ids", [])
@@ -2242,7 +2251,9 @@ async def resolve_decision(msg_id: int, request: Request):
             error = ("not a decision message", 400)
         else:
             meta = msg.get("metadata") or {}
-            if meta.get("resolved"):
+            if meta.get("orch_intake"):
+                error = ("use the Orch intake endpoint for this card", 409)
+            elif meta.get("resolved"):
                 error = ("already resolved", 400)
             else:
                 valid_choices = meta.get("choices", [])
@@ -2349,18 +2360,22 @@ async def trigger_agent_silent(request: Request):
         return JSONResponse({"error": "agent and message required"}, status_code=400)
 
     custom_prompt = body.get("prompt", "").strip()
-    if not custom_prompt:
-        if source_msg_id is not None:
-            custom_prompt = (
-                f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond "
-                f"- conversion request: use chat history to find message #{source_msg_id} "
-                f"and use chat_propose_job to propose it as a job with title<=80 chars and body<=500 chars."
-            )
-        else:
-            custom_prompt = (
-                f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond "
-                f"- conversion request: use chat_propose_job to propose a job from the referenced message."
-            )
+    if source_msg_id is not None:
+        source = _job_source_message(source_msg_id)
+        if source is None or source.get("channel", "general") != channel:
+            return JSONResponse({"error": "source message not found in this channel"}, status_code=400)
+        if not custom_prompt:
+            custom_prompt = f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond"
+        custom_prompt += (
+            f" - conversion request: read message #{source_msg_id} and call chat_propose_job "
+            f"with channel={channel!r}, source_msg_id={source_msg_id}, title (max 80 chars) "
+            "and body (max 500 chars)."
+        )
+    elif not custom_prompt:
+        custom_prompt = (
+            f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond "
+            "- conversion request: use chat_propose_job to propose a job from the referenced message."
+        )
     # Resolve to instances if multi-instance
     targets = [agent_name]
     if registry:
@@ -2371,6 +2386,131 @@ async def trigger_agent_silent(request: Request):
         if agents.is_available(target):
             await agents.trigger(target, message=message, channel=channel, prompt=custom_prompt)
     return {"ok": True, "triggered": targets}
+
+
+_ORCH_INTAKE_CHOICE = "Create Orch Job"
+_ORCH_MENTION = _re.compile(r"(?<![\w@])@orch(?![\w-]|\.[\w-])", _re.IGNORECASE)
+
+
+def _has_orch_mention(text):
+    return _ORCH_MENTION.search(without_code(text)) is not None
+
+
+def _job_source_message(msg_id):
+    return store.get_by_id(msg_id) if type(msg_id) is int and msg_id >= 0 else None
+
+
+def _get_source_job(source):
+    source_id = source["id"]
+    job = jobs.get_for_source(source_id)
+    if job is not None:
+        return job
+
+    # Read legacy links only from a stored direct anchor or a proposal's
+    # explicit source reference. A bare proposal-card ID has no source link.
+    channel = source.get("channel", "general")
+    for job in jobs.list_all(channel=channel):
+        if job.get("source_msg_id") is not None:
+            continue
+        anchor = _job_source_message(job.get("anchor_msg_id"))
+        if anchor is None or anchor.get("channel", "general") != channel:
+            continue
+        if anchor.get("type") == "job_proposal":
+            metadata = anchor.get("metadata") or {}
+            if metadata.get("source_msg_uid", source["uid"]) != source["uid"]:
+                continue
+            saved_source = metadata.get("source_msg_id")
+        else:
+            saved_source = anchor["id"]
+        if type(saved_source) is int and saved_source == source_id:
+            return jobs.bind_existing_source(job["id"], job["uid"], source_id)
+    return None
+
+
+def _offer_orch_intake(message):
+    """Offer intake only for a message received through authenticated browser chat."""
+    if (message.get("sender_kind") != "human" or message.get("type") != "chat"
+            or not _has_orch_mention(message.get("text", ""))):
+        return
+    channel = message["channel"]
+    source = _job_source_message(message.get("reply_to"))
+    if source is None or source.get("channel", "general") != channel:
+        source = message
+    store.add(
+        "system", "Start an Orch Job from this conversation?",
+        msg_type="decision", channel=channel, reply_to=source["id"], sender_kind="system",
+        metadata={
+            "choices": [_ORCH_INTAKE_CHOICE],
+            "resolved": False,
+            "orch_intake": {"source_msg_id": source["id"], "source_msg_uid": source["uid"]},
+        },
+        uid=str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentchattr:orch-intake:{message['uid']}")),
+        once=True,
+    )
+
+
+def _post_job_breadcrumb(job):
+    store.add(job["created_by"], f"Job created: {job['title']}", msg_type="job_created",
+              channel=job["channel"], metadata={"job_id": job["id"]}, sender_kind="human")
+
+
+@app.post("/api/jobs/orch-intake")
+async def confirm_orch_intake(request: Request):
+    """Create or open the Job for a source message, through either browser entry point."""
+    if _extract_agent_token(request):
+        return JSONResponse({"error": "a browser session is required"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid intake request"}, status_code=400)
+    if body.get("proposal_writer", "orch") != "orch":
+        return JSONResponse({"error": "named proposal writers use the manual proposal flow"}, status_code=400)
+    source = _job_source_message(body.get("source_msg_id"))
+    if source is None:
+        return JSONResponse({"error": "source message not found"}, status_code=404)
+    channel = source.get("channel", "general")
+    if channel not in room_settings.get("channels", ["general"]):
+        return JSONResponse({"error": "source channel not found"}, status_code=404)
+
+    card = None
+    if "card_msg_id" in body:
+        card = _job_source_message(body["card_msg_id"])
+        meta = (card.get("metadata") or {}) if card else {}
+        binding = meta.get("orch_intake")
+        if (not card or card.get("type") != "decision" or card.get("sender_kind") != "system"
+                or card.get("channel") != channel or not isinstance(binding, dict)
+                or binding.get("source_msg_id") != source["id"]
+                or binding.get("source_msg_uid") != source["uid"]
+                or meta.get("choices") != [_ORCH_INTAKE_CHOICE]):
+            return JSONResponse({"error": "invalid Orch intake card"}, status_code=409)
+
+    job = _get_source_job(source)
+    if card and meta.get("resolved") and (not job or meta.get("job_uid") != job["uid"]):
+        return JSONResponse({"error": "the Job linked to this card is no longer available"}, status_code=409)
+    created = False
+    if job is None:
+        text = source.get("text", "").strip()
+        title = _ORCH_MENTION.sub("", text.splitlines()[0]).strip() if text else ""
+        candidate_uid = str(uuid.uuid4())
+        job = jobs.create(
+            title or f"Conversation message #{source['id']}", "job", channel,
+            room_settings.get("username", "user"), anchor_msg_id=source["id"], body=text,
+            uid=candidate_uid, source_msg_id=source["id"], managed_by="orch",
+            proposal_writer="orch",
+        )
+        created = job["uid"] == candidate_uid
+        if created:
+            _post_job_breadcrumb(job)
+    if card and not meta.get("resolved"):
+        updated = store.update_message(card["id"], {"metadata": {
+            **meta, "chosen": _ORCH_INTAKE_CHOICE, "resolved": True,
+            "job_id": job["id"], "job_uid": job["uid"],
+        }})
+        if updated:
+            await _broadcast(json.dumps({"type": "message_update", "message": updated}))
+    return {"job": job, "created": created}
 
 
 @app.post("/api/jobs")
@@ -2392,25 +2532,39 @@ async def create_job(request: Request):
         return JSONResponse({"error": "proposal is in a different channel"}, status_code=409)
     meta = dict(proposal.get("metadata") or {}) if proposal else {}
     if meta.get("status") == "accepted":
+        linked_id = meta.get("job_id")
+        existing = jobs.get(linked_id) if type(linked_id) is int else None
+        if existing is not None and existing["uid"] == meta.get("job_uid"):
+            return existing
         existing = jobs.get_for_proposal(anchor_msg_id)
         if existing is not None:
             return existing
         return JSONResponse({"error": "the proposal's Job was already accepted"}, status_code=409)
-    result = jobs.create(
-        title=title, job_type=job_type, channel=channel,
-        created_by=created_by, anchor_msg_id=anchor_msg_id,
-        assignee=assignee, body=job_body,
-        from_proposal=bool(proposal),
-        proposal_author=proposal.get("sender") if proposal else None,
-        proposal_author_identity=proposal.get("sender_identity") if proposal else None,
-    )
+
+    source = None
+    if proposal and "source_msg_id" in meta:
+        source = _job_source_message(meta["source_msg_id"])
+        if (source is None or source.get("channel", "general") != channel
+                or meta.get("source_msg_uid", source["uid"]) != source["uid"]):
+            return JSONResponse({"error": "proposal source message not found in this channel"}, status_code=409)
+    candidate_uid = str(uuid.uuid4())
+    result = _get_source_job(source) if source else None
+    if result is None:
+        result = jobs.create(
+            title=title, job_type=job_type, channel=channel,
+            created_by=created_by, anchor_msg_id=anchor_msg_id,
+            assignee=assignee, body=job_body, uid=candidate_uid,
+            from_proposal=bool(proposal),
+            source_msg_id=source["id"] if source else None,
+            proposal_author=proposal.get("sender") if proposal else None,
+            proposal_author_identity=proposal.get("sender_identity") if proposal else None,
+        )
     updated_msg = None
     if proposal:
-        meta["status"] = "accepted"
+        meta.update(status="accepted", job_id=result["id"], job_uid=result["uid"])
         updated_msg = store.update_message(anchor_msg_id, {"metadata": meta})
-    # Post breadcrumb in main timeline with job_id for clickable link
-    store.add(created_by, f"Job created: {result['title']}", msg_type="job_created",
-              channel=channel, metadata={"job_id": result["id"]}, sender_kind="human")
+    if result["uid"] == candidate_uid:
+        _post_job_breadcrumb(result)
     if updated_msg:
         await _broadcast(json.dumps({"type": "edit", "message": updated_msg}))
     return result

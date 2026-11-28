@@ -3,6 +3,24 @@
 import re
 
 
+def without_code(text: str) -> str:
+    """Remove Markdown backtick code so examples do not become mentions."""
+    lines = []
+    fence = ""
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if marker and marker[1].startswith(fence):
+                fence = ""
+                lines.append(line[marker.end():])
+        elif marker:
+            fence = marker[1]
+            lines.append("\n" if line.endswith("\n") else "")
+        else:
+            lines.append(line)
+    return re.sub(r"(`+)([\s\S]*?)\1", " ", "".join(lines))
+
+
 class Router:
     def __init__(self, agent_names: list[str], default_mention: str = "both",
                  max_hops: int = 4, online_checker=None):
@@ -29,7 +47,7 @@ class Router:
         agent_names, mention_pattern = roster
         mentions = set()
         # Mentions shown as code are examples or references, not recipients.
-        text = re.sub(r"(`+)([\s\S]*?)\1", "", text)
+        text = without_code(text)
         for match in mention_pattern.finditer(text):
             name = match.group(1).lower()
             if name in ("both", "all"):
@@ -44,7 +62,7 @@ class Router:
         return list(mentions)
 
     def get_targets(self, text: str, channel: str = "general", *,
-                    sender_is_agent: bool) -> list[str]:
+                    sender_is_agent: bool, allow_default: bool = True) -> list[str]:
         """Apply the loop guard before callers resolve mentions to identities."""
         ch = self._get_ch(channel)
         roster = self._mention_roster
@@ -58,6 +76,8 @@ class Router:
             if re.match(r"^\s*/(?:summary|summarise|ping)(?:\s|$)", text, re.IGNORECASE):
                 return mentions
             if not mentions:
+                if not allow_default:
+                    return []
                 if self.default_mention in ("both", "all"):
                     return list(roster[0])
                 elif self.default_mention == "none":

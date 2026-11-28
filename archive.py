@@ -64,18 +64,21 @@ def build_export(store, jobs_store, rules_store, summary_store,
     rules_list = rules_store.list_all() if rules_store else []
     summaries = summary_store.get_all() if summary_store else {}
 
+    message_uids = {message["id"]: _ensure_uid(message) for message in messages}
     # Build messages JSONL
     messages_lines = []
     for msg in messages:
         exported = dict(msg)
         exported["uid"] = _ensure_uid(msg)
-        # Convert reply_to int to reply_to_uid if possible
-        if "reply_to" in exported:
-            reply_id = exported["reply_to"]
-            for m in messages:
-                if m["id"] == reply_id:
-                    exported["reply_to_uid"] = _ensure_uid(m)
-                    break
+        reply_id = exported.get("reply_to")
+        reply_uid = message_uids.get(reply_id) if type(reply_id) is int else None
+        if reply_uid:
+            exported["reply_to_uid"] = reply_uid
+        if msg.get("type") == "job_proposal" and isinstance(msg.get("metadata"), dict):
+            source_id = msg["metadata"].get("source_msg_id")
+            source_uid = message_uids.get(source_id) if type(source_id) is int else None
+            if source_uid and msg["metadata"].get("source_msg_uid", source_uid) == source_uid:
+                exported["metadata"] = {**msg["metadata"], "source_msg_uid": source_uid}
         messages_lines.append(json.dumps(exported, ensure_ascii=False))
 
     # Build jobs
@@ -92,13 +95,12 @@ def build_export(store, jobs_store, rules_store, summary_store,
             ).hexdigest()[:16]
             exported_msgs.append(ejm)
         ej["messages"] = exported_msgs
-        # Convert anchor_msg_id to anchor_message_uid
-        anchor_id = ej.get("anchor_msg_id")
-        if anchor_id is not None:
-            for m in messages:
-                if m["id"] == anchor_id:
-                    ej["anchor_message_uid"] = _ensure_uid(m)
-                    break
+        for local_field, uid_field in (("anchor_msg_id", "anchor_message_uid"),
+                                       ("source_msg_id", "source_message_uid")):
+            local_id = ej.get(local_field)
+            uid = message_uids.get(local_id) if type(local_id) is int else None
+            if uid:
+                ej[uid_field] = uid
         exported_jobs.append(ej)
 
     # Build rules
@@ -248,6 +250,7 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
     # Two-pass: first import all messages, then rebuild reply_to links
     imported_uid_to_local_id = {}  # archive uid → new local id
     pending_replies = []  # (new_local_id, reply_to_uid)
+    pending_sources = []
     if "messages.jsonl" in zf.namelist():
         raw = zf.read("messages.jsonl").decode("utf-8", errors="replace")
         for line in raw.strip().split("\n"):
@@ -270,6 +273,17 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                 if type(job_id) is not int or job_id not in source_job_ids:
                     # Numeric IDs are local to the archive and require a Job to map them to.
                     metadata = {key: value for key, value in metadata.items() if key != "job_id"}
+            source_uid = None
+            if isinstance(metadata, dict):
+                if msg.get("type") == "job_proposal":
+                    metadata = dict(metadata)
+                    metadata.pop("source_msg_id", None)
+                    source_uid = metadata.get("source_msg_uid")
+                elif msg.get("type") == "decision" and isinstance(metadata.get("orch_intake"), dict):
+                    binding = dict(metadata["orch_intake"])
+                    binding.pop("source_msg_id", None)
+                    metadata = {**metadata, "orch_intake": binding}
+                    source_uid = binding.get("source_msg_uid")
             new_msg = store.add(
                 sender=msg.get("sender", "unknown"),
                 text=msg.get("text", ""),
@@ -290,11 +304,13 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
             reply_to_uid = msg.get("reply_to_uid")
             if reply_to_uid:
                 pending_replies.append((new_msg["id"], reply_to_uid))
+            if isinstance(source_uid, str):
+                pending_sources.append((new_msg["id"], source_uid))
             message_ids_by_uid[msg_uid] = new_msg["id"]
             msg_report["created"] += 1
         # Flush bulk-added messages and rebuild reply links (single rewrite)
         if msg_report["created"] > 0:
-            if pending_replies:
+            if pending_replies or pending_sources:
                 with store._lock:
                     for local_id, reply_uid in pending_replies:
                         target_id = message_ids_by_uid.get(reply_uid)
@@ -303,6 +319,17 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                             if msg is not None:
                                 msg["reply_to"] = target_id
                                 store._save_message(position, msg)
+                    for local_id, source_uid in pending_sources:
+                        source_id = message_ids_by_uid.get(source_uid)
+                        if source_id is None:
+                            continue
+                        position, msg = store._message_row(local_id)
+                        _, source = store._message_row(source_id)
+                        if msg and source and msg["channel"] == source["channel"]:
+                            metadata = msg["metadata"]
+                            target = metadata.get("orch_intake", metadata)
+                            target["source_msg_id"] = source_id
+                            store._save_message(position, msg)
             # Single rewrite covers both bulk messages and reply patches
             store.flush_bulk()
     report["sections"]["messages"] = msg_report
@@ -327,6 +354,12 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                     history.extend(record for record in records if isinstance(record, dict))
             anchor_uid = job.get("anchor_message_uid")
             anchor_id = message_ids_by_uid.get(anchor_uid) if isinstance(anchor_uid, str) else None
+            source_uid = job.get("source_message_uid")
+            source_id = message_ids_by_uid.get(source_uid) if isinstance(source_uid, str) else None
+            if source_id is not None:
+                source = store.get_by_id(source_id)
+                if not source or source.get("channel", "general") != channel:
+                    source_id = None
             try:
                 new_job = jobs_store.create(
                     title=job.get("title", "Imported job"),
@@ -340,6 +373,8 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                     created_at=job.get("created_at"),
                     updated_at=job.get("updated_at"),
                     anchor_msg_id=anchor_id,
+                    source_msg_id=source_id,
+                    proposal_writer=job.get("proposal_writer"),
                     proposal_author=job.get("proposal_author"),
                     proposal_author_identity=job.get("proposal_author_identity"),
                     archived_lifecycle=job.get("lifecycle"),
@@ -347,6 +382,13 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                 )
             except ValueError:
                 job_report["conflicts"] += 1
+                continue
+            if new_job["uid"] != job_uid:
+                # Another local Job already owns the validated source anchor.
+                if type(old_id) is int:
+                    _job_id_remap[old_id] = new_job["id"]
+                existing_job_ids[job_uid] = new_job["id"]
+                job_report["duplicates"] += 1
                 continue
             # Import job messages with preserved identity
             for jm in job.get("messages", []):
@@ -383,11 +425,21 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
             with store._lock:
                 for local_id in imported_local_ids:
                     position, msg = store._message_row(local_id)
-                    if (msg is not None and msg.get("type") == "job_created"
-                            and isinstance(msg.get("metadata"), dict)):
-                        old_jid = msg["metadata"].get("job_id")
-                        if old_jid in _job_id_remap:
-                            msg["metadata"]["job_id"] = _job_id_remap[old_jid]
+                    if msg is None or not isinstance(msg.get("metadata"), dict):
+                        continue
+                    meta = msg["metadata"]
+                    if msg.get("type") == "job_created":
+                        old_jid = meta.get("job_id")
+                        if type(old_jid) is int and old_jid in _job_id_remap:
+                            meta["job_id"] = _job_id_remap[old_jid]
+                            store._save_message(position, msg)
+                    elif msg.get("type") == "job_proposal" or isinstance(meta.get("orch_intake"), dict):
+                        job_uid = meta.get("job_uid")
+                        mapped = existing_job_ids.get(job_uid) if isinstance(job_uid, str) else None
+                        current_job = jobs_store.get(mapped) if mapped is not None else None
+                        if current_job:
+                            meta["job_id"] = current_job["id"]
+                            meta["job_uid"] = current_job["uid"]
                             store._save_message(position, msg)
                 store._rewrite()
     report["sections"]["jobs"] = job_report
