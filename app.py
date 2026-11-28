@@ -2620,6 +2620,10 @@ async def register_agent(request: Request):
                   else registry.register(base, label))
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
+    except OSError:
+        log.exception("Could not persist a new agent registration")
+        return JSONResponse({"error": "Agent registration could not be saved. Retry when storage is available."},
+                            status_code=503)
     if result is None:
         return JSONResponse({"error": f"unknown base: {base}"}, status_code=400)
     # Touch presence so the instance doesn't immediately time out
