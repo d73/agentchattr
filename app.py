@@ -27,7 +27,7 @@ from jobs import JobStore
 from job_reopen import ReopenConflict
 from schedules import ScheduleStore, parse_schedule_spec
 from router import Router, without_code
-from agents import AgentTrigger
+from agents import AgentTrigger, PROPOSAL_WRITER_BASES
 from registry import RuntimeRegistry
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
@@ -737,6 +737,11 @@ def configure(cfg: dict, session_token: str = ""):
                         return
             except Exception:
                 pass
+
+            try:
+                agents.dispatch_proposal_writers()
+            except OSError:
+                log.exception("Could not dispatch pending proposal requests")
 
     threading.Thread(target=_background_checks, daemon=True).start()
 
@@ -2414,6 +2419,33 @@ async def demote_rule_proposal(msg_id: int):
     return updated or {"ok": True}
 
 
+@app.post("/api/jobs/proposal-requests")
+async def request_job_proposal(request: Request):
+    """Request a proposal from one instance of the chosen writer type."""
+    body = await request.json()
+    if not isinstance(body, dict) or body.get("writer_base") not in PROPOSAL_WRITER_BASES:
+        return JSONResponse({"error": "unknown proposal writer type"}, status_code=400)
+    source_id = body.get("source_msg_id")
+    source = store.get_by_id(source_id) if type(source_id) is int and source_id >= 0 else None
+    if not source:
+        return JSONResponse({"error": "source message not found"}, status_code=404)
+    channel = source.get("channel", "general")
+    prompt = (
+        f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond "
+        f"- conversion request: read message #{source_id} and call chat_propose_job "
+        f"with channel={channel!r}, source_msg_id={source_id}, title (max 80 chars) "
+        "and body (max 500 chars)."
+    )
+    try:
+        dispatched = agents.queue_proposal_writer(
+            base=body["writer_base"], channel=channel, prompt=prompt, source_msg_id=source_id,
+        )
+    except OSError:
+        log.exception("Could not queue proposal for message %s", source_id)
+        return JSONResponse({"error": "could not queue proposal request"}, status_code=503)
+    return {"status": "dispatched" if dispatched else "queued"}
+
+
 @app.post("/api/trigger-agent")
 async def trigger_agent_silent(request: Request):
     """Silently trigger an agent with a message (no chat message posted)."""
@@ -2597,6 +2629,13 @@ async def create_job(request: Request):
     if proposal and proposal.get("channel", "general") != channel:
         return JSONResponse({"error": "proposal is in a different channel"}, status_code=409)
     meta = dict(proposal.get("metadata") or {}) if proposal else {}
+    if proposal:
+        author_identity = proposal.get("sender_identity")
+        if author_identity:
+            writer = registry.get_active_instance_by_identity(author_identity) if registry else None
+            assignee = writer["name"] if writer else ""
+        else:
+            assignee = proposal.get("sender", "")
     if meta.get("status") == "accepted":
         linked_id = meta.get("job_id")
         existing = jobs.get(linked_id) if type(linked_id) is int else None

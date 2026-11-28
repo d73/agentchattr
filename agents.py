@@ -3,12 +3,15 @@
 import json
 import logging
 from pathlib import Path
+import threading
 import time
 import uuid
 
 from atomic_io import atomic_write_text
 
 log = logging.getLogger(__name__)
+PROPOSAL_WRITER_BASES = ("antigravity", "claude", "codex")
+PROPOSAL_DISPATCH_GRACE_SECONDS = 10
 
 
 def _wake_key(payload: str, default_kind: str) -> tuple | None:
@@ -103,6 +106,72 @@ class AgentTrigger:
     def __init__(self, registry, data_dir: str = "./data"):
         self._registry = registry
         self._data_dir = Path(data_dir)
+        self._proposal_queue = self._data_dir / "proposal_writer_queue"
+        self._proposal_lock = threading.Lock()
+        self._proposal_dispatch_at: dict[str, float] = {}
+
+    def queue_proposal_writer(self, *, base: str, channel: str, prompt: str, source_msg_id: int) -> bool:
+        """Persist a manual proposal request and return whether it was dispatched now."""
+        if base not in PROPOSAL_WRITER_BASES:
+            raise ValueError("Unknown proposal writer type")
+        self._proposal_queue.mkdir(parents=True, exist_ok=True)
+        queued = self._proposal_queue / f"{time.time_ns():020d}-{uuid.uuid4().hex}.json"
+        with self._proposal_lock:
+            atomic_write_text(queued, json.dumps({
+                "kind": "mention", "channel": channel, "prompt": prompt,
+                "proposal_writer_base": base, "source_msg_id": source_msg_id,
+            }))
+            self._dispatch_proposals()
+            return not queued.exists()
+
+    def dispatch_proposal_writers(self):
+        """Give one queued proposal to each confirmed-idle writer of the requested type."""
+        with self._proposal_lock:
+            self._dispatch_proposals()
+
+    def _dispatch_proposals(self):
+        pending = sorted(self._proposal_queue.glob("*.json"))
+        if not pending:
+            return
+        status = self.get_status()
+        now = time.monotonic()
+        writers = {}
+        for instance in sorted(self._registry.get_all().values(), key=lambda record: record["slot"]):
+            base = instance["base"]
+            if base not in PROPOSAL_WRITER_BASES or instance["state"] != "active":
+                continue
+            identity = instance["identity_id"]
+            state = status.get(instance["name"], {})
+            if not state.get("available") or state.get("busy") is not False or state.get("needs_input"):
+                continue
+            if self._proposal_dispatch_at.get(identity, float("-inf")) + PROPOSAL_DISPATCH_GRACE_SECONDS > now:
+                continue
+            queue = self._data_dir / "identity_triggers" / identity
+            if next(queue.glob("*.json"), None) is None:
+                writers.setdefault(base, []).append((identity, queue))
+        self._proposal_dispatch_at = {
+            identity: dispatched for identity, dispatched in self._proposal_dispatch_at.items()
+            if dispatched + PROPOSAL_DISPATCH_GRACE_SECONDS > now
+        }
+        for path in pending:
+            try:
+                entry = json.loads(path.read_text(encoding="utf-8"))
+                candidates = writers.get(entry["proposal_writer_base"], [])
+            except (OSError, ValueError, KeyError, TypeError):
+                log.warning("Could not read pending proposal request %s", path.name)
+                continue
+            if not candidates:
+                continue
+            identity, queue = candidates.pop(0)
+            if not self._registry.is_active_identity(identity):
+                continue
+            try:
+                queue.mkdir(parents=True, exist_ok=True)
+                path.rename(queue / path.name)
+            except OSError:
+                log.exception("Could not dispatch pending proposal request %s", path.name)
+                continue
+            self._proposal_dispatch_at[identity] = now
 
     def is_available(self, name: str) -> bool:
         return self._registry.is_registered(name)
