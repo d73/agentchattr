@@ -509,7 +509,7 @@ def configure(cfg: dict, session_token: str = ""):
     if not jobs_path.exists() and legacy_activities.exists():
         legacy_activities.rename(jobs_path)
 
-    jobs = JobStore(str(jobs_path), minimum_next_id=store.next_job_id_from_history())
+    jobs = JobStore(str(jobs_path), history_next_id=store.next_job_id_from_history)
     jobs.on_change(_on_job_change)
 
     schedules = ScheduleStore(str(Path(data_dir) / "schedules.json"))

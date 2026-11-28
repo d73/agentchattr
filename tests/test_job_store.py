@@ -137,10 +137,12 @@ class JobStoreTests(unittest.TestCase):
         self.path.write_text(json.dumps([{"id": 2, "sort_order": 1}]), encoding="utf-8")
         history = MessageStore(str(self.path.with_name("messages.jsonl")))
         history.add("system", "Old job", "job_created", metadata={"job_id": 5})
-        migrated = JobStore(str(self.path), minimum_next_id=history.next_job_id_from_history())
+        for _ in range(512):
+            history.add("ben", "Newer message", _bulk=True)
+        migrated = JobStore(str(self.path), history_next_id=history.next_job_id_from_history)
 
         self.assertIsNotNone(migrated.get(2))
-        self.assertEqual(migrated.create("New", "job", "general", "ben")["id"], 6)
+        self.assertEqual(JobStore(str(self.path)).create("New", "job", "general", "ben")["id"], 6)
 
 
 if __name__ == "__main__":

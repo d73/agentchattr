@@ -6,18 +6,20 @@ import time
 import threading
 import uuid
 from pathlib import Path
+from typing import Callable
 
 
 class JobStore:
-    def __init__(self, path: str, *, minimum_next_id: int = 1):
+    def __init__(self, path: str, *, history_next_id: Callable[[], int] | None = None):
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._id_path = self._path.with_name(self._path.name + ".next-id")
         self._jobs: list[dict] = []
-        self._next_id = minimum_next_id
+        self._next_id = 1
         self._lock = threading.Lock()
         self._callbacks: list = []  # (action, job) on any change
-        if self._id_path.exists():
+        has_marker = self._id_path.exists()
+        if has_marker:
             try:
                 marker = int(self._id_path.read_text(encoding="utf-8"))
                 if marker < 1:
@@ -26,6 +28,9 @@ class JobStore:
             except (OSError, ValueError) as exc:
                 raise ValueError(f"Cannot read Job ID marker {self._id_path.resolve()}: {exc}") from exc
         self._load()
+        if not has_marker and history_next_id is not None:
+            self._next_id = max(self._next_id, history_next_id())
+            atomic_write_text(self._id_path, str(self._next_id))
 
     def _load(self):
         if not self._path.exists():
