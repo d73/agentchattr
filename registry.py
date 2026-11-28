@@ -8,6 +8,7 @@ Thread-safe: a single threading.Lock guards all mutations.
 
 import colorsys
 import json
+import logging
 import re
 import secrets
 import threading
@@ -16,6 +17,10 @@ import uuid
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
+
+from atomic_io import atomic_write_text
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,18 +108,29 @@ class RuntimeRegistry:
         try:
             self._data_dir.mkdir(parents=True, exist_ok=True)
             with self._persistence_lock:
-                tmp = self._renames_path().with_suffix(".tmp")
                 with self._lock:
                     data = dict(self._renames)
-                tmp.write_text(json.dumps(data), "utf-8")
-                tmp.replace(self._renames_path())
-        except Exception:
-            pass
+                atomic_write_text(self._renames_path(), json.dumps(data))
+        except OSError:
+            log.exception("Could not persist registry renames to %s", self._renames_path())
 
     # --- Instance persistence (survives server restart) ---
 
     def _instances_path(self) -> Path:
         return self._data_dir / "registry.json"
+
+    def _serialize_instances_locked(self) -> str:
+        for inst in self._instances.values():
+            self._remember_profile_locked(inst)
+        return json.dumps({
+            "instances": {n: _inst_full(i) for n, i in self._instances.items()},
+            "reclaimable": {n: _inst_full(i) for n, i in self._reclaimable.items()},
+            "profiles": self._profiles,
+        })
+
+    def _write_instances(self, data: str) -> None:
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self._instances_path(), data)
 
     def _save_instances(self):
         """Persist live + reclaimable instances (incl. tokens) to disk.
@@ -123,21 +139,12 @@ class RuntimeRegistry:
         posture (server binds 127.0.0.1). Must be called outside the lock.
         """
         try:
-            self._data_dir.mkdir(parents=True, exist_ok=True)
             with self._persistence_lock:
                 with self._lock:
-                    for inst in self._instances.values():
-                        self._remember_profile_locked(inst)
-                    data = json.dumps({
-                        "instances": {n: _inst_full(i) for n, i in self._instances.items()},
-                        "reclaimable": {n: _inst_full(i) for n, i in self._reclaimable.items()},
-                        "profiles": self._profiles,
-                    })
-                tmp = self._instances_path().with_suffix(".tmp")
-                tmp.write_text(data, "utf-8")
-                tmp.replace(self._instances_path())
-        except Exception:
-            pass
+                    data = self._serialize_instances_locked()
+                self._write_instances(data)
+        except OSError:
+            log.exception("Could not persist registry instances to %s", self._instances_path())
 
     def _load_instances(self):
         p = self._instances_path()
@@ -198,7 +205,7 @@ class RuntimeRegistry:
         Primary names never change just because another instance joins or leaves.
         Fresh registrations rotate tokens while retaining saved display preferences.
         """
-        with self._lock:
+        with self._persistence_lock, self._lock:
             if base not in self._bases:
                 return None
 
@@ -239,6 +246,13 @@ class RuntimeRegistry:
                     profile = None
                     break
 
+            # Keep the old maps available until the registration is durable.
+            previous_state = (
+                dict(self._instances), dict(self._reclaimable),
+                {family: dict(slots) for family, slots in self._profiles.items()},
+                dict(self._renames),
+            )
+
             # Expire stale sessions only after selecting both a slot and a name.
             for old_name in expired:
                 old = self._instances.pop(old_name)
@@ -269,13 +283,17 @@ class RuntimeRegistry:
             # identities sharing those names/(base, slot) coordinates — including custom
             # aliases that don't match `name`. Enforces fresh-wins by coordinate, not name.
             self._evict_reclaimable_collisions_locked()
+            try:
+                self._write_instances(self._serialize_instances_locked())
+            except Exception:
+                self._instances, self._reclaimable, self._profiles, self._renames = previous_state
+                raise
             result = _inst_dict(inst, include_token=True)
             if expired:
                 result["_expired"] = expired
 
         self._notify()
         self._save_renames()
-        self._save_instances()
         return result
 
     def deregister(self, name: str, reclaimable: bool = False) -> dict | None:

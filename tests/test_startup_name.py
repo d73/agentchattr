@@ -10,10 +10,39 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
+import atomic_io
 from registry import RuntimeRegistry
 
 
 class StartupNameTests(unittest.TestCase):
+    def test_registration_storage_failure_is_rejected_without_publishing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = RuntimeRegistry(tmp)
+            registry.seed({"codex": {}})
+            existing = registry.register("codex", requested_name="c1")
+            changes = []
+            registry.on_change(lambda: changes.append(registry.get_all_names()))
+
+            async def body():
+                return {"base": "codex", "name": "c2"}
+
+            request = SimpleNamespace(json=body)
+            with (
+                patch.object(app, "registry", registry),
+                patch.object(atomic_io.os, "replace", side_effect=PermissionError("locked")),
+                patch.object(atomic_io.time, "sleep") as retry,
+                self.assertLogs("app", level="ERROR"),
+            ):
+                result = asyncio.run(app.register_agent(request))
+
+            self.assertEqual(result.status_code, 503)
+            self.assertEqual(retry.call_count, 5)
+            self.assertEqual(registry.get_all_names(), ["c1"])
+            self.assertEqual(changes, [])
+            restored = RuntimeRegistry(tmp)
+            self.assertEqual(restored.resolve_token(existing["token"])["name"], "c1")
+            self.assertNotIn("c2", json.loads((Path(tmp) / "registry.json").read_text())["instances"])
+
     def test_registration_endpoint_uses_requested_identity_and_rejects_duplicate(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = RuntimeRegistry(tmp)
