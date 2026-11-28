@@ -161,13 +161,31 @@ def find_conemu(env):
     return shutil.which("ConEmu64.exe", path=env.get("PATH")) or shutil.which("ConEmu.exe", path=env.get("PATH"))
 
 
-def server_ready(url):
+def server_session_token(url):
     try:
-        # Identify the agentchattr page by its token marker; never print the page or token.
+        # The local page supplies the session token. Keep it in memory and
+        # send it only as an HTTP header to the selected loopback server.
         with urllib.request.urlopen(url, timeout=1) as response:
-            return b"window.__SESSION_TOKEN__=" in response.read()
+            marker = re.search(rb'window\.__SESSION_TOKEN__="([0-9a-f]{64})";', response.read())
+        return marker.group(1).decode("ascii") if marker else None
     except (OSError, urllib.error.URLError):
-        return False
+        return None
+
+
+def server_registrations(url, token):
+    request = urllib.request.Request(
+        f"{url}/api/launcher/registrations", headers={"X-Session-Token": token}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=1) as response:
+            payload = json.load(response)
+        bases = payload["registered_bases"]
+        if not isinstance(bases, list) or not all(isinstance(base, str) for base in bases):
+            raise ValueError("invalid registered_bases")
+        return set(bases)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise RuntimeError("Cannot read registrations from the selected AgentChattr server. "
+                           "Update or restart it before starting the team.") from exc
 
 
 def main():
@@ -219,7 +237,8 @@ def start_team(url, env, commands):
     # Fail closed before starting the server if process inspection is unavailable.
     inspect_agents(commands)
 
-    if not server_ready(url):
+    token = server_session_token(url)
+    if not token:
         print(f"Starting agentchattr at {url}...", flush=True)
         log_path = ROOT / "team-server.log"
         with log_path.open("ab") as log:
@@ -229,10 +248,11 @@ def start_team(url, env, commands):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         deadline = time.monotonic() + 30
-        while not server_ready(url):
+        while not token:
             if server.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError(f"Server did not become ready. See {log_path}")
             time.sleep(0.5)
+            token = server_session_token(url)
         print(f"agentchattr is ready at {url}.")
     else:
         print(f"Reusing the server at {url}")
@@ -240,8 +260,8 @@ def start_team(url, env, commands):
     conemu = find_conemu(env)
     print(f"Opening agent terminals in {'ConEmu' if conemu else 'separate console windows'}.")
     for name in AGENTS:
-        if name in running_agents(process_inventory(), commands):
-            print(f"{LABELS[name]}: already running; skipped.")
+        if name in server_registrations(url, token):
+            print(f"{LABELS[name]}: already registered with this server; skipped.")
             continue
         print(f"Launching {LABELS[name]}...", flush=True)
         # cmd /k keeps errors visible; each interactive CLI needs its own console.
@@ -253,7 +273,7 @@ def start_team(url, env, commands):
         inner = f'{shell} /d /s /k "{command}"'
         if conemu:
             # -Single hands the tab to the running ConEmu window, so this launcher exits
-            # immediately; startup is confirmed by the process check below.
+            # immediately; startup is confirmed by the server registration below.
             console = subprocess.Popen(
                 f'"{conemu}" -Single -run {inner} -new_console:d:"{ROOT.as_posix()}":t:"{LABELS[name]}"',
                 cwd=ROOT, env=env,
@@ -262,11 +282,12 @@ def start_team(url, env, commands):
             console = subprocess.Popen(inner, cwd=ROOT, env=env,
                                        creationflags=subprocess.CREATE_NEW_CONSOLE)
         deadline = time.monotonic() + 15
-        while name not in running_agents(process_inventory(), commands):
-            if (console.poll() is not None and not conemu) or time.monotonic() >= deadline:
-                raise RuntimeError(f"Cannot confirm {LABELS[name]} startup. Check its terminal before retrying.")
+        while name not in server_registrations(url, token):
+            if (not conemu and console.poll() is not None) or time.monotonic() >= deadline:
+                raise RuntimeError(f"Cannot confirm {LABELS[name]} startup. "
+                                   "Its wrapper did not register with this server. Check its terminal before retrying.")
             time.sleep(1)
-        print(f"{LABELS[name]}: started; its wrapper registers it with agentchattr.")
+        print(f"{LABELS[name]}: started and registered with this server.")
     webbrowser.open(url)
     print("Use @mentions in chat to invite the agents into a conversation.")
     print("Run this launcher again to start only missing agents.")
