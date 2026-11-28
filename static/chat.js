@@ -302,11 +302,11 @@ function setupUserColorSetting() {
     applyUserColor();
 }
 
-// How a pill signals "needs attention": 'highlight' (default, soft pulse) or 'flash' (hard blink). Synced via ui_prefs.
+// Keep the stored 'highlight' value for the original Glow mode.
 function applyAttentionStyle() {
     let v = '';
     try { v = localStorage.getItem('agentchattr-attention-style') || ''; } catch (e) {}
-    if (v !== 'flash') v = 'highlight';
+    if (v !== 'full-highlight' && v !== 'flash') v = 'highlight';
     document.documentElement.dataset.attention = v;
     const select = document.getElementById('setting-attention-style');
     if (select) select.value = v;

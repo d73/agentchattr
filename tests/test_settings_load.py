@@ -69,6 +69,16 @@ class SettingsLoadTests(unittest.TestCase):
         self.assertNotIn("agent_colors", app.room_settings)
         self.assertNotIn("ui_prefs", app.room_settings)
 
+    def test_attention_modes_survive_save_and_reload(self):
+        for mode in ("highlight", "full-highlight", "flash"):
+            with self.subTest(mode=mode):
+                prefs = {"attention_style": mode, "channel_attention": "off"}
+                app.room_settings["ui_prefs"] = app._clean_ui_prefs(prefs)
+                app._save_settings()
+                app.room_settings.pop("ui_prefs")
+                app._load_settings()
+                self.assertEqual(app.room_settings["ui_prefs"], prefs)
+
     def test_per_agent_updates_keep_other_changes_and_ignore_stale_seed(self):
         app.room_settings["agent_colors"] = {"claude": "#333333", "codex": "#222222"}
         colors = app._save_agent_color_changes(

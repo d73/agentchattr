@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>agentchattr</title>
-    <link rel="stylesheet" href="/static/style.css?v=268">
+    <link rel="stylesheet" href="/static/style.css?v=269">
     <link rel="stylesheet" href="/static/sessions.css?v=223">
     <link rel="stylesheet" href="/static/jobs.css?v=232">
     <link rel="icon" href="/static/favicon.ico">
@@ -266,10 +266,11 @@
                     <details class="settings-section" data-section="alerts">
                         <summary>Alerts &amp; Sounds</summary>
                         <div class="settings-section-fields">
-                            <div class="settings-field" title="How an agent's pill signals it is waiting on you: a soft highlight or a hard flash. Synced across browsers.">
+                            <div class="settings-field" title="How a status pill signals that your input is needed. Synced across browsers.">
                                 <label for="setting-attention-style">Needs attention</label>
-                                <select id="setting-attention-style" title="How an agent pill signals it is waiting on you (synced across browsers)">
-                                    <option value="highlight">Highlight</option>
+                                <select id="setting-attention-style" title="Glow pulses softly, Highlight fills the pill steadily, and Flash blinks.">
+                                    <option value="highlight">Glow</option>
+                                    <option value="full-highlight">Highlight</option>
                                     <option value="flash">Flash</option>
                                 </select>
                             </div>
@@ -475,6 +476,6 @@
     <script src="/static/rules-panel.js?v=226"></script>
     <script src="/static/mention-alerts.js?v=1"></script>
     <script src="/static/channel-attention.js?v=1"></script>
-    <script src="/static/chat.js?v=295"></script>
+    <script src="/static/chat.js?v=296"></script>
 </body>
 </html>
