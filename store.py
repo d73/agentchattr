@@ -172,6 +172,19 @@ class MessageStore:
             raise OSError(self._log_error)
         atomic_write_text(self._path, "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in self._messages))
 
+    def next_job_id_from_history(self) -> int:
+        """Reserve IDs referenced by breadcrumbs written before Job ID persistence."""
+        with self._lock:
+            highest_id = 0
+            for message in self._messages:
+                if message.get("type") != "job_created":
+                    continue
+                metadata = message.get("metadata")
+                job_id = metadata.get("job_id") if isinstance(metadata, dict) else None
+                if type(job_id) is int and highest_id < job_id < 2**53 - 1:
+                    highest_id = job_id
+            return highest_id + 1
+
     def get_by_id(self, msg_id: int) -> dict | None:
         with self._lock:
             for m in self._messages:
