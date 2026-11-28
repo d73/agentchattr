@@ -7,8 +7,8 @@ const SESSION_TOKEN = window.__SESSION_TOKEN__ || "";
 let ws = null;
 const pendingAppearanceSettings = new Map();
 let systemTheme;
-let themeMode = 'dark';
-let themePalette = 'indigo';
+let themeMode = document.documentElement.dataset.themeMode || 'dark';
+let themePalette = document.documentElement.dataset.palette || 'indigo';
 let pendingAttachments = [];
 let channelUploads = 0;
 let autoScroll = true;
@@ -2505,6 +2505,7 @@ function setupThemeSettings() {
             saveAppearanceSettings({ [radio.name]: radio.value });
         });
     }
+    renderTheme();
 }
 
 function saveAppearanceSettings(data) {
@@ -2549,6 +2550,13 @@ function applySettings(data, appearanceRequestId) {
         themePalette = data.theme_palette;
     }
     if (data.theme_mode || data.theme_palette) renderTheme();
+    if (data.theme_mode && data.theme_palette) {
+        try {
+            localStorage.setItem('agentchattr-theme', JSON.stringify({
+                theme_mode: data.theme_mode, theme_palette: data.theme_palette,
+            }));
+        } catch {}
+    }
     if (data.font && !pendingAppearanceSettings.has('font')) {
         applyChatFont(data.font);
     }

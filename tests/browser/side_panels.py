@@ -318,6 +318,7 @@ def check_themes(page, url, screenshots):
     sockets = []
     updates = []
     saved = {"font": "mono", "font_size": 18, "channels": ["general"]}
+    defer_settings = False
     page.on("pageerror", lambda error: errors.append(str(error)))
 
     def connect(socket):
@@ -329,7 +330,8 @@ def check_themes(page, url, screenshots):
                 updates.append(update)
 
         socket.on_message(capture)
-        socket.send(json.dumps({"type": "settings", "data": saved}))
+        if not defer_settings:
+            socket.send(json.dumps({"type": "settings", "data": saved}))
         socket.send(json.dumps({"type": "history_complete", "has_more": False}))
 
     def acknowledge(update):
@@ -446,14 +448,36 @@ def check_themes(page, url, screenshots):
     acknowledge(updates[-1])
     page.wait_for_function("pendingAppearanceSettings.size === 0")
 
+    defer_settings = True
     page.reload()
     expect(root).to_have_attribute("data-theme", "light")
     expect(root).to_have_attribute("data-palette", "green")
+    expect(body).to_have_css("background-color", "rgb(241, 246, 242)")
     page.locator("#settings-toggle").click()
     appearance.locator("summary").click()
     expect(mode.get_by_role("radio", name="Auto")).to_be_checked()
     expect(palette.get_by_role("radio", name="Sage")).to_be_checked()
+
+    saved.update(theme_mode="dark", theme_palette="blue")
+    sockets[-1].send(json.dumps({"type": "settings", "data": saved}))
+    expect(root).to_have_attribute("data-theme", "dark")
+    expect(palette.get_by_role("radio", name="Nordic")).to_be_checked()
+    assert page.evaluate("JSON.parse(localStorage.getItem('agentchattr-theme'))") == {
+        "theme_mode": "dark", "theme_palette": "blue",
+    }
     expect(page.locator("#input")).to_have_css("font-size", "18px")
+
+    chat_script = re.compile(r"/static/chat[.]js[?]")
+    page.route(chat_script, lambda route: route.fulfill(body=""))
+    page.reload()
+    expect(body).to_have_css("background-color", "rgb(19, 25, 34)")
+    expect(root).to_have_attribute("data-palette", "blue")
+    page.unroute(chat_script)
+
+    page.evaluate("localStorage.setItem('agentchattr-theme', '{invalid')")
+    page.reload()
+    expect(root).to_have_attribute("data-theme", "dark")
+    expect(root).to_have_attribute("data-palette", "indigo")
     assert not errors, errors
 
 
