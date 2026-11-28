@@ -13,6 +13,11 @@ import threading
 from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
+from atomic_io import atomic_write_text
+
+from attachment_storage import copy_image_attachment
+
+from atomic_io import atomic_write_text
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +42,7 @@ _presence_lock = threading.Lock()   # guards both _presence and _activity
 _renamed_from: set[str] = set()    # old names from renames — suppress leave messages
 _cursors: dict[str, dict[str, int]] = {}  # agent_name → {channel_name → last_id}
 _cursors_lock = threading.Lock()
+_cursor_save_lock = threading.Lock()
 _empty_read_count: dict[str, int] = {}  # sender → consecutive empty reads
 # Last channel (or job_id) each agent explicitly read from. chat_send
 # falls back to this when the caller omits the channel/job_id, so agents
@@ -49,6 +55,7 @@ PRESENCE_TIMEOUT = 10  # ~2 missed heartbeats (5s interval) = offline
 
 # Roles — per-instance, persisted to roles.json
 _roles: dict[str, str] = {}  # agent_name → role string
+_roles_lock = threading.Lock()
 _ROLES_FILE: Path | None = None
 
 # Cursor persistence — set by run.py to enable saving cursors across restarts
@@ -292,38 +299,43 @@ def chat_send(
                 or target["identity_id"] != recipient_identity or target["state"] != "active"
                 or not is_online(recipient)):
             return "Error: the bound recipient is no longer present."
-    if job_id and jobs:
+    job_send = bool(job_id and jobs)
+    reply_id = None
+    if job_send:
+        if jobs.get(job_id) is None:
+            return f"Error: job #{job_id} not found."
+    elif reply_to >= 0:
+        if store.get_by_id(reply_to) is None:
+            return f"Message #{reply_to} not found."
+        reply_id = reply_to
+
+    attachments = []
+    attachment_path = None
+    if image_path:
+        try:
+            attachment, attachment_path = copy_image_attachment(image_path, config or {})
+        except ValueError as exc:
+            return str(exc)
+        except OSError:
+            return "Could not read or store the image attachment."
+        attachments.append(attachment)
+
+    if job_send:
         # Detect suggestion type from [suggestion] prefix
         text = message.strip()
         msg_type = "chat"
         if text.lower().startswith("[suggestion]"):
             msg_type = "suggestion"
             text = text[len("[suggestion]"):].strip()
-        # Handle image attachment for job messages
-        job_attachments = None
-        if image_path:
-            import shutil, uuid
-            src = Path(image_path)
-            if not src.exists():
-                return f"Image not found: {image_path}"
-            if src.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'):
-                return f"Unsupported image type: {src.suffix}"
-            raw_dir = "./uploads"
-            if config and "images" in config:
-                raw_dir = config["images"].get("upload_dir", raw_dir)
-            upload_dir = Path(raw_dir)
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
-            shutil.copy2(str(src), str(upload_dir / filename))
-            job_attachments = [{"name": src.name, "url": f"/uploads/{filename}"}]
         msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
-                               attachments=job_attachments,
+                               attachments=attachments or None,
                                sender_identity=sender_identity,
                                recipient_identity=recipient_identity or None, expected_scope=job_scope)
         if msg is None:
+            if attachment_path is not None:
+                attachment_path.unlink(missing_ok=True)
             return f"Error: job #{job_id} not found."
-        with _presence_lock:
-            _presence[sender] = time.time()
+        _touch_presence(sender)
 
         # Route @mentions in job messages to trigger other agents
         if router and agents:
@@ -357,32 +369,6 @@ def chat_send(
         return f"Sent to job #{job_id} (msg_id={msg['id']})" + (
             " [suggestion]" if msg_type == "suggestion" else "")
 
-    attachments = []
-    if image_path:
-        import shutil
-        import uuid
-        from pathlib import Path
-        src = Path(image_path)
-        if not src.exists():
-            return f"Image not found: {image_path}"
-        if src.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'):
-            return f"Unsupported image type: {src.suffix}"
-        
-        # Get upload dir from config (fall back to ./uploads)
-        raw_dir = "./uploads"
-        if config and "images" in config:
-            raw_dir = config["images"].get("upload_dir", raw_dir)
-        upload_dir = Path(raw_dir)
-        
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
-        shutil.copy2(str(src), str(upload_dir / filename))
-        attachments.append({"name": src.name, "url": f"/uploads/{filename}"})
-
-    reply_id = reply_to if reply_to >= 0 else None
-    if reply_id is not None and store.get_by_id(reply_id) is None:
-        return f"Message #{reply_to} not found."
-
     # Determine message type and metadata based on choices
     msg_type = "chat"
     metadata = None
@@ -396,9 +382,7 @@ def chat_send(
                     msg_type=msg_type, metadata=metadata,
                     sender_kind="agent" if authenticated else "human",
                     sender_identity=sender_identity, sender_base=sender_base)
-    _update_cursor(sender, [msg], channel)
-    with _presence_lock:
-        _presence[sender] = time.time()
+    _touch_presence(sender)
     result = f"Sent (id={msg['id']})"
     if msg.get("persistence_error"):
         result += (f". Warning: message log write failed: {msg['persistence_error']}. "
@@ -439,9 +423,7 @@ def chat_propose_job(
         sender_identity=authenticated["identity_id"] if authenticated else None,
         sender_base=authenticated["base"] if authenticated else None,
     )
-    _update_cursor(sender, [msg], channel)
-    with _presence_lock:
-        _presence[sender] = time.time()
+    _touch_presence(sender)
     return f"Proposed job (msg_id={msg['id']}): {title}"
 
 
@@ -512,18 +494,17 @@ def _load_cursors():
 
 
 def _save_cursors():
-    """Persist cursor state to disk atomically (write temp + rename)."""
+    """Serialize snapshots through replacement so a late save cannot roll state back."""
     if _CURSORS_FILE is None:
         return
     try:
-        with _cursors_lock:
-            snapshot = dict(_cursors)
-        _CURSORS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CURSORS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(snapshot), "utf-8")
-        os.replace(tmp, _CURSORS_FILE)  # atomic on POSIX
-    except Exception:
-        log.warning("Failed to save cursor state to %s", _CURSORS_FILE)
+        with _cursor_save_lock:
+            with _cursors_lock:
+                snapshot = json.dumps(_cursors)
+            _CURSORS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(_CURSORS_FILE, snapshot)
+    except OSError:
+        log.warning("Failed to save cursor state to %s", _CURSORS_FILE, exc_info=True)
 
 
 def _load_roles():
@@ -537,26 +518,24 @@ def _load_roles():
         log.warning("Failed to load roles from %s", _ROLES_FILE)
 
 
-def _save_roles():
-    """Persist roles to disk atomically."""
-    if _ROLES_FILE is None:
-        return
-    try:
+def _commit_roles(roles: dict[str, str]):
+    """Persist the proposed roles before publishing them. Caller holds the roles lock."""
+    global _roles
+    if _ROLES_FILE is not None:
         _ROLES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _ROLES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_roles), "utf-8")
-        os.replace(tmp, _ROLES_FILE)
-    except Exception:
-        log.warning("Failed to save roles to %s", _ROLES_FILE)
+        atomic_write_text(_ROLES_FILE, json.dumps(roles))
+    _roles = roles
 
 
 def set_role(name: str, role: str):
     """Set or clear an agent's role. Empty string clears."""
-    if role:
-        _roles[name] = role
-    else:
-        _roles.pop(name, None)
-    _save_roles()
+    with _roles_lock:
+        roles = dict(_roles)
+        if role:
+            roles[name] = role
+        else:
+            roles.pop(name, None)
+        _commit_roles(roles)
 
 
 def get_role(name: str) -> str:
@@ -591,9 +570,14 @@ def migrate_identity(old_name: str, new_name: str):
             _last_read_channel[new_name] = _last_read_channel.pop(old_name)
         if old_name in _last_read_job_id:
             _last_read_job_id[new_name] = _last_read_job_id.pop(old_name)
-    if old_name in _roles:
-        _roles[new_name] = _roles.pop(old_name)
-        _save_roles()
+    with _roles_lock:
+        if old_name in _roles:
+            roles = dict(_roles)
+            roles[new_name] = roles.pop(old_name)
+            try:
+                _commit_roles(roles)
+            except OSError:
+                log.exception("Failed to persist role migration from %s to %s", old_name, new_name)
     _save_cursors()
 
 
@@ -610,9 +594,14 @@ def purge_identity(name: str):
     with _last_read_lock:
         _last_read_channel.pop(name, None)
         _last_read_job_id.pop(name, None)
-    if name in _roles:
-        del _roles[name]
-        _save_roles()
+    try:
+        with _roles_lock:
+            if name in _roles:
+                roles = dict(_roles)
+                del roles[name]
+                _commit_roles(roles)
+    except OSError:
+        log.exception("Failed to persist role removal for %s", name)
     _save_cursors()
 
 
@@ -646,7 +635,8 @@ def _update_cursor(sender: str, msgs: list[dict], channel: str | None):
         ch_key = channel if channel else "__all__"
         with _cursors_lock:
             agent_cursors = _cursors.setdefault(sender, {})
-            agent_cursors[ch_key] = msgs[-1]["id"]
+            last_id = msgs[-1]["id"]
+            agent_cursors[ch_key] = max(last_id, agent_cursors.get(ch_key, last_id))
         _save_cursors()
 
 
@@ -662,8 +652,8 @@ def chat_read(
 
     Smart defaults:
     - First call with sender: returns last `limit` messages (full context).
-    - Subsequent calls with same sender: returns only NEW messages since last read.
-    - Pass since_id to override and read from a specific point.
+    - Subsequent calls with same sender: returns up to `limit` unread messages, oldest first.
+    - Pass a nonzero since_id to page from a specific point without changing the saved cursor.
     - Omit sender to always get the last `limit` messages (no cursor).
     - Pass channel to filter by channel name (default: all channels).
     - Pass job_id to read a specific job. Job reads return a header entry first,
@@ -732,23 +722,20 @@ def chat_read(
         with _last_read_lock:
             _last_read_channel[sender] = ch
             _last_read_job_id.pop(sender, None)
-    if since_id:
-        msgs = store.get_since(since_id, channel=ch)
-    elif sender:
-        ch_key = ch if ch else "__all__"
+    if limit < 1:
+        return "Error: limit must be positive."
+    cursor = since_id or None
+    if cursor is None and sender:
         with _cursors_lock:
-            agent_cursors = _cursors.get(sender, {})
-            cursor = agent_cursors.get(ch_key, 0)
-        if cursor:
-            msgs = store.get_since(cursor, channel=ch)
-        else:
-            msgs = store.get_recent(limit, channel=ch)
-    else:
+            cursor = _cursors.get(sender, {}).get(ch or "__all__")
+    if cursor is None:
         msgs = store.get_recent(limit, channel=ch)
+    else:
+        msgs = store.get_since(cursor, channel=ch)[:limit]
 
-    msgs = msgs[-limit:]
-    _update_cursor(sender, msgs, ch)
     serialized = _serialize_messages(msgs)
+    if not since_id:
+        _update_cursor(sender, msgs, ch)
 
     # Escalating empty-read hints to discourage polling loops
     if not serialized and sender:
@@ -830,18 +817,18 @@ def chat_who() -> str:
 def _touch_presence(name: str):
     """Update presence timestamp — called on any MCP tool use."""
     with _presence_lock:
-        _presence[name] = time.time()
+        _presence[name] = time.monotonic()
 
 
 def _get_online() -> list[str]:
-    now = time.time()
+    now = time.monotonic()
     with _presence_lock:
         return [name for name, ts in _presence.items()
                 if now - ts < PRESENCE_TIMEOUT]
 
 
 def is_online(name: str) -> bool:
-    now = time.time()
+    now = time.monotonic()
     with _presence_lock:
         return name in _presence and now - _presence.get(name, 0) < PRESENCE_TIMEOUT
 
@@ -850,7 +837,7 @@ def set_active(name: str, active: bool):
     with _presence_lock:
         _activity[name] = active
         if active:
-            _activity_ts[name] = __import__("time").time()
+            _activity_ts[name] = time.monotonic()
 
 
 def set_activity_known(name: str, known: bool):
@@ -866,26 +853,24 @@ def is_activity_known(name: str) -> bool:
 def set_needs_input(name: str, needs: bool):
     with _presence_lock:
         if needs:
-            _needs_input_ts[name] = __import__("time").time()
+            _needs_input_ts[name] = time.monotonic()
         else:
             _needs_input_ts.pop(name, None)
 
 
 def is_needs_input(name: str) -> bool:
-    import time as _time
     with _presence_lock:
         ts = _needs_input_ts.get(name)
-        return ts is not None and _time.time() - ts <= NEEDS_INPUT_TIMEOUT
+        return ts is not None and time.monotonic() - ts <= NEEDS_INPUT_TIMEOUT
 
 
 def is_active(name: str) -> bool:
-    import time as _time
     with _presence_lock:
         if not _activity.get(name, False):
             return False
         # Auto-expire stale activity
         ts = _activity_ts.get(name, 0)
-        if _time.time() - ts > ACTIVITY_TIMEOUT:
+        if time.monotonic() - ts > ACTIVITY_TIMEOUT:
             _activity[name] = False
             return False
         return True

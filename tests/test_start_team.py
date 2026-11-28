@@ -1,4 +1,5 @@
 """Regression coverage for update failures and duplicate-safe Windows startup."""
+import asyncio
 import contextlib
 import io
 import subprocess
@@ -6,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, Mock
 
+import app
 from windows import start_team as team
 
 
@@ -73,7 +75,8 @@ class TeamLauncherTests(unittest.TestCase):
             return Mock(poll=lambda: None)
 
         with patch.object(team, "process_inventory", side_effect=lambda: list(processes)), \
-             patch.object(team, "server_ready", return_value=True), \
+             patch.object(team, "server_session_token", return_value="test-token"), \
+             patch.object(team, "server_registrations", side_effect=lambda *_: set(started)), \
              patch.object(team.subprocess, "Popen", side_effect=launch), \
              patch.object(team.webbrowser, "open"), contextlib.redirect_stdout(io.StringIO()):
             team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
@@ -94,8 +97,9 @@ class TeamLauncherTests(unittest.TestCase):
 
     def test_failed_child_stops_startup_instead_of_launching_more(self):
         with patch.object(team, "process_inventory", return_value=[]), \
-             patch.object(team, "running_agents", return_value=set()), \
-             patch.object(team, "server_ready", return_value=True), \
+             patch.object(team, "find_conemu", return_value=None), \
+             patch.object(team, "server_registrations", return_value=set()), \
+             patch.object(team, "server_session_token", return_value="test-token"), \
              patch.object(team.subprocess, "Popen", return_value=Mock(poll=lambda: 1)) as popen, \
              patch.object(team.webbrowser, "open") as browser:
             with self.assertRaisesRegex(RuntimeError, "Cannot confirm Codex startup"):
@@ -133,25 +137,59 @@ class TeamLauncherTests(unittest.TestCase):
 
     def test_repeated_launch_skips_all_live_agents(self):
         with patch.object(team, "process_inventory", return_value=[]), \
-             patch.object(team, "running_agents", return_value=set(COMMANDS)), \
-             patch.object(team, "server_ready", return_value=True), \
+             patch.object(team, "server_registrations", return_value=set(COMMANDS)), \
+             patch.object(team, "server_session_token", return_value="test-token"), \
              patch.object(team.subprocess, "Popen") as popen, \
              patch.object(team.webbrowser, "open"), contextlib.redirect_stdout(io.StringIO()):
             team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
         popen.assert_not_called()
 
-    def test_launches_missing_agent_and_waits_for_visibility(self):
-        # Codex appears only after the first poll, before releasing the startup lock.
-        active = [{"claude", "antigravity"}] * 3 + [set(COMMANDS)] * 3
-        with patch.object(team, "process_inventory", return_value=[]), \
-             patch.object(team, "running_agents", side_effect=active), \
-             patch.object(team, "server_ready", return_value=True), \
-             patch.object(team.subprocess, "Popen", return_value=Mock(poll=lambda: None)) as popen, \
-             patch.object(team.time, "sleep"), patch.object(team.webbrowser, "open"), \
-             contextlib.redirect_stdout(io.StringIO()):
+    def test_launches_missing_agent_and_waits_for_server_registration(self):
+        existing = {"claude", "antigravity"}
+        registered = [existing, existing, set(COMMANDS), set(COMMANDS), set(COMMANDS)]
+        with (
+            patch.object(team, "process_inventory", return_value=[]),
+            patch.object(team, "find_conemu", return_value=None),
+            patch.object(team, "server_session_token", return_value="test-token"),
+            patch.object(team, "server_registrations", side_effect=registered) as status,
+            patch.object(team.subprocess, "Popen", return_value=Mock(poll=lambda: None)) as popen,
+            patch.object(team.time, "sleep") as sleep,
+            patch.object(team.webbrowser, "open") as browser,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
-        self.assertEqual(popen.call_count, 1)
-        self.assertIn("wrapper.py", popen.call_args.args[0])
+        popen.assert_called_once()
+        self.assertEqual(status.call_count, 5)
+        sleep.assert_called_once_with(1)
+        browser.assert_called_once_with("http://127.0.0.1:8300")
+
+    def test_visible_wrapper_that_does_not_register_cannot_report_success(self):
+        wrapper = {"Name": "python.exe", "CommandLine": "python wrapper.py codex"}
+        with (
+            patch.object(team, "process_inventory", return_value=[wrapper]),
+            patch.object(team, "find_conemu", return_value=None),
+            patch.object(team, "server_session_token", return_value="test-token"),
+            patch.object(team, "server_registrations", return_value={"claude", "antigravity"}),
+            patch.object(team.time, "monotonic", side_effect=[0, 1, 16]),
+            patch.object(team.time, "sleep"),
+            patch.object(team.subprocess, "Popen", return_value=Mock(poll=lambda: None)) as popen,
+            patch.object(team.webbrowser, "open") as browser,
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "wrapper did not register"):
+                team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
+        popen.assert_called_once()
+        self.assertNotIn("started and registered", output.getvalue())
+        browser.assert_not_called()
+
+    def test_registration_endpoint_reports_active_types_by_stored_base(self):
+        with patch.object(app, "registry", Mock(**{"get_all.return_value": {
+            "custom-id": {"base": "codex", "state": "active"},
+            "codex-2": {"base": "codex", "state": "active"},
+            "claude": {"base": "claude", "state": "pending"},
+        }})):
+            self.assertEqual(asyncio.run(app.get_launcher_registrations()),
+                             {"registered_bases": ["codex"]})
 
     def test_startup_lock_rejects_overlap_and_releases(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(team.tempfile, "gettempdir", return_value=folder):

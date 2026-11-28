@@ -10,6 +10,7 @@ import sys
 import time
 
 from pattern_loader import PatternStore
+from restart_policy import RestartPolicy
 
 if sys.platform != "win32":
     raise ImportError("wrapper_windows only works on Windows")
@@ -482,8 +483,10 @@ def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, star
         env = {**env, **inject_env}
     start_watcher(lambda text: inject(text, delay=inject_delay, enter_backend=enter_backend))
 
+    restart = RestartPolicy()
     while True:
         try:
+            started_at = time.monotonic()
             proc = subprocess.Popen([command] + extra_args, cwd=cwd, env=env)
             if pid_holder is not None:
                 pid_holder[0] = proc.pid
@@ -494,8 +497,8 @@ def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, star
             if no_restart:
                 break
 
-            print(f"\n  {agent.capitalize()} exited (code {proc.returncode}).")
-            print(f"  Restarting in 3s... (Ctrl+C to quit)")
-            time.sleep(3)
+            restart.wait_before_restart(
+                started_at, f"{agent.capitalize()} exited (code {proc.returncode}).", time.sleep,
+            )
         except KeyboardInterrupt:
             break

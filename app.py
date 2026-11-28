@@ -18,6 +18,7 @@ from fastapi.requests import Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from attachment_storage import DEFAULT_IMAGE_LIMIT_MB, IMAGE_UPLOAD_EXTS, image_upload_limit
 from store import MessageStore
 from rules import RuleStore
 from summaries import SummaryStore
@@ -54,6 +55,7 @@ session_store: SessionStore | None = None
 session_engine: SessionEngine | None = None
 config: dict = {}
 ws_clients: set[WebSocket] = set()
+_routing_refresh_lock = threading.Lock()
 
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
@@ -406,7 +408,8 @@ def _install_security_middleware(token: str, cfg: dict):
             # the browser session token, like the rest of the API.
             public_image = path.startswith("/uploads/") and Path(path).suffix.lower() in IMAGE_UPLOAD_EXTS
             client_ip = request.client.host if request.client else ""
-            if path == "/" or path.startswith(("/static/", "/api/roles")) or public_image:
+            public_roles = request.method == "GET" and path == "/api/roles"
+            if path == "/" or path.startswith("/static/") or public_roles or public_image:
                 return await call_next(request)
 
             # Devices on the LAN never get API access, even with a token.
@@ -593,7 +596,7 @@ def configure(cfg: dict, session_token: str = ""):
             # OR the 60s crash timeout below.
             # Short timeout (10s) prevents slot theft when MCP tool calls are intermittent.
             try:
-                now = _time.time()
+                now = _time.monotonic()
                 with mcp_bridge._presence_lock:
                     currently_online = {
                         name for name, ts in mcp_bridge._presence.items()
@@ -607,38 +610,14 @@ def configure(cfg: dict, session_token: str = ""):
                             else:
                                 mcp_bridge._activity[name] = False  # auto-expire
 
-                # Crash timeout: if a wrapper hasn't heartbeated for 60s,
-                # it's dead — deregister it to free the slot.
-                _CRASH_TIMEOUT = registry.HEARTBEAT_TIMEOUT
-                registered = set(registry.get_all_names())
-                for name in registered:
-                    with mcp_bridge._presence_lock:
-                        last_seen = mcp_bridge._presence.get(name, 0)
-                    if last_seen > 0 and now - last_seen > _CRASH_TIMEOUT:
-                        log.info(f"Crash timeout: deregistering {name} (no heartbeat for {_CRASH_TIMEOUT}s)")
-                        # Sleep / crash path: keep the token reclaimable so the
-                        # wrapper transparently recovers its identity on wake.
-                        # (A deliberate /api/deregister below stays non-reclaimable.)
-                        result = registry.deregister(name, reclaimable=True)
-                        if result:
-                            mcp_bridge.purge_identity(name)
-                            registry.clean_renames_for(name)
-                            renamed = result.get("_renamed_back")
-                            if renamed:
-                                mcp_bridge.migrate_identity(renamed["old"], renamed["new"])
-                                store.rename_sender(renamed["old"], renamed["new"])
-                                _migrate_agent_last_channel(renamed["old"], renamed["new"])
-                                if _event_loop:
-                                    rename_event = json.dumps({
-                                        "type": "agent_renamed",
-                                        "old_name": renamed["old"],
-                                        "new_name": renamed["new"],
-                                    })
-                                    asyncio.run_coroutine_threadsafe(_broadcast(rename_event), _event_loop)
-                            store.add(name, f"{name} disconnected (timeout)", msg_type="leave", channel=_agent_last_channel.get(name, _last_active_channel))
-                            _posted_leave.add(name)
-
-                # Re-fetch registered names (may have changed from crash timeout above)
+                _posted_leave.update(_expire_crashed_agents(now))
+                # A heartbeat may have refreshed both registration and presence
+                # while the earlier snapshot was being checked for timeouts.
+                with mcp_bridge._presence_lock:
+                    currently_online = {
+                        name for name, ts in mcp_bridge._presence.items()
+                        if now - ts < mcp_bridge.PRESENCE_TIMEOUT
+                    }
                 registered = set(registry.get_all_names())
 
                 # Detect registered instances going offline (leave message only)
@@ -724,35 +703,37 @@ def configure(cfg: dict, session_token: str = ""):
         while True:
             _time.sleep(30)
             try:
-                if not schedules:
-                    continue
-                due = schedules.run_due()
-                for s in due:
-                    prompt = s.get("prompt", "")
-                    targets = s.get("targets", [])
-                    channel = s.get("channel", "general")
-                    if not prompt or not targets:
-                        schedules.mark_run(s["id"])
-                        continue
-                    sender = s.get("created_by", "user")
-                    mention_str = " ".join(f"@{t}" for t in targets)
-                    full_text = f"{mention_str} {prompt}" if mention_str else prompt
-                    # store.add triggers _handle_new_message via callback,
-                    # which routes @mentions to agents — no manual trigger needed.
-                    store.add(
-                        sender,
-                        full_text,
-                        channel=channel,
-                        sender_kind="human",
-                    )
-                    if s.get("one_shot"):
-                        schedules.delete(s["id"])
-                    else:
-                        schedules.mark_run(s["id"])
+                _dispatch_due_schedules()
             except Exception:
                 log.exception("schedule runner error")
 
     threading.Thread(target=_schedule_runner, daemon=True).start()
+
+
+def _expire_crashed_agents(now: float) -> set[str]:
+    """Remove crashed registrations only if their identity and lease are still stale."""
+    import mcp_bridge
+
+    expired = set()
+    cutoff = now - registry.HEARTBEAT_TIMEOUT
+    for name, instance in registry.get_all().items():
+        with mcp_bridge._presence_lock:
+            last_presence = mcp_bridge._presence.get(name, 0)
+        if not 0 < last_presence < cutoff:
+            continue
+        if not registry.deregister(name, reclaimable=True, identity_id=instance["identity_id"],
+                                   last_seen_before=cutoff):
+            continue
+        if registry.is_registered(name):
+            continue
+        log.info("Crash timeout: deregistering %s (no heartbeat for %ss)",
+                 name, registry.HEARTBEAT_TIMEOUT)
+        mcp_bridge.purge_identity(name)
+        registry.clean_renames_for(name)
+        store.add(name, f"{name} disconnected (timeout)", msg_type="leave",
+                  channel=_agent_last_channel.get(name, _last_active_channel))
+        expired.add(name)
+    return expired
 
 
 # --- Store → WebSocket bridge ---
@@ -801,6 +782,38 @@ def _on_log_status():
 
 async def _broadcast_log_status():
     await _broadcast(json.dumps({"type": "log_status", "data": store.log_status()}))
+
+
+def _dispatch_due_schedules() -> None:
+    if schedules is None:
+        return
+    for candidate in schedules.run_due():
+        schedule_id = candidate["id"]
+        try:
+            with schedules.dispatch_due(schedule_id) as schedule:
+                if schedule is None:
+                    continue
+                sender = schedule.get("created_by", "user")
+                mentions = " ".join(f"@{target}" for target in schedule["targets"] if target)
+                channel = schedule.get("channel", "general")
+                _post_scheduled_message(schedule, sender, f"{mentions} {schedule['prompt']}", channel)
+            if schedule.get("one_shot"):
+                schedules.delete(schedule_id)
+            else:
+                schedules.mark_run(schedule_id)
+        except Exception:
+            log.exception("Could not dispatch schedule %s", schedule_id)
+
+
+def _post_scheduled_message(schedule: dict, sender: str, text: str, channel: str) -> None:
+    if schedule.get("one_shot"):
+        delivery_uid = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentchattr:one-shot:{schedule['id']}:{schedule.get('created_at')}",
+        ))
+        store.add(sender, text, channel=channel, sender_kind="human", uid=delivery_uid, once=True)
+    else:
+        store.add(sender, text, channel=channel, sender_kind="human")
 
 
 def _on_store_message(msg: dict):
@@ -1375,12 +1388,12 @@ async def broadcast_agents():
 def _on_registry_change():
     """Called from registry (any thread) when instances register/deregister/claim/rename."""
     # Update router with current agent names (base names + registered instances)
-    if router and registry:
-        base_names = list(registry.get_bases().keys())
-        # Only include active instances in routing (pending ones are inert)
-        instance_names = registry.get_active_names()
-        all_names = list(set(base_names + instance_names))
-        router.update_agents(all_names)
+    with _routing_refresh_lock:
+        if router and registry:
+            base_names = list(registry.get_bases())
+            # Only include active instances in routing (pending ones are inert).
+            instance_names = registry.get_active_names()
+            router.update_agents(base_names + instance_names)
     # Broadcast to WebSocket clients
     if _event_loop:
         asyncio.run_coroutine_threadsafe(broadcast_agents(), _event_loop)
@@ -1389,20 +1402,7 @@ def _on_registry_change():
 
 # --- WebSocket ---
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    # --- Security: validate session token on WebSocket connect ---
-    token = websocket.query_params.get("token", "")
-    if token != session_token or not is_local_client(websocket.client.host if websocket.client else ""):
-        # Must accept before closing so the browser receives the close frame.
-        # Code 4003 triggers an auto-reload in the client to pick up the new token.
-        await websocket.accept()
-        await websocket.close(code=4003, reason="forbidden: invalid session token")
-        return
-
-    await websocket.accept()
-    ws_clients.add(websocket)
-
+async def _initialize_websocket(websocket: WebSocket):
     await websocket.send_text(json.dumps({"type": "log_status", "data": store.log_status()}))
 
     # Send settings
@@ -1477,7 +1477,22 @@ async def websocket_endpoint(websocket: WebSocket):
     # Send status
     await broadcast_status()
 
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    # --- Security: validate session token on WebSocket connect ---
+    token = websocket.query_params.get("token", "")
+    if token != session_token or not is_local_client(websocket.client.host if websocket.client else ""):
+        # Must accept before closing so the browser receives the close frame.
+        # Code 4003 triggers an auto-reload in the client to pick up the new token.
+        await websocket.accept()
+        await websocket.close(code=4003, reason="forbidden: invalid session token")
+        return
+
+    await websocket.accept()
+    ws_clients.add(websocket)
     try:
+        await _initialize_websocket(websocket)
         while True:
             raw = await websocket.receive_text()
             event = json.loads(raw)
@@ -1846,17 +1861,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 await broadcast_settings()
 
     except WebSocketDisconnect:
-        ws_clients.discard(websocket)
+        pass
     except Exception:
-        ws_clients.discard(websocket)
         log.exception("WebSocket error")
+    finally:
+        ws_clients.discard(websocket)
 
 
 # --- REST endpoints ---
 
-IMAGE_UPLOAD_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'}
 ALLOWED_UPLOAD_EXTS = IMAGE_UPLOAD_EXTS  # backwards-compatible image policy
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB default
+MAX_UPLOAD_BYTES = DEFAULT_IMAGE_LIMIT_MB * 1024 * 1024
 
 
 @app.post("/api/upload")
@@ -1873,9 +1888,11 @@ async def upload_image(file: UploadFile = File(...), display_name: str | None = 
     if not is_image and "*" not in allowed_files and ext not in allowed_files:
         return JSONResponse({"error": f"unsupported file type: {ext or '(no extension)'}"}, status_code=400)
 
-    policy = config.get("images", {}) if is_image else file_cfg
-    max_mb = policy.get("max_size_mb", 10 if is_image else 25)
-    max_bytes = int(max_mb * 1024 * 1024)
+    if is_image:
+        max_mb, max_bytes = image_upload_limit(config)
+    else:
+        max_mb = file_cfg.get("max_size_mb", 25)
+        max_bytes = int(max_mb * 1024 * 1024)
     # Keep storage URLs simple even for names with unusual suffixes (e.g. .c++).
     storage_ext = ext if not ext or _re.fullmatch(r"\.[a-z0-9_-]{1,32}", ext) else ".bin"
     filename = f"{uuid.uuid4().hex}{storage_ext}"
@@ -2009,6 +2026,14 @@ async def get_status():
     return status
 
 
+@app.get("/api/launcher/registrations")
+async def get_launcher_registrations():
+    """Return configured agent types with active registrations on this server."""
+    return {"registered_bases": sorted({
+        inst["base"] for inst in registry.get_all().values() if inst["state"] == "active"
+    })}
+
+
 @app.get("/api/browser-clients")
 async def get_browser_clients():
     """Number of open chat pages (WebSocket clients); lets launchers avoid opening a duplicate tab."""
@@ -2060,7 +2085,10 @@ async def create_schedule(request: Request):
             return JSONResponse(
                 {"error": "send_at must be an epoch timestamp"}, status_code=400
             )
-    interval_sec, daily_at = parse_schedule_spec(spec)
+    try:
+        interval_sec, daily_at = parse_schedule_spec(spec)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     if interval_sec is None and explicit_send_at is None:
         return JSONResponse({"error": f"Invalid schedule spec: {spec}"}, status_code=400)
     # For one-shot, compute exact send_at timestamp from date + daily_at time
@@ -2519,7 +2547,13 @@ async def set_agent_role(agent_name: str, request: Request):
     except Exception:
         return JSONResponse({"error": "invalid json"}, status_code=400)
     role = body.get("role", "").strip()
-    mcp_bridge.set_role(agent_name, role)
+    try:
+        mcp_bridge.set_role(agent_name, role)
+    except OSError:
+        log.exception("Failed to save role for %s", agent_name)
+        # The browser updates the role optimistically; restore the saved value.
+        await broadcast_status()
+        return JSONResponse({"error": "Could not save agent role"}, status_code=500)
     await broadcast_status()
     return JSONResponse({"ok": True, "role": role})
 
@@ -2602,7 +2636,7 @@ async def register_agent(request: Request):
     for expired_name in result.pop("_expired", []):
         mcp_bridge.purge_identity(expired_name)
     with mcp_bridge._presence_lock:
-        mcp_bridge._presence[result["name"]] = __import__("time").time()
+        mcp_bridge._presence[result["name"]] = time.monotonic()
         if body.get("activity_known") is False:
             mcp_bridge._activity_known[result["name"]] = False
         else:
@@ -2721,8 +2755,7 @@ async def heartbeat(agent_name: str, request: Request):
         return JSONResponse({"error": "authenticated agent session required"}, status_code=403)
 
     current_name = auth_inst["name"] if auth_inst else agent_name
-    with mcp_bridge._presence_lock:
-        mcp_bridge._presence[current_name] = __import__("time").time()
+    mcp_bridge._touch_presence(current_name)
     # Optional activity report from wrapper's terminal monitor
     _activity_changed = False
     try:
@@ -2747,6 +2780,8 @@ async def heartbeat(agent_name: str, request: Request):
     # Immediately broadcast on activity state change (don't wait for background checker)
     if _activity_changed:
         await broadcast_status()
+    if auth_inst and session_engine:
+        session_engine.retry_pending_wakes(current_name)
     # Return canonical name so wrapper can track renames
     resp = {"ok": True, "name": current_name}
     if auth_inst:
@@ -3141,7 +3176,14 @@ async def serve_upload(filename: str):
     if not filepath.is_relative_to(upload_dir.resolve()):
         return JSONResponse({"error": "invalid path"}, status_code=400)
     if filepath.is_file():
-        if filepath.suffix.lower() in IMAGE_UPLOAD_EXTS:
+        extension = filepath.suffix.lower()
+        if extension == ".svg":
+            # A direct navigation opens SVG as a document rather than an image.
+            return FileResponse(filepath, media_type="image/svg+xml", headers={
+                "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+                "X-Content-Type-Options": "nosniff",
+            })
+        if extension in IMAGE_UPLOAD_EXTS:
             return FileResponse(filepath)
         # Documents are downloads, never executable same-origin pages.
         return FileResponse(filepath, media_type="application/octet-stream",

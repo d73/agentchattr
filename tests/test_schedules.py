@@ -6,6 +6,7 @@ import time
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -17,6 +18,163 @@ from schedules import ScheduleStore
 def _store():
     tmp = tempfile.mkdtemp()
     return ScheduleStore(str(Path(tmp) / "schedules.json"))
+
+
+class ScheduleDispatchTests(unittest.TestCase):
+    def test_incomplete_legacy_schedules_are_neither_pending_work_nor_due(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "schedules.json"
+            path.write_text(json.dumps([
+                {"id": "blank-prompt", "active": True, "prompt": "", "targets": ["codex"], "next_run": 100},
+                {"id": "blank-target", "active": True, "prompt": "ping", "targets": [""], "next_run": 100},
+            ]), encoding="utf-8")
+            schedules = ScheduleStore(str(path))
+
+            with patch("schedules.time.time", return_value=200):
+                self.assertFalse(schedules.has_active())
+                self.assertEqual(schedules.run_due(), [])
+                with schedules.dispatch_due("blank-target") as item:
+                    self.assertIsNone(item)
+            self.assertEqual(len(schedules.list_all()), 2)
+
+    def test_failed_one_shot_does_not_block_other_due_tasks(self):
+        import app
+        from store import MessageStore, atomic_write_text
+
+        with tempfile.TemporaryDirectory() as folder:
+            schedules = ScheduleStore(str(Path(folder) / "schedules.json"))
+            message_path = Path(folder) / "messages.jsonl"
+            messages = MessageStore(str(message_path))
+            with patch("schedules.time.time", return_value=100):
+                failed = schedules.create("first", ["codex"], one_shot=True, send_at=200)
+                ready = schedules.create("second", ["codex"], one_shot=True, send_at=200)
+
+            def fail_first_write(path, text):
+                if "@codex first" in text:
+                    raise OSError("message log temporarily unavailable")
+                atomic_write_text(path, text)
+
+            with (
+                patch("schedules.time.time", return_value=200),
+                patch.object(app, "schedules", schedules),
+                patch.object(app, "store", messages),
+                patch("store.atomic_write_text", side_effect=fail_first_write),
+            ):
+                with self.assertLogs(app.log, "ERROR") as logs:
+                    app._dispatch_due_schedules()
+
+            self.assertIn(failed["id"], logs.output[0])
+            persisted = MessageStore(str(message_path))
+            self.assertEqual([m["text"] for m in persisted.get_recent()], ["@codex second"])
+            self.assertIsNotNone(schedules.get(failed["id"]))
+            self.assertIsNone(schedules.get(ready["id"]))
+
+    def test_dispatch_skips_tasks_deleted_or_paused_after_poll(self):
+        import app
+
+        with tempfile.TemporaryDirectory() as folder:
+            schedules = ScheduleStore(str(Path(folder) / "schedules.json"))
+            with patch("schedules.time.time", return_value=100):
+                ready = schedules.create("ready", ["codex"], one_shot=True, send_at=200)
+                deleted = schedules.create("deleted", ["codex"], one_shot=True, send_at=200)
+                paused = schedules.create("paused", ["codex"], one_shot=True, send_at=200)
+
+            poll = schedules.run_due
+
+            def cancel_after_poll():
+                due = poll()
+                self.assertEqual(len(due), 3)
+                self.assertIsNotNone(schedules.delete(deleted["id"]))
+                self.assertFalse(schedules.toggle(paused["id"])["active"])
+                return due
+
+            with (
+                patch("schedules.time.time", return_value=200),
+                patch.object(schedules, "run_due", side_effect=cancel_after_poll),
+                patch.object(app, "schedules", schedules),
+                patch.object(app, "_post_scheduled_message") as post,
+            ):
+                app._dispatch_due_schedules()
+
+            post.assert_called_once_with(ready, "user", "@codex ready", "general")
+            self.assertIsNone(schedules.get(ready["id"]))
+            self.assertFalse(schedules.get(paused["id"])["active"])
+
+
+class OneShotDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        import app
+        from store import MessageStore
+
+        self.app = app
+        folder = self.enterContext(tempfile.TemporaryDirectory())
+        self.schedule_path = Path(folder) / "schedules.json"
+        self.message_path = Path(folder) / "messages.jsonl"
+        self.schedules = ScheduleStore(str(self.schedule_path))
+        self.messages = MessageStore(str(self.message_path))
+        self.delivered = Mock()
+        self.messages.on_message(self.delivered)
+        self.enterContext(patch.object(app, "store", self.messages))
+        with patch("schedules.time.time", return_value=100):
+            self.schedule = self.schedules.create("ping", ["codex"], one_shot=True, send_at=200)
+
+    def test_one_shot_does_not_repost_after_cleanup_write_fails(self):
+        self.app._post_scheduled_message(self.schedule, "user", "@codex ping", "general")
+        with patch("schedules.atomic_write_text", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                self.schedules.delete(self.schedule["id"])
+        self.assertIsNotNone(self.schedules.get(self.schedule["id"]))
+
+        from store import MessageStore
+
+        restarted_schedules = ScheduleStore(str(self.schedule_path))
+        restarted_messages = MessageStore(str(self.message_path))
+        restarted_messages.on_message(self.delivered)
+        with patch("schedules.time.time", return_value=201):
+            pending, = restarted_schedules.run_due()
+            with patch.object(self.app, "store", restarted_messages):
+                self.app._post_scheduled_message(pending, "user", "@codex ping", "general")
+            restarted_schedules.delete(pending["id"])
+
+        self.assertEqual(len(restarted_messages.get_recent()), 1)
+        self.delivered.assert_called_once()
+        self.assertEqual(restarted_schedules.list_all(), [])
+
+    def test_scheduled_mentions_route_to_the_target(self):
+        from router import Router
+
+        agents = Mock()
+        agents.trigger = AsyncMock()
+        self.messages.on_message(lambda msg: asyncio.run(self.app._handle_new_message(msg)))
+        with (
+            patch.object(self.app, "router", Router(["codex", "claude"], default_mention="none")),
+            patch.object(self.app, "registry", None),
+            patch.object(self.app, "agents", agents),
+            patch.object(self.app, "session_engine", None),
+            patch.object(self.app, "_last_active_channel", "general"),
+            patch.object(self.app, "broadcast", AsyncMock()),
+            patch.object(self.app, "_unarchive_for_activity", return_value=False),
+            patch("mcp_bridge.is_online", return_value=True),
+        ):
+            for once in (True, False):
+                with self.subTest(one_shot=once):
+                    agents.trigger.reset_mock()
+                    schedule = {**self.schedule, "one_shot": once}
+                    self.app._post_scheduled_message(schedule, "user", "@codex ping", "ops")
+                    agents.trigger.assert_awaited_once_with(
+                        "codex", message="user: @codex ping", channel="ops", prompt="",
+                    )
+
+    def test_one_shot_is_only_delivered_after_message_is_persisted(self):
+        with patch("store.atomic_write_text", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                self.app._post_scheduled_message(self.schedule, "user", "@codex ping", "general")
+        self.delivered.assert_not_called()
+        self.assertEqual(self.messages.get_recent(), [])
+
+        self.app._post_scheduled_message(self.schedule, "user", "@codex ping", "general")
+        self.delivered.assert_called_once()
+        self.assertEqual(self.messages.get_recent()[0]["id"], 0)
 
 
 class OneShotIsNotADailyRuleTests(unittest.TestCase):
@@ -252,6 +410,22 @@ class RelativeSendAtTests(unittest.TestCase):
         payload = {"prompt": "ping", "targets": ["claude"]}
         payload.update(body)
         return asyncio.run(self.app.create_schedule(_FakeRequest(payload)))
+
+    def test_empty_normalized_prompt_or_targets_are_rejected(self):
+        for extra in ({"prompt": "   "}, {"targets": [" ", "@"]}):
+            with self.subTest(extra=extra):
+                response = self._post(spec="every 2h", **extra)
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.app.schedules.list_all(), [])
+
+    def test_invalid_daily_clock_is_rejected_without_saving(self):
+        for clock in ("24:00", "12:60", "24:60"):
+            for extra in ({}, {"one_shot": True, "send_at": time.time() + 3600}):
+                with self.subTest(clock=clock, extra=extra):
+                    response = self._post(spec=f"daily at {clock}", **extra)
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn("00:00 and 23:59", json.loads(response.body)["error"])
+        self.assertEqual(self.app.schedules.list_all(), [])
 
     def test_an_explicit_send_at_epoch_is_honoured(self):
         target = time.time() + 9000

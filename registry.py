@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
 
-from atomic_io import atomic_write_text
+from atomic_io import atomic_write_text, repair_corrupt_json
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class Instance:
     epoch: int = 1
     state: str = "pending"   # "pending" | "active"
     registered_at: float = field(default_factory=time.time)
-    last_seen: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.monotonic)
 
 
 class RuntimeRegistry:
@@ -148,25 +148,36 @@ class RuntimeRegistry:
 
     def _load_instances(self):
         p = self._instances_path()
-        if not p.exists():
-            return
         try:
             data = json.loads(p.read_text("utf-8"))
-        except Exception:
+        except FileNotFoundError:
+            return
+        except ValueError as exc:
+            repair_corrupt_json(p, type(exc).__name__, {})
+            return
+        if not isinstance(data, dict):
+            repair_corrupt_json(p, "expected a registry object", {})
             return
         # Slot-based profiles were added when automatic slot 1 stopped using "-1".
         self._legacy_slot_names = "profiles" not in data
         saved_profiles = data.get("profiles", {})
+        damaged = False
         if not isinstance(saved_profiles, dict):
+            damaged = True
             saved_profiles = {}
         for base, profiles in saved_profiles.items():
             if not isinstance(profiles, dict):
+                damaged = True
                 continue
-            self._profiles[base] = {
+            valid_profiles = {
                 slot: profile for slot, profile in profiles.items()
                 if isinstance(profile, dict)
                 and all(isinstance(profile.get(k), str) for k in ("name", "label", "color"))
             }
+            self._profiles[base] = valid_profiles
+            damaged |= len(valid_profiles) != len(profiles)
+        if "profiles" in data:
+            data["profiles"] = self._profiles
         # On startup nobody is proven alive: a persisted "active" instance may be a
         # dead pre-restart wrapper. Load everything as reclaimable — a wrapper that is
         # genuinely still alive reactivates its token on its next call (resolve_token),
@@ -174,11 +185,25 @@ class RuntimeRegistry:
         # active would make the empty post-restart presence map immortalize the ghost
         # (the crash-timeout only fires for names with last_seen > 0).
         for section in ("instances", "reclaimable"):
-            for n, d in data.get(section, {}).items():
+            entries = data.get(section, {})
+            valid_entries = data[section] = {}
+            if not isinstance(entries, dict):
+                damaged = True
+                continue
+            for n, d in entries.items():
+                if not isinstance(d, dict) or not all(
+                    isinstance(d.get(key), str) for key in ("name", "base", "label", "color", "token")
+                ):
+                    damaged = True
+                    continue
                 try:
                     self._reclaimable[n] = _inst_from_dict(d)
-                except Exception:
-                    pass
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    damaged = True
+                else:
+                    valid_entries[n] = d
+        if damaged:
+            repair_corrupt_json(p, "invalid registry records", data)
 
     def _evict_reclaimable_collisions_locked(self):
         """Drop reclaimables that collide with any live instance, by name or (base, slot).
@@ -209,7 +234,7 @@ class RuntimeRegistry:
             if base not in self._bases:
                 return None
 
-            now = time.time()
+            now = time.monotonic()
             expired = [old_name for old_name, old in self._instances.items()
                        if now - old.last_seen > self.HEARTBEAT_TIMEOUT]
             live = {n: i for n, i in self._instances.items() if n not in expired}
@@ -259,6 +284,11 @@ class RuntimeRegistry:
                 self._remember_profile_locked(old)
                 self._reclaimable[old_name] = old
 
+            if requested_name is not None:
+                saved = self._profiles.get(base, {}).get(str(slot))
+                if saved and saved["name"] == requested_name:
+                    profile = saved
+
             default_label = base_cfg.get("label", base.capitalize())
             if profile:
                 lbl = label or profile["label"]
@@ -277,7 +307,8 @@ class RuntimeRegistry:
             # recovery/reclaim still uses chat_claim, but normal startup should
             # not block on a manual confirmation step.
             state = "active"
-            inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state)
+            inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state,
+                            last_seen=now)
             self._instances[name] = inst
             # Fresh registration supersedes reclaimable
             # identities sharing those names/(base, slot) coordinates — including custom
@@ -296,7 +327,8 @@ class RuntimeRegistry:
         self._save_renames()
         return result
 
-    def deregister(self, name: str, reclaimable: bool = False) -> dict | None:
+    def deregister(self, name: str, reclaimable: bool = False, *,
+                   identity_id: str | None = None, last_seen_before: float | None = None) -> dict | None:
         """Remove a session, keeping its display profile available for immediate reuse.
 
         `reclaimable` decides whether the token survives:
@@ -309,12 +341,15 @@ class RuntimeRegistry:
             silently reviving a dead session — reclaim is only wanted for sleep,
             not for closing the server or an agent.
 
-        Returns {'ok': True}, or None if the instance was not found.
+        Optional identity and last-seen checks are evaluated with the removal
+        under the same lock as authenticated heartbeat updates.
         """
         with self._lock:
-            if name not in self._instances:
+            inst_removed = self._instances.get(name)
+            if (inst_removed is None
+                    or (identity_id is not None and inst_removed.identity_id != identity_id)
+                    or (last_seen_before is not None and inst_removed.last_seen >= last_seen_before)):
                 return None
-            inst_removed = self._instances[name]
             self._remember_profile_locked(inst_removed)
             del self._instances[name]
             if reclaimable:
@@ -350,7 +385,7 @@ class RuntimeRegistry:
 
             if reclaim:
                 del self._reclaimable[sender]
-                inst.last_seen = time.time()
+                inst.last_seen = time.monotonic()
                 self._instances[sender] = inst
             if target_name is not None:
                 if target_name != inst.name:
@@ -553,7 +588,7 @@ class RuntimeRegistry:
         with self._lock:
             for inst in self._instances.values():
                 if inst.token == token:
-                    inst.last_seen = time.time()
+                    inst.last_seen = time.monotonic()
                     return _inst_dict(inst)
             for name, inst in list(self._reclaimable.items()):
                 if inst.token != token or name in self._instances:
@@ -567,7 +602,7 @@ class RuntimeRegistry:
                     changed = True
                     continue
                 inst.state = "active"
-                inst.last_seen = time.time()
+                inst.last_seen = time.monotonic()
                 self._instances[name] = inst
                 del self._reclaimable[name]
                 result = _inst_dict(inst)

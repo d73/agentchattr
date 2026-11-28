@@ -1,12 +1,58 @@
 import sys
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from router import Router
+import app
+
+
+class RoutingRefreshTests(unittest.TestCase):
+    def test_older_registry_callback_cannot_overwrite_newer_mention_set(self):
+        router = Router(["codex", "c1"])
+        old_snapshot = threading.Event()
+        continue_old = threading.Event()
+        new_started = threading.Event()
+        new_finished = threading.Event()
+        registry = Mock()
+        registry.get_bases.return_value = {"codex": {}}
+
+        def active_names():
+            if threading.current_thread() is old_refresh:
+                old_snapshot.set()
+                continue_old.wait(5)
+                return []
+            return ["c2"]
+
+        def refresh_new():
+            new_started.set()
+            app._on_registry_change()
+            new_finished.set()
+
+        registry.get_active_names.side_effect = active_names
+        old_refresh = threading.Thread(target=app._on_registry_change)
+        new_refresh = threading.Thread(target=refresh_new)
+        with patch.multiple(app, registry=registry, router=router, _event_loop=None):
+            old_refresh.start()
+            try:
+                self.assertTrue(old_snapshot.wait(2))
+                new_refresh.start()
+                self.assertTrue(new_started.wait(2))
+                self.assertFalse(new_finished.wait(0.2))
+            finally:
+                continue_old.set()
+                old_refresh.join(5)
+                if new_refresh.ident is not None:
+                    new_refresh.join(5)
+
+        self.assertTrue(new_finished.is_set())
+        self.assertEqual(router.parse_mentions("@c2"), ["c2"])
+        self.assertEqual(router.parse_mentions("@c1"), [])
 
 
 class RouterMentionTests(unittest.TestCase):

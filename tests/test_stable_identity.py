@@ -65,9 +65,39 @@ class StableIdentityTests(unittest.TestCase):
         data = json.loads((Path(self.tmp.name) / "registry.json").read_text())
         self.assertEqual(set(data["profiles"]["codex"]["1"]), {"name", "label", "color"})
 
+    def test_explicit_relaunch_preserves_matching_saved_display_profile(self):
+        first = self.reg.register("codex", requested_name="builder")
+        self.reg.set_label("builder", "Team Builder")
+        self.reg.deregister("builder")
+        self.config["codex"]["color"] = "#abcdef"
+        restarted = self.restart()
+        restored = restarted.register("codex", requested_name="builder")
+        self.assertEqual(restored["slot"], first["slot"])
+        self.assertEqual(restored["label"], "Team Builder")
+        self.assertEqual(restored["color"], first["color"])
+        restarted.deregister("builder")
+        overridden = restarted.register("codex", "Explicit Label", requested_name="builder")
+        self.assertEqual(overridden["label"], "Explicit Label")
+
+    def test_explicit_relaunch_preserves_profile_when_expiring_previous_instance(self):
+        first = self.reg.register("codex", requested_name="builder")
+        self.reg.set_label("builder", "Team Builder")
+        since = self.reg._instances[first["name"]].last_seen
+        with patch("registry.time.monotonic", return_value=since + 16):
+            restored = self.reg.register("codex", requested_name="builder")
+        self.assertEqual(restored["label"], "Team Builder")
+        self.assertEqual(restored["_expired"], ["builder"])
+
+    def test_new_explicit_id_does_not_inherit_matching_slots_profile(self):
+        self.reg.register("codex", requested_name="builder")
+        self.reg.set_label("builder", "Team Builder")
+        self.reg.deregister("builder")
+        self.assertEqual(self.reg.register("codex", requested_name="reviewer")["label"], "reviewer")
+
     def test_stale_heartbeat_reuses_slot_before_background_sweep(self):
         first = self.reg.register("codex")
-        with patch("registry.time.time", return_value=first["registered_at"] + 16):
+        since = self.reg._instances[first["name"]].last_seen
+        with patch("registry.time.monotonic", return_value=since + 16):
             fresh = self.reg.register("codex")
         self.assertEqual(fresh["name"], "codex")
         self.assertEqual(fresh["_expired"], ["codex"])
@@ -75,12 +105,29 @@ class StableIdentityTests(unittest.TestCase):
 
     def test_authenticated_activity_keeps_live_slot(self):
         first = self.reg.register("codex")
-        with patch("registry.time.time", return_value=first["registered_at"] + 14):
+        since = self.reg._instances[first["name"]].last_seen
+        with patch("registry.time.monotonic", return_value=since + 14):
             self.reg.resolve_token(first["token"])
-        with patch("registry.time.time", return_value=first["registered_at"] + 20):
+        with patch("registry.time.monotonic", return_value=since + 20):
             second = self.reg.register("codex")
         self.assertEqual(second["name"], "codex-2")
         self.assertNotIn("_expired", second)
+
+    def test_wall_clock_changes_do_not_change_lease_expiry(self):
+        with patch("registry.time.monotonic", return_value=100):
+            first = self.reg.register("codex", requested_name="worker")
+        with (
+            patch("registry.time.time", return_value=first["registered_at"] + 120),
+            patch("registry.time.monotonic", return_value=101),
+            self.assertRaisesRegex(ValueError, "already in use"),
+        ):
+            self.reg.register("codex", requested_name="worker")
+        with (
+            patch("registry.time.time", return_value=first["registered_at"] - 120),
+            patch("registry.time.monotonic", return_value=116),
+        ):
+            fresh = self.reg.register("codex", requested_name="worker")
+        self.assertEqual(fresh["_expired"], ["worker"])
 
     def test_claim_exact_primary_does_not_claim_other_pending_instance(self):
         self.reg.register("codex")
@@ -204,7 +251,8 @@ class StableIdentityTests(unittest.TestCase):
 
     def test_requested_name_can_replace_expired_instance(self):
         first = self.reg.register("codex", requested_name="c2")
-        with patch("registry.time.time", return_value=first["registered_at"] + 16):
+        since = self.reg._instances[first["name"]].last_seen
+        with patch("registry.time.monotonic", return_value=since + 16):
             fresh = self.reg.register("codex", requested_name="c2")
         self.assertEqual(fresh["name"], "c2")
         self.assertIn("c2", fresh["_expired"])
@@ -215,7 +263,8 @@ class StableIdentityTests(unittest.TestCase):
     def test_expired_chat_id_can_be_reused_by_another_configured_type(self):
         self.reg.seed({"claude": {"label": "Claude"}})
         first = self.reg.register("codex", requested_name="worker")
-        with patch("registry.time.time", return_value=first["registered_at"] + 16):
+        since = self.reg._instances[first["name"]].last_seen
+        with patch("registry.time.monotonic", return_value=since + 16):
             fresh = self.reg.register("claude", requested_name="worker")
         self.assertEqual((fresh["name"], fresh["base"], fresh["slot"]), ("worker", "claude", 1))
         self.assertEqual(fresh["_expired"], ["worker"])
@@ -224,8 +273,9 @@ class StableIdentityTests(unittest.TestCase):
     def test_failed_name_validation_does_not_expire_other_instances(self):
         first = self.reg.register("codex", requested_name="c2")
         second = self.reg.register("codex", requested_name="builder")
-        with patch("registry.time.time", return_value=first["registered_at"] + 16):
-            self.reg._instances[second["name"]].last_seen = first["registered_at"] + 16
+        since = self.reg._instances[first["name"]].last_seen
+        with patch("registry.time.monotonic", return_value=since + 16):
+            self.reg._instances[second["name"]].last_seen = since + 16
             with self.assertRaises(ValueError):
                 self.reg.register("codex", requested_name="builder")
         self.assertIn("c2", self.reg._instances)

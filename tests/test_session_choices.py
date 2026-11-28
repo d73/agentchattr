@@ -142,6 +142,47 @@ class SessionChoiceTests(unittest.TestCase):
         assert restored.get(1)['state'] == 'waiting'
         assert restored.get(1)['choice_message_id'] is None
 
+    def test_failed_wake_persists_and_retries_on_heartbeat_after_restart(self):
+        sessions, messages, engine, trigger, timers = self.fixture
+        trigger.trigger_sync.side_effect = OSError("queue write failed")
+        messages.add("claude", "My turn is done.", sender_kind="agent")
+        with self.assertLogs("session_engine", level="ERROR"):
+            timers[-1]()
+
+        restored = SessionStore(str(self.tmp_path / "session_runs.json"))
+        pending = restored.get(1)
+        self.assertEqual((pending["state"], pending["current_turn"], pending["waiting_on"]),
+                         ("waiting", 1, "codex"))
+        self.assertTrue(pending["wake_pending"])
+
+        new_trigger = Mock()
+        engine = SessionEngine(restored, MessageStore(str(self.tmp_path / "messages.jsonl")),
+                               new_trigger, engine._registry)
+        engine._registry.is_registered.return_value = False
+        engine._registry.is_registered.side_effect = None
+        engine.resume_active_sessions()
+        new_trigger.trigger_sync.assert_not_called()
+
+        engine._registry.is_registered.return_value = True
+        request = Mock()
+        request.json.side_effect = ValueError("no activity report")
+        with (
+            patch.object(app, "session_engine", engine),
+            patch.object(app, "_extract_agent_token", return_value="test"),
+            patch.object(app, "_resolve_authenticated_agent",
+                         return_value={"name": "codex", "state": "active"}),
+        ):
+            self.assertEqual(asyncio.run(app.heartbeat("old-name", request))["name"], "codex")
+            asyncio.run(app.heartbeat("codex", request))
+        new_trigger.trigger_sync.assert_called_once()
+        self.assertEqual(new_trigger.trigger_sync.call_args.args, ("codex",))
+        self.assertEqual(new_trigger.trigger_sync.call_args.kwargs["channel"], "general")
+
+        engine._store = SessionStore(str(self.tmp_path / "session_runs.json"))
+        engine.resume_active_sessions()
+        self.assertFalse(engine._store.get(1).get("wake_pending"))
+        new_trigger.trigger_sync.assert_called_once()
+
     def test_end_session_cancels_queued_response(self):
         sessions, messages, engine, trigger, timers = self.fixture
         messages.add('claude', 'Done.', sender_kind='agent')
