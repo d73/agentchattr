@@ -1277,7 +1277,7 @@ function appendMessage(msg, options = {}) {
     const container = options.container || document.getElementById('messages');
 
     // Insert date divider if needed
-    maybeInsertDateDivider(container, msg);
+    if (!options.skipDateDivider) maybeInsertDateDivider(container, msg);
 
     const el = document.createElement('div');
     el.className = options.history ? 'message history-message' : 'message';
@@ -1290,6 +1290,8 @@ function appendMessage(msg, options = {}) {
     const appearance = senderAppearance(msg);
     const msgChannel = msg.channel || 'general';
     el.dataset.channel = msgChannel;
+    const workflow = msg.metadata?.orch_workflow;
+    if (workflow || msg.metadata?.orch_gate || msg.metadata?.job_reopen) el.dataset.orchReply = 'true';
     if (window.noteChannelActivity) window.noteChannelActivity(msgChannel, msg.timestamp);
 
     if (msg.type === 'join' || msg.type === 'leave') {
@@ -1422,6 +1424,7 @@ function appendMessage(msg, options = {}) {
         let choicesHtml = '';
         const meta = msg.metadata || {};
         const choicesList = meta.choices || [];
+        const canRequestReopen = workflow?.kind === 'closeout' && workflow.prompt_id === msg.id;
         if (msg.type === 'decision' && choicesList.length > 0) {
             if (meta.resolved) {
                 choicesHtml = `<div class="decision-choices"><div class="decision-resolved">You chose: <strong>${escapeHtml(meta.chosen || '')}</strong></div></div>`;
@@ -1437,6 +1440,7 @@ function appendMessage(msg, options = {}) {
                 ${replyHtml}
                 <div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(appearance.name)}</span>${rolePillHtml}<span class="msg-time">${escapeHtml(msg.time || '')}</span><span class="msg-num">#${msg.id}</span></div>
                 <div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}
+                ${canRequestReopen ? `<div class="orch-reopen-entry"><button type="button" class="side-panel-icon orch-reopen-btn" title="Request reopen" aria-label="Request reopen">${messageActionIcon('reopen')}</button></div>` : ''}
                 <div class="msg-actions bubble-actions" role="group" aria-label="Message actions">
                     <button type="button" class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message" aria-label="Copy message">${messageActionIcon('copy')}</button>
                     <button type="button" class="todo-hint" onclick="event.stopPropagation(); todoCycle(${msg.id});" title="${pinAction.label}" aria-label="${pinAction.label}">${messageActionIcon(pinAction.icon)}</button>
@@ -1460,6 +1464,11 @@ function appendMessage(msg, options = {}) {
                         resolveDecision(msg.id, choice);
                     }
                 });
+            });
+        }
+        if (canRequestReopen) {
+            el.querySelector('.orch-reopen-btn').addEventListener('click', event => {
+                showOrchReopenForm(el.querySelector('.chat-bubble'), workflow.job_uid, event.currentTarget);
             });
         }
 
@@ -2400,7 +2409,8 @@ function updateStatus(data) {
 
         pill.classList.remove('available', 'working', 'offline');
         const wasNeedsInput = pill.classList.contains('needs-input');
-        const needsInput = !!(info.needs_input && info.available);
+        const needsInput = pill.dataset.orchAttention === undefined
+            ? !!(info.needs_input && info.available) : pill.dataset.orchAttention === 'true';
         const unknown = info.available && info.activity_known === false;
         const unknownIcon = pill.querySelector('.status-unknown');
         if (unknownIcon) unknownIcon.hidden = !unknown;
@@ -3213,7 +3223,11 @@ function sendMessage() {
             return;
         }
     }
-    if (activeMentions.size > 0 && text && !skipMentions) {
+    if (replyingTo?.orch && replyingTo.channel !== activeChannel) {
+        document.getElementById('attachment-status').textContent = `Return to #${replyingTo.channel} to send this Job reply.`;
+        return;
+    }
+    if (activeMentions.size > 0 && text && !skipMentions && !replyingTo?.orch) {
         // A longer ID or a mention shown as code does not reach this agent.
         const visible = text.replace(/(`+)([\s\S]*?)\1/g, '');
         const mentioned = new Set(visible.toLowerCase().match(/@[\p{L}\p{N}_-]+/gu) || []);
@@ -3258,7 +3272,7 @@ function setupPaste() {
 
         // Route to job upload if job input is focused
         const jobInput = document.getElementById('jobs-conv-input-text');
-        const isJobFocused = jobInput && document.activeElement === jobInput;
+        const isJobFocused = jobInput && document.activeElement === jobInput && !window.activeJobUsesOrchHistory?.();
 
         const files = Array.from(items).filter(item => item.kind === 'file')
             .map(item => item.getAsFile()).filter(Boolean);
@@ -3305,6 +3319,7 @@ function setupDragDrop() {
         const target = document.elementFromPoint(e.clientX, e.clientY) || e.target;
         const inJob = target.closest('#jobs-panel') &&
             !document.getElementById('jobs-conversation-view').classList.contains('hidden');
+        if (inJob && window.activeJobUsesOrchHistory?.()) return;
         await uploadFiles(Array.from(files), Boolean(inJob));
     });
 }
@@ -3472,12 +3487,12 @@ function startReply(msgId, event) {
     if (!el) return;
     const sender = renderedSender(el);
     const text = el.dataset.rawText || el.querySelector('.msg-text')?.textContent || '';
-    replyingTo = { id: msgId, sender, text };
+    replyingTo = { id: msgId, sender, text, channel: el.dataset.channel, orch: el.dataset.orchReply === 'true' };
     renderReplyPreview();
 
     // Auto-activate mention chip for the replied-to sender, deactivate others
     const resolved = senderAppearance(sender).agent;
-    if (resolved && agentConfig[resolved].state !== 'pending') {
+    if (!replyingTo.orch && resolved && agentConfig[resolved].state !== 'pending') {
         for (const btn of document.querySelectorAll('.mention-toggle')) {
             const agent = btn.dataset.agent;
             if (agent === resolved) {
@@ -3518,7 +3533,7 @@ function cancelReply() {
     if (el) el.remove();
 }
 
-function scrollToMessage(msgId) {
+function scrollToMessage(msgId, { instant = false } = {}) {
     const el = document.querySelector(`.message[data-id="${msgId}"]`);
     if (!el) {
         if (typeof showToast === 'function') {
@@ -3526,9 +3541,109 @@ function scrollToMessage(msgId) {
         }
         return;
     }
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.scrollIntoView({ behavior: instant ? 'instant' : 'smooth', block: 'center' });
     el.classList.add('highlight');
     setTimeout(() => el.classList.remove('highlight'), 1500);
+}
+
+async function showOrchHistoryMessage(jobUid, messageId, fallbackChannel) {
+    if (!Number.isSafeInteger(messageId)) {
+        if (!fallbackChannel) throw new Error('The source conversation is unavailable.');
+        switchChannel(fallbackChannel);
+        if (matchMedia('(max-width: 700px)').matches) setSidePanelOpen('jobs', false);
+        document.getElementById('input').focus();
+        return;
+    }
+
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobUid)}/orch-history/${messageId}`, {
+        headers: { 'X-Session-Token': SESSION_TOKEN },
+    });
+    if (response.status === 404) throw new Error('This message is no longer available in the source conversation.');
+    if (!response.ok) throw new Error('Could not open this message. Try again.');
+    const { channel, message, messages } = await response.json();
+    if (!channel || message?.id !== messageId || message.channel !== channel) {
+        throw new Error('This message is no longer available in the source conversation.');
+    }
+
+    const timeline = document.getElementById('messages');
+    const context = new Map((messages || []).map(row => [row.id, row]));
+    context.set(messageId, message);
+    for (const row of [...context.values()].sort((a, b) => a.id - b.id)) {
+        if (row.channel !== channel || !Number.isSafeInteger(row.id)) continue;
+        const existing = document.getElementById(`message-${row.id}`);
+        if (existing) {
+            existing.dataset.channel = channel;
+            existing.style.display = channel === activeChannel ? '' : 'none';
+            continue;
+        }
+        const next = [...timeline.querySelectorAll('.message[data-id]')]
+            .find(el => el.dataset.channel === channel && Number(el.dataset.id) > row.id);
+        const fragment = document.createDocumentFragment();
+        appendMessage(row, { history: true, container: fragment, skipDateDivider: true });
+        timeline.insertBefore(fragment, next || null);
+    }
+
+    const target = document.getElementById(`message-${messageId}`);
+    if (!target) throw new Error('Could not open this message. Try again.');
+    switchChannel(channel);
+    if (matchMedia('(max-width: 700px)').matches) setSidePanelOpen('jobs', false);
+    autoScroll = false;
+    const focusTarget = target.querySelector('.chat-bubble') || target;
+    focusTarget.tabIndex = -1;
+    focusTarget.focus({ preventScroll: true });
+    scrollToMessage(messageId, { instant: matchMedia('(prefers-reduced-motion: reduce)').matches });
+    updateScrollAnchor();
+}
+window.showOrchHistoryMessage = showOrchHistoryMessage;
+
+function showOrchReopenForm(bubble, jobUid, trigger) {
+    const existing = bubble.querySelector('.orch-reopen-form');
+    if (existing) {
+        existing.querySelector('textarea').focus();
+        return;
+    }
+
+    const form = document.createElement('form');
+    form.className = 'orch-reopen-form';
+    form.innerHTML = `<label>Reason to reopen<textarea required rows="2"></textarea></label>
+        <div class="orch-reopen-actions">
+            <button type="submit" class="decision-choice">Request reopen</button>
+            <button type="button" class="decision-choice">Cancel</button>
+        </div>
+        <div role="status"></div>`;
+    const reason = form.querySelector('textarea');
+    const submit = form.querySelector('[type="submit"]');
+    const feedback = form.querySelector('[role="status"]');
+    form.querySelector('[type="button"]').onclick = () => {
+        form.remove();
+        trigger.focus();
+    };
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (submit.disabled || !reason.value.trim()) return;
+        submit.disabled = true;
+        feedback.textContent = 'Sending reopen request…';
+        try {
+            const response = await fetch('/api/jobs', { headers: { 'X-Session-Token': SESSION_TOKEN } });
+            await window.requireOk(response);
+            const job = (await response.json()).find(row => row.uid === jobUid);
+            if (job?.lifecycle?.stage_id !== 'orch.done') throw new Error('This Job can no longer be reopened from this message.');
+            const request = await fetch(`/api/jobs/${job.id}/reopen-requests`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
+                body: JSON.stringify({ job_uid: job.uid, expected_version: job.lifecycle.version, reason: reason.value.trim() }),
+            });
+            await window.requireOk(request);
+            form.remove();
+            trigger.focus();
+            showToast('Reopen request posted in this conversation.');
+        } catch (error) {
+            feedback.textContent = error.message;
+            submit.disabled = false;
+        }
+    });
+    bubble.appendChild(form);
+    reason.focus();
 }
 
 // --- Todos ---
@@ -3536,6 +3651,7 @@ function scrollToMessage(msgId) {
 const MESSAGE_ACTION_ICONS = {
     copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>',
     reply: '<path d="M9 4 4 9l5 5M4 9h8c4 0 6 2 6 6"/>',
+    reopen: '<path d="M3 11a9 9 0 1 1 3 7M3 5v6h6"/>',
     pin: '<path d="M8 3h8l-1 5 2 3v1H7v-1l2-3zM12 12v7"/>',
     done: '<path d="M8 3h8l-1 5 2 3v1H7v-1l2-3zM12 12v7M16 16l2 2 4-5"/>',
     unpin: '<path d="M8 3h8l-1 5 2 3v1H7v-1l2-3zM12 12v7M4 3l17 17"/>',
@@ -4851,7 +4967,13 @@ async function resolveBoundJobDecision(msg, choice, button) {
             container.appendChild(recorded);
             buttons.forEach(item => { item.disabled = false; });
         } else {
+            const keepFocus = buttons.includes(document.activeElement);
             container.replaceChildren(recorded);
+            if (keepFocus) {
+                recorded.tabIndex = -1;
+                recorded.focus();
+            }
+            window.dispatchEvent?.(new CustomEvent('orch-action-answered', { detail: { messageId: msg.id } }));
         }
     } catch (error) {
         const feedback = document.createElement('div');

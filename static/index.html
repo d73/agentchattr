@@ -6,7 +6,7 @@
     <title>agentchattr</title>
     <link rel="stylesheet" href="/static/style.css?v=269">
     <link rel="stylesheet" href="/static/sessions.css?v=223">
-    <link rel="stylesheet" href="/static/jobs.css?v=232">
+    <link rel="stylesheet" href="/static/jobs.css?v=233">
     <link rel="icon" href="/static/favicon.ico">
 </head>
 <body>
@@ -137,7 +137,8 @@
                 <div id="jobs-conversation-view" class="hidden">
                     <div class="side-panel-header">
                         <button type="button" class="side-panel-icon" onclick="jobsBack()" title="Back to Jobs" aria-label="Back to Jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12H4m0 0 6-6m-6 6 6 6"/></svg></button>
-                        <span class="side-panel-title jobs-conv-title" id="jobs-conv-title"></span>
+                        <span class="side-panel-title jobs-conv-title" id="jobs-conv-title" tabindex="-1"></span>
+                        <span id="job-history-badge" class="job-history-badge" hidden>Read-only history</span>
                         <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('jobs')" title="Close Jobs" aria-label="Close Jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                     </div>
                     <div class="jobs-conv-header">
@@ -148,6 +149,24 @@
                         </div>
                     </div>
                     <div class="jobs-conv-messages" id="jobs-conv-messages"></div>
+                    <section id="orch-job-history" class="orch-job-history" aria-label="Job history" hidden>
+                        <div class="job-history-overview">
+                            <h3 id="job-history-title"></h3>
+                            <span id="job-history-channel"></span>
+                            <span id="job-history-stage" class="job-stage-badge"></span>
+                        </div>
+                        <div id="job-history-brief"></div>
+                        <h3 class="job-history-heading">History summary</h3>
+                        <ol id="job-history-timeline" class="job-history-timeline" aria-label="Job milestones"></ol>
+                        <p id="job-history-status" class="job-history-status" role="status"></p>
+                        <details id="job-history-audit" class="job-history-audit" hidden>
+                            <summary>Job messages and events</summary>
+                            <div id="job-history-audit-messages"></div>
+                        </details>
+                    </section>
+                    <footer id="job-history-footer" class="job-history-footer" hidden>
+                        <button type="button" id="job-history-jump" class="job-history-jump" hidden></button>
+                    </footer>
                     <div class="jobs-conv-input">
                         <div id="job-mention-menu" class="mention-menu hidden" role="listbox" aria-label="Agents" tabindex="-1"></div>
                         <div id="job-attachments" class="job-attachments"></div>
@@ -471,11 +490,11 @@
     <script src="/static/sessions.js?v=224"></script>
     <script src="/static/attachments.js?v=5"></script>
     <script src="/static/action-errors.js?v=1"></script>
-    <script src="/static/jobs.js?v=236"></script>
+    <script src="/static/jobs.js?v=237"></script>
     <script src="/static/channels.js?v=228"></script>
     <script src="/static/rules-panel.js?v=226"></script>
     <script src="/static/mention-alerts.js?v=1"></script>
     <script src="/static/channel-attention.js?v=1"></script>
-    <script src="/static/chat.js?v=296"></script>
+    <script src="/static/chat.js?v=297"></script>
 </body>
 </html>

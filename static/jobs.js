@@ -40,6 +40,7 @@ let _pendingJobReflowTimer = null;
 const _expandedGroups = new Set(['open']); // track which collapsible groups are open across re-renders
 const jobPresentations = new Map();
 let jobGroupFilter = null;
+let orchHistoryRequest = 0;
 const jobPipelineLabels = new Map([
     ['scoping', 'Scoping'],
     ['awaiting_approval', 'Awaiting approval'],
@@ -101,6 +102,26 @@ function jobPresentation(job) {
     }
     return { filter: manualJobFilters[job.status], workflow: false, attention: false };
 }
+
+function isOrchManagedJob(job) {
+    return job?.lifecycle?.managed_by === 'orch';
+}
+
+function jobUsesOrchHistory(job) {
+    return isOrchManagedJob(job) && job.orch_workflow_active === true;
+}
+
+function activeJobUsesOrchHistory() {
+    return jobUsesOrchHistory(jobsData.find(job => job.id === activeJobId));
+}
+
+const jobHistoryJumpIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 18 18 6M9 6h9v9"/></svg>';
+const jobHistoryLabels = new Map([
+    ['intake', 'Intake'], ['revise', 'Revision request'], ['reply', 'Reply'],
+    ['brief', 'Brief'], ['spec', 'Spec'], ['mockup', 'Mockup'],
+    ['staffing', 'Staffing'], ['blocker', 'Blocker'], ['cancel', 'Cancellation'],
+    ['reopen', 'Reopen request'], ['closeout', 'Outcome'],
+]);
 
 // ---------------------------------------------------------------------------
 // Message Renderers
@@ -727,9 +748,16 @@ function renderJobsList() {
             const card = document.createElement('div');
             card.className = 'job-card';
             const { attention, workflow } = presentations.get(a.id);
-            const editableOrder = !group.readOnly && (!pipelineMode || !workflow);
+            const editableOrder = !group.readOnly && !isOrchManagedJob(a) && (!pipelineMode || !workflow);
             card.dataset.id = a.id;
             card.onclick = () => openJobConversation(a.id);
+            card.tabIndex = 0;
+            card.setAttribute('role', 'button');
+            card.addEventListener('keydown', event => {
+                if (event.target !== card || !['Enter', ' '].includes(event.key)) return;
+                event.preventDefault();
+                card.click();
+            });
             card.addEventListener('selectstart', (e) => e.preventDefault());
 
             const unread = jobUnread[a.id] || 0;
@@ -949,7 +977,7 @@ function renderJobsList() {
 // Job conversation view
 // ---------------------------------------------------------------------------
 
-async function openJobConversation(jobId) {
+async function openJobConversation(jobId, { focus = true } = {}) {
     if (activeJobId !== jobId) clearJobAttachments();
     const job = jobsData.find(a => a.id === jobId);
     if (!job) return;
@@ -959,12 +987,17 @@ async function openJobConversation(jobId) {
 
     const listView = document.getElementById('jobs-list-view');
     const convView = document.getElementById('jobs-conversation-view');
+    const readOnly = jobUsesOrchHistory(job);
+    convView.classList.toggle('orch-job-history-mode', readOnly);
+    document.getElementById('orch-job-history').hidden = !readOnly;
+    document.getElementById('job-history-badge').hidden = !readOnly;
+    document.getElementById('job-history-footer').hidden = !readOnly;
 
     // Prepare content while conv view is still hidden
     // Set header — click to edit title inline
     const titleEl = document.getElementById('jobs-conv-title');
-    titleEl.textContent = job.title;
-    titleEl.onclick = () => startEditJobTitle(job, titleEl);
+    titleEl.textContent = readOnly ? `Job #${job.id}` : job.title;
+    titleEl.onclick = readOnly ? null : () => startEditJobTitle(job, titleEl);
     updateJobToggles(job.status);
 
     // Render unified brief card header
@@ -974,6 +1007,14 @@ async function openJobConversation(jobId) {
     if (legacyBody) legacyBody.remove();
     let legacyPinned = convView.querySelector('.job-pinned-msg');
     if (legacyPinned) legacyPinned.remove();
+
+    if (readOnly) {
+        listView.classList.add('hidden');
+        convView.classList.remove('hidden');
+        if (focus) titleEl.focus();
+        await loadOrchJobHistory(job);
+        return;
+    }
 
     if (job.body) {
         briefEl = document.createElement('div');
@@ -985,6 +1026,7 @@ async function openJobConversation(jobId) {
 
     // Load messages before showing the view
     const messages = await loadJobMessages(jobId);
+    if (activeJobId !== jobId || activeJobUsesOrchHistory()) return;
     const target = resolveJobDefaultRecipient(job, messages);
     if (target) jobReplyTargets[jobId] = target;
     updateJobReplyTargetUI();
@@ -1015,12 +1057,128 @@ async function openJobConversation(jobId) {
     } else {
         jobInput.placeholder = 'Message...';
         jobInput.classList.remove('job-starter-prefill');
-        jobInput.focus();
+        if (focus) jobInput.focus();
     }
 }
 
-async function loadJobMessages(jobId) {
-    const container = document.getElementById('jobs-conv-messages');
+async function jumpFromJobHistory(job, messageId, channel, feedback) {
+    feedback.textContent = 'Opening message…';
+    try {
+        await window.showOrchHistoryMessage(job.uid, messageId, channel);
+        feedback.textContent = '';
+    } catch (error) {
+        feedback.textContent = error.message;
+    }
+}
+
+function renderOrchJobHistory(job, history) {
+    const channel = history.channel || job.channel;
+    document.getElementById('job-history-title').textContent = job.title;
+    const overview = document.getElementById('job-history-channel');
+    overview.textContent = channel ? `#${channel}` : '';
+    const stage = document.getElementById('job-history-stage');
+    stage.dataset.stage = jobPresentation(job).filter || '';
+    stage.textContent = jobPipelineLabels.get(stage.dataset.stage) || '';
+    const feedback = document.getElementById('job-history-status');
+    const footer = document.getElementById('job-history-jump');
+    const target = history.current_action_message_id ?? history.source_message_id
+        ?? job.source_msg_id ?? job.anchor_msg_id;
+    footer.hidden = !channel && !Number.isSafeInteger(target);
+    const label = history.current_action_message_id != null
+        ? `Reply or approve in #${channel}` : `Open conversation in #${channel}`;
+    footer.textContent = label;
+    footer.insertAdjacentHTML('beforeend', jobHistoryJumpIcon);
+    footer.title = label;
+    footer.onclick = () => jumpFromJobHistory(job, target, channel, feedback);
+
+    const timeline = document.getElementById('job-history-timeline');
+    const focusedMessage = timeline.contains(document.activeElement) ? document.activeElement.dataset.messageId : null;
+    timeline.replaceChildren();
+    for (const entry of history.entries || []) {
+        const item = document.createElement('li');
+        const summary = document.createElement('div');
+        summary.className = 'job-history-milestone';
+        const heading = document.createElement('strong');
+        const kind = jobHistoryLabels.get(entry.kind) || 'Job update';
+        const revision = Number.isSafeInteger(entry.revision) ? ` · Rev ${entry.revision}` : '';
+        heading.textContent = [kind + revision, entry.choice].filter(Boolean).join(' · ');
+        summary.appendChild(heading);
+        const stamp = [entry.time, entry.actor].filter(Boolean).join(' · ');
+        if (stamp) {
+            const meta = document.createElement('div');
+            meta.className = 'job-history-meta';
+            meta.textContent = stamp;
+            summary.appendChild(meta);
+        }
+        if (entry.text) {
+            const text = document.createElement('div');
+            text.className = 'job-history-text';
+            text.innerHTML = window.renderMarkdown(entry.text);
+            summary.appendChild(text);
+        }
+        item.appendChild(summary);
+        if (Number.isSafeInteger(entry.message_id)) {
+            const destination = entry.channel || channel;
+            const button = document.createElement('button');
+            button.className = 'side-panel-icon';
+            button.type = 'button';
+            button.title = `Jump to #${entry.message_id} in #${destination}`;
+            button.setAttribute('aria-label', button.title);
+            button.dataset.messageId = entry.message_id;
+            button.innerHTML = jobHistoryJumpIcon;
+            button.onclick = () => jumpFromJobHistory(job, entry.message_id, destination, feedback);
+            item.appendChild(button);
+        }
+        if (entry.message_id === history.current_action_message_id && entry.message_id != null) {
+            item.classList.add('job-history-needs-action');
+        }
+        timeline.appendChild(item);
+    }
+    if (focusedMessage) {
+        [...timeline.querySelectorAll('[data-message-id]')]
+            .find(button => button.dataset.messageId === focusedMessage)?.focus({ preventScroll: true });
+    }
+}
+
+async function refreshOrchJobHistory(job) {
+    const request = ++orchHistoryRequest;
+    const feedback = document.getElementById('job-history-status');
+    try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.uid)}/orch-history`, {
+            headers: { 'X-Session-Token': window.SESSION_TOKEN },
+        });
+        await window.requireOk(response);
+        const history = await response.json();
+        if (activeJobId !== job.id || !activeJobUsesOrchHistory() || request !== orchHistoryRequest) return;
+        if (history.job_uid !== job.uid) throw new Error('Job history does not match this Job.');
+        renderOrchJobHistory(job, history);
+        feedback.textContent = history.entries?.length ? '' : 'No milestones recorded yet.';
+    } catch {
+        if (activeJobId === job.id && request === orchHistoryRequest) {
+            feedback.textContent = 'Job history is unavailable. You can still open the source conversation.';
+        }
+    }
+}
+
+async function loadOrchJobHistory(job) {
+    renderOrchJobHistory(job, {});
+    const brief = document.getElementById('job-history-brief');
+    brief.innerHTML = job.body ? window.renderMarkdown(job.body) : '';
+    brief.hidden = !job.body;
+    document.getElementById('job-history-status').textContent = 'Loading history…';
+    const audit = document.getElementById('job-history-audit');
+    audit.hidden = true;
+    audit.open = false;
+    const messages = document.getElementById('job-history-audit-messages');
+    await Promise.all([
+        refreshOrchJobHistory(job),
+        loadJobMessages(job.id, messages, true).then(rows => {
+            if (activeJobId === job.id) audit.hidden = !rows.some(row => !row?.deleted);
+        }),
+    ]);
+}
+
+async function loadJobMessages(jobId, container = document.getElementById('jobs-conv-messages'), readOnly = false) {
     container.innerHTML = '';
 
     try {
@@ -1029,13 +1187,14 @@ async function loadJobMessages(jobId) {
         });
         if (!resp.ok) return [];
         const msgs = await resp.json();
+        if (activeJobId !== jobId || activeJobUsesOrchHistory() !== readOnly) return [];
         const visibleMsgs = msgs.filter(msg => !msg?.deleted);
 
         if (visibleMsgs.length === 0) {
             // Only show empty state if there's no brief card either
             const convView = document.getElementById('jobs-conversation-view');
             const hasBrief = !!convView.querySelector('.job-brief-card');
-            if (!hasBrief) {
+            if (!hasBrief && !readOnly) {
                 container.innerHTML = '<div class="jobs-empty" style="font-size:12px; padding:16px">No messages yet. Start the conversation!</div>';
             }
             return msgs;
@@ -1043,13 +1202,13 @@ async function loadJobMessages(jobId) {
 
         // Render all messages in the scrollable area
         for (const msg of visibleMsgs) {
-            appendJobMessage(msg);
+            appendJobMessage(msg, container, readOnly);
         }
 
-        container.scrollTop = container.scrollHeight;
+        if (!readOnly) container.scrollTop = container.scrollHeight;
         return msgs;
     } catch (e) {
-        container.innerHTML = '<div class="jobs-empty">Failed to load messages.</div>';
+        if (activeJobId === jobId) container.innerHTML = '<div class="jobs-empty">Failed to load messages.</div>';
         return [];
     }
 }
@@ -1158,8 +1317,7 @@ function cancelDeleteJobMessage(jobId, msgId, event) {
 // Append job message to conversation
 // ---------------------------------------------------------------------------
 
-function appendJobMessage(msg) {
-    const container = document.getElementById('jobs-conv-messages');
+function appendJobMessage(msg, container = document.getElementById('jobs-conv-messages'), readOnly = false) {
     if (!container || msg?.deleted) return;
 
     const div = document.createElement('div');
@@ -1168,7 +1326,7 @@ function appendJobMessage(msg) {
     const senderColor = window.getColor(msg);
     const msgId = Number(msg.id);
     const canDelete = Number.isFinite(msgId);
-    const deleteActionHtml = canDelete
+    const deleteActionHtml = canDelete && !readOnly
         ? `<div class="job-msg-actions"><button class="job-msg-del-btn" onclick="startDeleteJobMessage(${activeJobId}, ${msgId})">DEL</button></div>`
         : '';
 
@@ -1184,7 +1342,7 @@ function appendJobMessage(msg) {
             <div class="job-msg-text">${window.renderMarkdown(msg.text)}</div>
             <div class="suggestion-actions">${resolved
                 ? `<span class="suggestion-resolved">${window.escapeHtml(resolved)}</span>`
-                : `<button class="suggestion-accept" onclick="acceptSuggestion(${activeJobId}, ${msg.id})">Accept</button><button class="suggestion-dismiss" onclick="dismissSuggestion(${activeJobId}, ${msg.id})">Dismiss</button>`
+                : readOnly ? '' : `<button class="suggestion-accept" onclick="acceptSuggestion(${activeJobId}, ${msg.id})">Accept</button><button class="suggestion-dismiss" onclick="dismissSuggestion(${activeJobId}, ${msg.id})">Dismiss</button>`
             }</div>
         `;
     } else {
@@ -1262,7 +1420,7 @@ function renderOrchEvent(text) {
 // ---------------------------------------------------------------------------
 
 async function sendJobMessage() {
-    if (!activeJobId) return;
+    if (!activeJobId || activeJobUsesOrchHistory()) return;
     const input = document.getElementById('jobs-conv-input-text');
     const text = input.value.trim();
     if (jobUploads > 0 || (!text && jobPendingAttachments.length === 0)) return;
@@ -1302,7 +1460,7 @@ async function sendJobMessage() {
 }
 
 async function uploadJobImage(file, jobId = activeJobId) {
-    if (!activeJobId) return;
+    if (!activeJobId || activeJobUsesOrchHistory()) return;
     if (jobId !== activeJobId) return `${file.name}: job changed. Please attach the file again.`;
     const status = document.getElementById('job-attachment-status');
     jobUploads++;
@@ -1360,6 +1518,7 @@ function startEditJobTitle(job, titleEl) {
     input.select();
 
     const commit = async () => {
+        if (activeJobId !== job.id || activeJobUsesOrchHistory()) return;
         const newTitle = input.value.trim();
         if (newTitle && newTitle !== job.title) {
             try {
@@ -1385,7 +1544,7 @@ function startEditJobTitle(job, titleEl) {
 async function toggleJobStatus(status) {
     if (!activeJobId) return;
     const job = jobsData.find(a => a.id === activeJobId);
-    if (!job) return;
+    if (!job || jobUsesOrchHistory(job)) return;
     const oldStatus = job.status;
     const statusLabels = { 'open': 'TO DO', 'done': 'ACTIVE', 'archived': 'CLOSED' };
 
@@ -1491,8 +1650,13 @@ async function submitCreateJob(btn) {
 // ---------------------------------------------------------------------------
 
 function jobsBack() {
+    const lastId = activeJobId;
+    const restoreFocus = activeJobUsesOrchHistory();
     showJobsListView(() => {
         renderJobsList();
+        if (restoreFocus) {
+            document.querySelector(`#jobs-list .job-card[data-id="${lastId}"]`)?.focus();
+        }
     });
 }
 
@@ -1509,7 +1673,15 @@ function handleJobEvent(action, data) {
         }
     } else if (action === 'update') {
         const idx = jobsData.findIndex(a => a.id === data.id);
+        const wasReadOnly = jobUsesOrchHistory(jobsData[idx]);
         if (idx >= 0) jobsData[idx] = data;
+        if (activeJobId === data.id) {
+            if (wasReadOnly !== jobUsesOrchHistory(data)) {
+                void openJobConversation(data.id, { focus: false });
+            } else if (wasReadOnly) {
+                void refreshOrchJobHistory(data);
+            }
+        }
         if (!Object.prototype.hasOwnProperty.call(jobUnread, data.id)) {
             jobUnread[data.id] = 0;
         }
@@ -1549,9 +1721,15 @@ function handleJobEvent(action, data) {
 
         // If we're viewing this job, append the message. Otherwise count unread.
         if (isViewingThis) {
-            appendJobMessage(data.message);
-            const container = document.getElementById('jobs-conv-messages');
-            if (container) container.scrollTop = container.scrollHeight;
+            if (jobUsesOrchHistory(job)) {
+                const audit = document.getElementById('job-history-audit');
+                audit.hidden = false;
+                appendJobMessage(data.message, document.getElementById('job-history-audit-messages'), true);
+            } else {
+                appendJobMessage(data.message);
+                const container = document.getElementById('jobs-conv-messages');
+                if (container) container.scrollTop = container.scrollHeight;
+            }
             markJobRead(data.job_id);
         } else if (!isSelfMessage) {
             jobUnread[data.job_id] = (jobUnread[data.job_id] || 0) + 1;
@@ -1581,7 +1759,8 @@ function handleJobEvent(action, data) {
             activeJobId === data.job_id
         );
         if (isViewingThis) {
-            const msgEl = document.querySelector(`.job-msg[data-msg-id="${data.message_id}"]`);
+            const id = jobUsesOrchHistory(job) ? 'job-history-audit-messages' : 'jobs-conv-messages';
+            const msgEl = document.getElementById(id).querySelector(`.job-msg[data-msg-id="${data.message_id}"]`);
             _animateRemoveJobMessage(msgEl);
             markJobRead(data.job_id);
         }
@@ -1731,7 +1910,8 @@ async function createOrchJob(sourceMsgId, cardMsgId) {
     if (cardMsgId !== undefined) body.card_msg_id = cardMsgId;
     const { job } = await postJobAction('/api/jobs/orch-intake', body);
     if (!jobsData.some(existing => existing.id === job.id)) jobsData.push(job);
-    await openJobFromBreadcrumb(job.id);
+    window.showToast?.(`Job #${job.id} is linked to this conversation.`);
+    document.getElementById('input')?.focus();
 }
 
 window.createOrchJobFromCard = async function(button, sourceMsgId, cardMsgId) {
@@ -2303,6 +2483,16 @@ Hub.on('job', function (event) {
     handleJobEvent(event.action, event.data);
 });
 
+for (const type of ['message', 'message_update']) {
+    Hub.on(type, event => {
+        const job = jobsData.find(row => row.id === activeJobId);
+        if (!jobUsesOrchHistory(job)) return;
+        const metadata = (event.data || event.message)?.metadata || {};
+        const binding = metadata.orch_workflow || metadata.orch_gate || metadata.job_reopen;
+        if (binding?.job_uid === job.uid) void refreshOrchJobHistory(job);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -2323,6 +2513,7 @@ window.toggleJobStatus = toggleJobStatus;
 window.openJobConversation = openJobConversation;
 window.openJobFromBreadcrumb = openJobFromBreadcrumb;
 window.sendJobMessage = sendJobMessage;
+window.activeJobUsesOrchHistory = activeJobUsesOrchHistory;
 window.cycleJobReplyTarget = cycleJobReplyTarget;
 window.startDeleteJobMessage = startDeleteJobMessage;
 window.confirmDeleteJobMessage = confirmDeleteJobMessage;
