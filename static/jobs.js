@@ -182,49 +182,6 @@ function _repairJobGroup(group) {
 }
 
 // ---------------------------------------------------------------------------
-// Jobs panel grip (resize)
-// ---------------------------------------------------------------------------
-
-function setupJobsGrip() {
-    const grip = document.getElementById('jobs-grip');
-    const panel = document.getElementById('jobs-panel');
-    if (!grip || !panel) return;
-
-    let dragging = false;
-    let startX = 0;
-    let startWidth = 0;
-
-    grip.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        dragging = true;
-        startX = e.clientX;
-        startWidth = panel.offsetWidth;
-        grip.classList.add('dragging');
-        panel.style.transition = 'none';
-        document.body.style.cursor = 'col-resize';
-        document.body.style.userSelect = 'none';
-    });
-
-    document.addEventListener('mousemove', (e) => {
-        if (!dragging) return;
-        const delta = startX - e.clientX;
-        const newWidth = Math.min(Math.max(startWidth + delta, 260), window.innerWidth * 0.5);
-        panel.style.setProperty('--panel-w', newWidth + 'px');
-        panel.style.width = newWidth + 'px';
-        panel.style.minWidth = newWidth + 'px';
-    });
-
-    document.addEventListener('mouseup', () => {
-        if (!dragging) return;
-        dragging = false;
-        grip.classList.remove('dragging');
-        panel.style.transition = '';
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-    });
-}
-
-// ---------------------------------------------------------------------------
 // Jobs input setup
 // ---------------------------------------------------------------------------
 
@@ -376,18 +333,14 @@ function cycleJobReplyTarget(step = 1) {
 // ---------------------------------------------------------------------------
 
 function toggleJobsPanel() {
+    if (!document.getElementById('jobs-panel').classList.contains('hidden')) {
+        window.closeSidePanel('jobs');
+        return;
+    }
     window._preserveScroll(() => {
-        const panel = document.getElementById('jobs-panel');
-        panel.classList.toggle('hidden');
-        document.getElementById('jobs-toggle').classList.toggle('active', !panel.classList.contains('hidden'));
-        if (!panel.classList.contains('hidden')) {
-            // Return to list view if we were in conversation view
-            window.closeSidePanels?.('jobs');
-            showJobsListView();
-            renderJobsList();
-        } else {
-            closeJobMentionMenu();
-        }
+        window.setSidePanelOpen('jobs', true);
+        showJobsListView();
+        renderJobsList();
     });
 }
 
@@ -1803,19 +1756,7 @@ async function requestChangesProposal(msgId) {
 async function openJobFromBreadcrumb(jobId) {
     const job = jobsData.find(a => a.id === jobId);
     if (!job) return;
-    window.closeSchedulesPanel?.();
-    const panel = document.getElementById('jobs-panel');
-    if (panel.classList.contains('hidden')) {
-        // Force browser to compute the hidden state BEFORE removing class
-        void panel.offsetHeight;
-        // Remove hidden class — transition should animate from -360 to 0
-        panel.classList.remove('hidden');
-        document.getElementById('jobs-toggle').classList.add('active');
-        // Force reflow AFTER class change to commit the transition start
-        // before openJobConversation modifies child DOM
-        void panel.offsetHeight;
-    }
-    // Switch to conversation view for this job
+    window._preserveScroll(() => window.setSidePanelOpen('jobs', true));
     await openJobConversation(jobId);
 }
 
@@ -2245,7 +2186,6 @@ Hub.on('job', function (event) {
 // ---------------------------------------------------------------------------
 
 function _jobsInit() {
-    setupJobsGrip();
     setupJobsInput();
     setupJobMentions();
 }

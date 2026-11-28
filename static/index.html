@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>agentchattr</title>
-    <link rel="stylesheet" href="/static/style.css?v=265">
+    <link rel="stylesheet" href="/static/style.css?v=266">
     <link rel="stylesheet" href="/static/sessions.css?v=223">
-    <link rel="stylesheet" href="/static/jobs.css?v=228">
+    <link rel="stylesheet" href="/static/jobs.css?v=229">
     <link rel="icon" href="/static/favicon.ico">
 </head>
 <body>
@@ -23,7 +23,7 @@
             </div>
             <div class="header-right">
                 <div id="agent-status"></div>
-                <button class="settings-btn" id="jobs-toggle" onclick="toggleJobsPanel()" title="Jobs">
+                <button class="settings-btn" id="jobs-toggle" onclick="toggleJobsPanel()" title="Jobs" aria-label="Jobs" aria-controls="jobs-panel" aria-expanded="false">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <rect x="3" y="2" width="10" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
                         <path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
@@ -37,20 +37,20 @@
                     </svg>
                     <span class="jobs-badge hidden" id="schedules-badge">0</span>
                 </button>
-                <button class="settings-btn" id="rules-toggle" onclick="toggleRulesPanel()" title="Rules">
+                <button class="settings-btn" id="rules-toggle" onclick="toggleRulesPanel()" title="Rules" aria-label="Rules" aria-controls="rules-panel" aria-expanded="false">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.2"/>
                         <path d="M5 8L7 10L11 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
                     </svg>
                     <span class="rules-badge hidden" id="rules-badge">0</span>
                 </button>
-                <button class="settings-btn" id="pins-toggle" onclick="togglePinsPanel()" title="Pinned messages">
+                <button class="settings-btn" id="pins-toggle" onclick="togglePinsPanel()" title="Pinned messages" aria-label="Pinned messages" aria-controls="pins-panel" aria-expanded="false">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <path d="M6 2.5h4l.5 4.5H9.5L8 14L6.5 7H5.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
                         <line x1="4.5" y1="7" x2="11.5" y2="7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
                     </svg>
                 </button>
-                <button class="settings-btn" id="settings-toggle" onclick="toggleSettings()" title="Settings">
+                <button class="settings-btn" id="settings-toggle" onclick="toggleSettings()" title="Settings" aria-label="Settings" aria-controls="settings-bar" aria-expanded="false">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <path d="M6.5 1L7.1 3.1C7.4 3.2 7.7 3.4 8 3.6L10 2.8L11.5 5.4L9.8 6.7C9.8 7 9.8 7.3 9.8 7.6L11.5 8.9L10 11.5L8 10.7C7.7 10.9 7.4 11 7.1 11.2L6.5 13.3H3.5L2.9 11.2C2.6 11 2.3 10.9 2 10.7L0 11.5L-1.5 8.9L0.2 7.6C0.2 7.3 0.2 7 0.2 6.7L-1.5 5.4L0 2.8L2 3.6C2.3 3.4 2.6 3.2 2.9 3.1L3.5 1H6.5Z" transform="translate(3 1)" stroke="currentColor" stroke-width="1.2" fill="none"/>
                         <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" fill="none"/>
@@ -124,19 +124,23 @@
                     <span class="typing-name"></span> is thinking...
                 </div>
             </main>
-            <aside id="jobs-panel" class="hidden">
-                <div class="jobs-grip" id="jobs-grip"></div>
+            <aside id="jobs-panel" class="side-panel hidden" aria-label="Jobs" inert>
+                <div class="side-panel-grip" tabindex="0" role="separator" aria-orientation="vertical" aria-controls="jobs-panel" aria-label="Resize Jobs" title="Resize Jobs"></div>
                 <div id="jobs-list-view">
-                    <div class="jobs-header">
-                        <span>Jobs</span>
-                        <button class="jobs-create-btn" onclick="showCreateJob()" title="Create Job">+</button>
+                    <div class="side-panel-header">
+                        <span class="side-panel-title">Jobs</span>
+                        <button type="button" class="side-panel-icon jobs-create-btn" onclick="showCreateJob()" title="Create Job" aria-label="Create Job"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+                        <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('jobs')" title="Close Jobs" aria-label="Close Jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                     </div>
                     <div id="jobs-list"></div>
                 </div>
                 <div id="jobs-conversation-view" class="hidden">
+                    <div class="side-panel-header">
+                        <button type="button" class="side-panel-icon" onclick="jobsBack()" title="Back to Jobs" aria-label="Back to Jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12H4m0 0 6-6m-6 6 6 6"/></svg></button>
+                        <span class="side-panel-title jobs-conv-title" id="jobs-conv-title"></span>
+                        <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('jobs')" title="Close Jobs" aria-label="Close Jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+                    </div>
                     <div class="jobs-conv-header">
-                        <button class="jobs-back-btn" onclick="jobsBack()" title="Back">&larr;</button>
-                        <span class="jobs-conv-title" id="jobs-conv-title"></span>
                         <div class="jobs-status-toggles" id="jobs-status-toggles">
                             <button class="job-toggle open" data-status="open" onclick="toggleJobStatus('open')" title="To Do">TO DO</button>
                             <button class="job-toggle done" data-status="done" onclick="toggleJobStatus('done')" title="Active">ACTIVE</button>
@@ -165,150 +169,179 @@
                     </div>
                 </div>
             </aside>
-            <aside id="schedules-panel" class="hidden" aria-labelledby="schedules-title">
-                <div class="jobs-header">
-                    <span id="schedules-title">Scheduled tasks</span>
-                    <button class="jobs-create-btn" onclick="toggleSchedulePopover(event); document.getElementById('input').focus()" title="Schedule a message" aria-label="Schedule a message">+</button>
-                    <button class="schedule-close" onclick="toggleSchedulesPanel(false)" title="Close scheduled tasks" aria-label="Close scheduled tasks">&times;</button>
+            <aside id="schedules-panel" class="side-panel hidden" aria-label="Scheduled tasks" inert>
+                <div class="side-panel-grip" tabindex="0" role="separator" aria-orientation="vertical" aria-controls="schedules-panel" aria-label="Resize Scheduled tasks" title="Resize Scheduled tasks"></div>
+                <div class="side-panel-header">
+                    <span class="side-panel-title">Scheduled tasks</span>
+                    <button type="button" class="side-panel-icon" onclick="toggleSchedulePopover(event); document.getElementById('input').focus()" title="Schedule a message" aria-label="Schedule a message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+                    <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('schedules')" title="Close scheduled tasks" aria-label="Close scheduled tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                 </div>
                 <p id="schedules-feedback" class="hidden" role="status"></p>
                 <div id="schedules-list"></div>
             </aside>
-            <aside id="rules-panel" class="hidden">
-                <div class="rules-grip" id="rules-grip"></div>
-                <div class="rules-header">
-                    <span>Rules</span>
+            <aside id="rules-panel" class="side-panel hidden" aria-label="Rules" inert>
+                <div class="side-panel-grip" tabindex="0" role="separator" aria-orientation="vertical" aria-controls="rules-panel" aria-label="Resize Rules" title="Resize Rules"></div>
+                <div class="side-panel-header">
+                    <span class="side-panel-title">Rules</span>
                     <span class="rules-counter" id="rules-counter"></span>
-                    <button class="rules-remind-btn" onclick="remindAgents()">Remind agents</button>
-                    <button class="jobs-create-btn" onclick="showCreateRule()" title="Add Rule">+</button>
+                    <button type="button" class="side-panel-icon rules-remind-btn" onclick="remindAgents()" title="Remind agents" aria-label="Remind agents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-8 12a2 2 0 0 0 4 0"/></svg></button>
+                    <button type="button" class="side-panel-icon" onclick="showCreateRule()" title="Add Rule" aria-label="Add Rule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+                    <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('rules')" title="Close Rules" aria-label="Close Rules"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                 </div>
+                <span id="rules-remind-status" class="visually-hidden" role="status"></span>
                 <div id="rules-list"></div>
             </aside>
-        <aside id="settings-bar" class="hidden side-panel">
-                <div class="jobs-header"><span>Settings</span><button class="schedule-close" onclick="toggleSettings()" title="Close settings" aria-label="Close settings">&times;</button></div>
-            <div class="settings-field" title="The name shown on your messages and used when agents @mention you.">
-                <label for="setting-username">Name</label>
-                <input type="text" id="setting-username" placeholder="your name" maxlength="20">
-            </div>
-            <div class="settings-field" title="The color of your name, mentions and messages. Synced across browsers.">
-                <label for="setting-user-color">Your color</label>
-                <input type="color" id="setting-user-color" value="#a78bfa" title="Color of your name, mentions and messages (synced across browsers)">
-                <button type="button" class="settings-btn" id="setting-user-color-reset" title="Back to the default color">Reset</button>
-            </div>
-            <div class="settings-field" title="A short label shown next to the title, to tell this server apart from others.">
-                <label for="setting-subtitle">This server</label>
-                <input type="text" id="setting-subtitle" placeholder="e.g. urbly" maxlength="40" title="Shown next to agentchattr, to tell this server apart from others">
-            </div>
-            <div class="settings-field" title="The typeface used for the chat: monospace or sans-serif.">
-                <label for="setting-font">Font</label>
-                <select id="setting-font">
-                    <option value="mono">Monospace</option>
-                    <option value="sans">Sans</option>
-                </select>
-            </div>
-            <div class="settings-field" title="How many agent-to-agent replies can happen in a row before the chat pauses, to stop runaway loops.">
-                <label for="setting-hops">Loop guard</label>
-                <div class="sched-num-wrap">
-                    <input type="number" id="setting-hops" class="sched-pop-num" min="1" max="50" value="4" title="Max agent-to-agent hops before pausing">
-                    <div class="sched-num-btns">
-                        <button type="button" onclick="stepNumInput('setting-hops',1)" tabindex="-1">&#9650;</button>
-                        <button type="button" onclick="stepNumInput('setting-hops',-1)" tabindex="-1">&#9660;</button>
-                    </div>
+            <aside id="settings-bar" class="side-panel hidden" aria-label="Settings" inert>
+                <div class="side-panel-grip" tabindex="0" role="separator" aria-orientation="vertical" aria-controls="settings-bar" aria-label="Resize Settings" title="Resize Settings"></div>
+                <div class="side-panel-header">
+                    <span class="side-panel-title">Settings</span>
+                    <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('settings')" title="Close settings" aria-label="Close settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                 </div>
-            </div>
-            <div class="settings-field" title="How many past messages load per channel when the page opens.">
-                <label for="setting-history">History</label>
-                <select id="setting-history">
-                    <option value="all">All</option>
-                    <option value="25">25</option>
-                    <option value="50" selected>50</option>
-                    <option value="100">100</option>
-                    <option value="200">200</option>
-                    <option value="500">500</option>
-                </select>
-            </div>
-            <div class="settings-field" title="Normal or High contrast for text and borders.">
-                <label for="setting-contrast">Contrast</label>
-                <select id="setting-contrast">
-                    <option value="normal">Normal</option>
-                    <option value="high">High</option>
-                </select>
-            </div>
-            <div class="settings-field" title="How an agent's pill signals it is waiting on you: a soft highlight or a hard flash. Synced across browsers.">
-                <label for="setting-attention-style">Needs attention</label>
-                <select id="setting-attention-style" title="How an agent pill signals it is waiting on you (synced across browsers)">
-                    <option value="highlight">Highlight</option>
-                    <option value="flash">Flash</option>
-                </select>
-            </div>
-            <div class="settings-field" title="Make a channel entry glow or flash when an agent is waiting on you there or someone mentions you. Off by default. Synced across browsers.">
-                <label for="setting-channel-attention">Channel attention</label>
-                <select id="setting-channel-attention" title="How a channel signals that your input is needed (synced across browsers)">
-                    <option value="off">Off</option>
-                    <option value="highlight">Highlight</option>
-                    <option value="flash">Flash</option>
-                </select>
-            </div>
-            <div class="settings-field" title="Sound played when an agent's pill starts needing you: the agent's own sound, a specific sound, or None. Synced across browsers.">
-                <label for="setting-attention-sound">Needs attention sound</label>
-                <select id="setting-attention-sound" title="Sound played when an agent's pill starts needing you (synced across browsers)"></select>
-            </div>
-            <div class="settings-field" title="Show channels as a top bar or as a Discord/Slack-style sidebar. Synced across browsers.">
-                <label for="setting-channel-sidebar">Channels</label>
-                <select id="setting-channel-sidebar" title="Show channels in a sidebar (Discord/Slack-style) instead of a top bar">
-                    <option value="top">Top bar</option>
-                    <option value="sidebar">Sidebar</option>
-                </select>
-            </div>
-            <div class="settings-field" title="Days without a new message before a channel moves to the Inactive group in the channel list. 0 = never. Synced across browsers.">
-                <label for="setting-inactive-days">Inactive after (days)</label>
-                <div class="sched-num-wrap">
-                    <input type="number" id="setting-inactive-days" class="sched-pop-num" min="0" max="365" step="1" value="1" title="Days idle before a channel is listed as inactive (0 = never)">
-                    <div class="sched-num-btns">
-                        <button type="button" onclick="stepNumInput('setting-inactive-days',1)" tabindex="-1">&#9650;</button>
-                        <button type="button" onclick="stepNumInput('setting-inactive-days',-1)" tabindex="-1">&#9660;</button>
-                    </div>
+                <div class="side-panel-scroll settings-sections">
+                    <details class="settings-section" data-section="profile" open>
+                        <summary>Profile &amp; Server</summary>
+                        <div class="settings-section-fields">
+                            <div class="settings-field" title="The name shown on your messages and used when agents @mention you.">
+                                <label for="setting-username">Name</label>
+                                <input type="text" id="setting-username" placeholder="your name" maxlength="20">
+                            </div>
+                            <div class="settings-field" title="The color of your name, mentions and messages. Synced across browsers.">
+                                <label for="setting-user-color">Your color</label>
+                                <input type="color" id="setting-user-color" value="#a78bfa" title="Color of your name, mentions and messages (synced across browsers)">
+                                <button type="button" class="side-panel-icon" id="setting-user-color-reset" title="Reset color" aria-label="Reset color"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 1 2.5 6.2M3 12V5m0 7h7"/></svg></button>
+                            </div>
+                            <div class="settings-field" title="A short label shown next to the title, to tell this server apart from others.">
+                                <label for="setting-subtitle">This server</label>
+                                <input type="text" id="setting-subtitle" placeholder="e.g. urbly" maxlength="40" title="Shown next to agentchattr, to tell this server apart from others">
+                            </div>
+                        </div>
+                    </details>
+                    <details class="settings-section" data-section="appearance">
+                        <summary>Appearance &amp; Layout</summary>
+                        <div class="settings-section-fields">
+                            <div class="settings-field" title="The typeface used for the chat: monospace or sans-serif.">
+                                <label for="setting-font">Font</label>
+                                <select id="setting-font">
+                                    <option value="mono">Monospace</option>
+                                    <option value="sans">Sans</option>
+                                </select>
+                            </div>
+                            <div class="settings-field" title="Normal or High contrast for text and borders.">
+                                <label for="setting-contrast">Contrast</label>
+                                <select id="setting-contrast">
+                                    <option value="normal">Normal</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </div>
+                            <div class="settings-field" title="Show channels as a top bar or as a Discord/Slack-style sidebar. Synced across browsers.">
+                                <label for="setting-channel-sidebar">Channels layout</label>
+                                <select id="setting-channel-sidebar" title="Show channels in a sidebar (Discord/Slack-style) instead of a top bar">
+                                    <option value="top">Top bar</option>
+                                    <option value="sidebar">Sidebar</option>
+                                </select>
+                            </div>
+                            <div class="settings-field" title="How many past messages load per channel when the page opens.">
+                                <label for="setting-history">History load count</label>
+                                <select id="setting-history">
+                                    <option value="all">All</option>
+                                    <option value="25">25</option>
+                                    <option value="50" selected>50</option>
+                                    <option value="100">100</option>
+                                    <option value="200">200</option>
+                                    <option value="500">500</option>
+                                </select>
+                            </div>
+                            <div class="settings-field" title="Days without a new message before a channel moves to the Inactive group in the channel list. 0 = never. Synced across browsers.">
+                                <label for="setting-inactive-days">Inactive after (days)</label>
+                                <div class="sched-num-wrap">
+                                    <input type="number" id="setting-inactive-days" class="sched-pop-num" min="0" max="365" step="1" value="1" title="Days idle before a channel is listed as inactive (0 = never)">
+                                    <div class="sched-num-btns">
+                                        <button type="button" onclick="stepNumInput('setting-inactive-days',1)" tabindex="-1">&#9650;</button>
+                                        <button type="button" onclick="stepNumInput('setting-inactive-days',-1)" tabindex="-1">&#9660;</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                    <details class="settings-section" data-section="alerts">
+                        <summary>Alerts &amp; Sounds</summary>
+                        <div class="settings-section-fields">
+                            <div class="settings-field" title="How an agent's pill signals it is waiting on you: a soft highlight or a hard flash. Synced across browsers.">
+                                <label for="setting-attention-style">Needs attention</label>
+                                <select id="setting-attention-style" title="How an agent pill signals it is waiting on you (synced across browsers)">
+                                    <option value="highlight">Highlight</option>
+                                    <option value="flash">Flash</option>
+                                </select>
+                            </div>
+                            <div class="settings-field" title="Make a channel entry glow or flash when an agent is waiting on you there or someone mentions you. Off by default. Synced across browsers.">
+                                <label for="setting-channel-attention">Channel attention</label>
+                                <select id="setting-channel-attention" title="How a channel signals that your input is needed (synced across browsers)">
+                                    <option value="off">Off</option>
+                                    <option value="highlight">Highlight</option>
+                                    <option value="flash">Flash</option>
+                                </select>
+                            </div>
+                            <div class="settings-field" title="Sound played when an agent's pill starts needing you: the agent's own sound, a specific sound, or None. Synced across browsers.">
+                                <label for="setting-attention-sound">Needs attention sound</label>
+                                <select id="setting-attention-sound" title="Sound played when an agent's pill starts needing you (synced across browsers)"></select>
+                            </div>
+                            <div class="settings-field mention-alerts-field" title="Get a browser notification and/or sound when you are @mentioned. The page must stay open; permission is per browser.">
+                                <label for="setting-mention-alerts">Mention alerts</label>
+                                <select id="setting-mention-alerts" aria-describedby="mention-alerts-status">
+                                    <option value="off">Off</option>
+                                    <option value="browser">Browser notifications</option>
+                                    <option value="sound">Browser notifications + alert sound</option>
+                                </select>
+                                <small id="mention-alerts-status" role="status"></small>
+                            </div>
+                            <div class="settings-field">
+                                <div id="sound-settings" role="group" aria-label="Per-agent sounds"></div>
+                            </div>
+                        </div>
+                    </details>
+                    <details class="settings-section" data-section="agents">
+                        <summary>Agents &amp; Data</summary>
+                        <div class="settings-section-fields">
+                            <div class="settings-field" title="How many agent-to-agent replies can happen in a row before the chat pauses, to stop runaway loops.">
+                                <label for="setting-hops">Loop guard</label>
+                                <div class="sched-num-wrap">
+                                    <input type="number" id="setting-hops" class="sched-pop-num" min="1" max="50" value="4" title="Max agent-to-agent hops before pausing">
+                                    <div class="sched-num-btns">
+                                        <button type="button" onclick="stepNumInput('setting-hops',1)" tabindex="-1">&#9650;</button>
+                                        <button type="button" onclick="stepNumInput('setting-hops',-1)" tabindex="-1">&#9660;</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-field" title="How often active rules are re-sent to agents: on rule changes only, or every N triggers.">
+                                <label for="setting-rules-refresh">Rule refresh</label>
+                                <select id="setting-rules-refresh" title="How often to re-send active rules to agents">
+                                    <option value="0">On rule changes</option>
+                                    <option value="5">Every 5 triggers</option>
+                                    <option value="10" selected>Every 10 triggers</option>
+                                    <option value="20">Every 20 triggers</option>
+                                    <option value="50">Every 50 triggers</option>
+                                </select>
+                            </div>
+                            <div class="settings-field" title="Export this project's chat history to a .zip file, or import one back in.">
+                                <label>Chat history</label>
+                                <div class="settings-history-btns">
+                                    <button type="button" class="side-panel-icon" onclick="exportHistory()" title="Export history" aria-label="Export history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4m-12 4v5h16v-5"/></svg></button>
+                                    <button type="button" class="side-panel-icon" id="import-history-btn" onclick="document.getElementById('import-file').click()" title="Import history" aria-label="Import history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3m-4 4 4-4 4 4m-12 8v5h16v-5"/></svg></button>
+                                    <input type="file" id="import-file" accept=".zip" style="display:none" onchange="importHistory(this)">
+                                </div>
+                            </div>
+                        </div>
+                    </details>
                 </div>
-            </div>
-            <div class="settings-field" title="How often active rules are re-sent to agents: on rule changes only, or every N triggers.">
-                <label for="setting-rules-refresh">Rule refresh</label>
-                <select id="setting-rules-refresh" title="How often to re-send active rules to agents">
-                    <option value="0">On rule changes</option>
-                    <option value="5">Every 5 triggers</option>
-                    <option value="10" selected>Every 10 triggers</option>
-                    <option value="20">Every 20 triggers</option>
-                    <option value="50">Every 50 triggers</option>
-                </select>
-            </div>
-            <div class="settings-divider"></div>
-            <div class="settings-field">
-                <div id="sound-settings"></div>
-            </div>
-            <div class="settings-field mention-alerts-field" title="Get a browser notification and/or sound when you are @mentioned. The page must stay open; permission is per browser.">
-                <label for="setting-mention-alerts">Mention alerts</label>
-                <select id="setting-mention-alerts" aria-describedby="mention-alerts-status">
-                    <option value="off">Off</option>
-                    <option value="browser">Browser notifications</option>
-                    <option value="sound">Browser notifications + alert sound</option>
-                </select>
-                <small id="mention-alerts-status" role="status"></small>
-            </div>
-            <div class="settings-divider"></div>
-            <div class="settings-field" title="Export this project's chat history to a .zip file, or import one back in.">
-                <label>Project History</label>
-                <div class="settings-history-btns">
-                    <button class="settings-btn" onclick="exportHistory()" title="Download all messages and attachments as a .zip">Export History</button>
-                    <button class="settings-btn" id="import-history-btn" title="Restore messages from a previously exported .zip" onclick="document.getElementById('import-file').click()">Import History</button>
-                    <input type="file" id="import-file" accept=".zip" style="display:none" onchange="importHistory(this)">
+            </aside>
+            <aside id="pins-panel" class="side-panel hidden" aria-label="Pinned messages" inert>
+                <div class="side-panel-grip" tabindex="0" role="separator" aria-orientation="vertical" aria-controls="pins-panel" aria-label="Resize Pinned messages" title="Resize Pinned messages"></div>
+                <div class="side-panel-header">
+                    <span class="side-panel-title">Pinned</span>
+                    <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('pins')" title="Close pinned messages" aria-label="Close pinned messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                 </div>
-            </div>
-        </aside>
-        <aside id="pins-panel" class="hidden side-panel">
-            <div class="pins-header">
-                <span>Pinned</span>
-            </div>
-            <div id="pins-list"></div>
-        </aside>
+                <div id="pins-list" class="side-panel-scroll"></div>
+            </aside>
         </div>
 
         <div id="scroll-anchor" class="hidden" onclick="scrollToBottom()"><span class="unread-badge">0</span><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
@@ -437,11 +470,11 @@
     <script src="/static/sessions.js?v=224"></script>
     <script src="/static/attachments.js?v=5"></script>
     <script src="/static/action-errors.js?v=1"></script>
-    <script src="/static/jobs.js?v=232"></script>
+    <script src="/static/jobs.js?v=233"></script>
     <script src="/static/channels.js?v=228"></script>
-    <script src="/static/rules-panel.js?v=225"></script>
+    <script src="/static/rules-panel.js?v=226"></script>
     <script src="/static/mention-alerts.js?v=1"></script>
     <script src="/static/channel-attention.js?v=1"></script>
-    <script src="/static/chat.js?v=289"></script>
+    <script src="/static/chat.js?v=290"></script>
 </body>
 </html>
