@@ -74,8 +74,6 @@ class OrchGateApprovalTests(unittest.TestCase):
                 self.assertEqual(self.resolve(card, headers=headers, actor="fixture-operator").status_code, 403)
         with TestClient(self.api, client=("192.0.2.10", 50000)) as lan:
             self.assertEqual(self.resolve(card, client=lan).status_code, 403)
-            with patch.object(app, "is_local_client", return_value=True):
-                self.assertEqual(self.resolve(card, client=lan).status_code, 403)
         generic = self.client.post(f"/api/messages/{card['decision_id']}/resolve_decision",
                                    headers=self.browser, json={"choice": "Approve"})
         self.assertEqual(generic.status_code, 403)
@@ -88,6 +86,28 @@ class OrchGateApprovalTests(unittest.TestCase):
         self.assertEqual(response.json()["actor_source"], "local-browser")
         self.assertEqual(response.json()["choice"], "Approve")
         self.assertTrue(self.store.get_by_id(card["decision_id"])["metadata"]["resolved"])
+        self.broadcast.assert_awaited_once()
+
+    def test_host_interface_can_resolve_gate_but_other_lan_devices_cannot(self):
+        card = self.publish()
+        host_ip = "192.0.2.10"
+        origin = {"Origin": f"http://{host_ip}:8300"}
+        browser = {**self.browser, **origin}
+        with (
+            patch.object(app, "_local_ips", return_value=frozenset({host_ip})),
+            TestClient(self.api, client=(host_ip, 50000)) as host,
+            TestClient(self.api, client=("192.0.2.11", 50000)) as lan,
+        ):
+            self.assertEqual(self.resolve(card, client=lan, headers=browser).status_code, 403)
+            self.assertEqual(self.resolve(card, client=host, headers=origin).status_code, 403)
+            agent = {**browser, "Authorization": "Bearer fixture-agent"}
+            self.assertEqual(self.resolve(card, client=host, headers=agent).status_code, 403)
+            self.broadcast.assert_not_called()
+            response = self.resolve(card, client=host, headers=browser, choice="Revise")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["actor"], "fixture-operator")
+        self.assertEqual(response.json()["choice"], "Revise")
         self.broadcast.assert_awaited_once()
 
     def test_stale_revision_wrong_binding_and_conflicting_replay_are_rejected(self):
