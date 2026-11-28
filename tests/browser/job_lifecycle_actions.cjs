@@ -32,6 +32,51 @@ test('the picker contains only the four approved types and uses Orch presence', 
     assert.equal(picker.options[0].disabled, false);
 });
 
+test('the Job list uses canonical lifecycle stages when the coordinator is offline', () => {
+    const ctx = vm.createContext({
+        jobPresentations: new Map(), renderJobsList() {},
+    });
+    vm.runInContext(
+        between(jobs, 'const jobPipelineLabels', '// Message Renderers'), ctx,
+    );
+    const update = ctx.registerJobPresentation('orch', {
+        awaiting_approval: 'Awaiting approval', 'orch.coding': 'Coding',
+    });
+    const job = {
+        id: 7, uid: 'job-abc', status: 'done',
+        lifecycle: { stage_id: 'orch.coding', flags: [] },
+    };
+    update([{ id: 7, uid: 'different-job', stage: 'awaiting_approval', attention: true }]);
+    assert.deepEqual({ ...ctx.jobPresentation(job) }, { key: 'pipeline-active_coding', attention: false });
+    update([{ id: 7, uid: 'job-abc', stage: 'awaiting_approval', attention: true }]);
+    assert.deepEqual({ ...ctx.jobPresentation(job) }, { key: 'pipeline-active_coding', attention: true });
+    update([]);
+    assert.deepEqual({ ...ctx.jobPresentation(job) }, { key: 'pipeline-active_coding', attention: false });
+    assert.deepEqual({ ...ctx.jobPresentation({ status: 'open' }) }, { key: 'open', attention: false });
+});
+
+test('Orch brief messages expose readable fields and keep escaped JSON in a closed disclosure', () => {
+    const ctx = vm.createContext({ window: {
+        escapeHtml: text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+    } });
+    vm.runInContext(between(jobs, 'function renderOrchEvent', '// Job attachments'), ctx);
+    const raw = 'orch-event ' + JSON.stringify({ v: 1, kind: 'brief', revision: 2, brief: {
+        repo: 'team/repo', outcome: 'Show <img> safely', checks: ['Check results'],
+        constraints: ['Use existing hooks'], gates: ['spec'],
+    } });
+    const html = ctx.renderOrchEvent(raw);
+    assert.match(html, /<details class="job-event">/);
+    assert.match(html, /<h3>Brief · Rev 2<\/h3>/);
+    assert.match(html, /<h4>What<\/h4><p>Show &lt;img&gt; safely<\/p>/);
+    assert.match(html, /<h4>Done when<\/h4><ul><li>Check results<\/li>/);
+    assert.match(html, /<h4>Limits<\/h4><ul><li>Use existing hooks<\/li>/);
+    assert.match(html, /<h4>Gates<\/h4>.*>Spec<\/span>/);
+    assert.doesNotMatch(html, /<img>/);
+    assert.doesNotMatch(ctx.renderOrchEvent('orch-event {"v":1,"kind":"ack"}'), /<article/);
+    assert.equal(ctx.renderOrchEvent('orch-event {invalid'), null);
+    assert.equal(ctx.renderOrchEvent('See the orch-event payload'), null);
+});
+
 test('Auto and the mention card use the same single POST and open existing Jobs', async () => {
     const sent = [];
     const opened = [];

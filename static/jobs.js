@@ -40,6 +40,23 @@ let _pendingJobReflowTimer = null;
 const _expandedGroups = new Set(['open']); // track which collapsible groups are open across re-renders
 const jobPresentations = new Map();
 let jobGroupFilter = null;
+const jobPipelineLabels = new Map([
+    ['scoping', 'Scoping'],
+    ['awaiting_approval', 'Awaiting approval'],
+    ['active_coding', 'Active coding'],
+    ['in_review', 'In review'],
+    ['done', 'Done'],
+]);
+const jobPipelineStages = new Map([
+    ['orch.drafting', 'scoping'],
+    ['orch.awaiting_approval', 'awaiting_approval'],
+    ['orch.planning', 'scoping'],
+    ['orch.ready', 'scoping'],
+    ['orch.coding', 'active_coding'],
+    ['orch.in_review', 'in_review'],
+    ['orch.done', 'done'],
+]);
+const manualJobFilters = { open: 'scoping', done: 'active_coding', archived: 'done' };
 const proposalWriterOptions = [
     ['orch', 'Orch (Auto)'],
     ['antigravity', 'Agy (Manual Default)'],
@@ -50,7 +67,6 @@ const proposalWriterOptions = [
 function registerJobPresentation(id, stages) {
     const presentation = { stages: new Map(Object.entries(stages)), rows: new Map() };
     jobPresentations.set(id, presentation);
-    document.getElementById('jobs-panel')?.classList.add('has-job-presentation');
     renderJobsList();
     return (rows, status) => {
         if (status?.kind === 'workflow-coordinator' && status.pluginId === id) {
@@ -69,11 +85,21 @@ function registerJobPresentation(id, stages) {
 }
 
 function jobPresentation(job) {
+    const stage = job.lifecycle?.stage_id;
+    const pipeline = jobPipelineStages.get(stage);
+    const flagged = job.lifecycle?.flags?.includes('attention') ?? false;
     for (const [id, presentation] of jobPresentations) {
         const row = presentation.rows.get(job.id);
-        if (row && row.uid === job.uid && presentation.stages.has(row.stage)) {
-            return { key: `${id}-${row.stage}`, attention: Boolean(row.attention) };
+        const liveRow = row?.uid === job.uid ? row : null;
+        const status = stage ?? liveRow?.stage;
+        if (presentation.stages.has(status)) {
+            const labelKey = jobPipelineStages.get(status) ?? status;
+            const key = jobPipelineLabels.has(labelKey) ? `pipeline-${labelKey}` : `${id}-${status}`;
+            return { key, attention: Boolean(liveRow?.attention) || flagged };
         }
+    }
+    if (jobPresentations.size && pipeline) {
+        return { key: `pipeline-${pipeline}`, attention: flagged };
     }
     return { key: job.status, attention: false };
 }
@@ -563,6 +589,10 @@ function renderJobsList() {
         }
         savedForm = activeForm.parentNode.removeChild(activeForm);
     }
+    const oldFilters = list.querySelector('.job-group-filters');
+    const filterScroll = oldFilters?.scrollLeft ?? 0;
+    const focusedFilter = oldFilters?.contains(document.activeElement)
+        ? document.activeElement.dataset.filter : undefined;
     list.innerHTML = '';
 
     // Jobs are global — show all regardless of channel
@@ -574,13 +604,22 @@ function renderJobsList() {
         { key: 'done', label: 'ACTIVE', items: [] },
         { key: 'archived', label: 'CLOSED', items: [] },
     ];
+    if (jobPresentations.size) {
+        groups.unshift(...Array.from(jobPipelineLabels, ([filter, label]) => ({
+            key: `pipeline-${filter}`, label, filter, items: [], readOnly: true,
+        })));
+    }
     for (const [id, presentation] of jobPresentations) {
         for (const [stage, label] of presentation.stages) {
+            if (jobPipelineLabels.has(stage) || jobPipelineStages.has(stage)) continue;
             groups.push({ key: `${id}-${stage}`, label, items: [], readOnly: true });
         }
     }
+    const presentations = new Map();
     for (const a of channelJobs) {
-        const g = groups.find(g => g.key === jobPresentation(a).key);
+        const presentation = jobPresentation(a);
+        presentations.set(a.id, presentation);
+        const g = groups.find(g => g.key === presentation.key);
         if (g) g.items.push(a);
     }
 
@@ -589,21 +628,23 @@ function renderJobsList() {
         filters.className = 'job-group-filters';
         filters.setAttribute('role', 'group');
         filters.setAttribute('aria-label', 'Filter Jobs by status');
-        for (const { key, label } of groups) {
+        for (const [key, label] of [[null, 'All'], ...jobPipelineLabels]) {
             const filter = document.createElement('button');
             filter.type = 'button';
+            filter.dataset.filter = key ?? '';
             filter.textContent = label;
             filter.setAttribute('aria-pressed', String(jobGroupFilter === key));
             filter.onclick = () => {
-                jobGroupFilter = jobGroupFilter === key ? null : key;
+                jobGroupFilter = key;
                 renderJobsList();
-                const replacement = [...list.querySelectorAll('.job-group-filters button')]
-                    .find(button => button.textContent === label);
-                replacement?.focus();
             };
             filters.appendChild(filter);
         }
         list.appendChild(filters);
+        filters.scrollLeft = filterScroll;
+        if (focusedFilter !== undefined) {
+            [...filters.children].find(button => button.dataset.filter === focusedFilter)?.focus();
+        }
     }
 
     // Ghost card only when there are zero jobs total
@@ -619,15 +660,24 @@ function renderJobsList() {
             if (btn) btn.click();
         };
         list.appendChild(ghost);
+    } else if (jobGroupFilter && !groups.some(group =>
+        (group.filter ?? manualJobFilters[group.key]) === jobGroupFilter && group.items.length)) {
+        const empty = document.createElement('div');
+        empty.className = 'jobs-empty';
+        empty.textContent = 'No Jobs with this status.';
+        list.appendChild(empty);
     }
 
+    const hasManualJobs = groups.some(group => !group.readOnly && group.items.length);
     for (const group of groups) {
-        if (jobGroupFilter && group.key !== jobGroupFilter) continue;
+        const filter = group.filter ?? manualJobFilters[group.key];
+        if (jobGroupFilter && filter !== jobGroupFilter) continue;
+        if (!group.items.length && (group.readOnly || (jobPresentations.size && !hasManualJobs))) continue;
         // Sort by explicit manual order first; fallback to recency.
         group.items.sort(_compareJobsForList);
 
         const isCollapsible = group.key === 'open' || group.key === 'archived';
-        const isExpanded = _expandedGroups.has(group.key);
+        const isExpanded = jobGroupFilter !== null || _expandedGroups.has(group.key);
         const isCollapsed = isCollapsible && !isExpanded;
         const header = document.createElement('div');
         header.className = 'jobs-group-header ' + group.key + (isCollapsible ? ' collapsible' : '') + (isCollapsed ? ' collapsed' : '');
@@ -678,7 +728,7 @@ function renderJobsList() {
             } catch (err) { console.error('Failed to change status:', err); }
         });
 
-        list.appendChild(header);
+        if (!group.readOnly) list.appendChild(header);
 
         // Wrap group items in a container for collapsing (CSS grid animation)
         const itemsContainer = document.createElement('div');
@@ -689,30 +739,48 @@ function renderJobsList() {
         for (const a of group.items) {
             const card = document.createElement('div');
             card.className = 'job-card';
-            if (jobPresentation(a).attention) card.classList.add('needs-input');
+            const { attention } = presentations.get(a.id);
             card.dataset.id = a.id;
             card.onclick = () => openJobConversation(a.id);
             card.addEventListener('selectstart', (e) => e.preventDefault());
 
-            const msgCount = (a.messages || []).filter(m => !m?.deleted).length;
             const unread = jobUnread[a.id] || 0;
 
             const unreadHtml = unread > 0
                 ? `<span class="job-unread-dot" title="Unread messages">${unread > 99 ? '99+' : unread}</span>`
                 : '';
-            const channelHtml = jobPresentations.size && a.channel
-                ? `<span class="job-origin">#${window.escapeHtml(a.channel)}</span>` : '';
-
-            card.innerHTML = `
-                <div class="job-card-header">
-                    <span class="job-status-dot ${a.status}"></span>
-                    <span class="job-title">${window.escapeHtml(a.title)}</span>
-                    ${channelHtml}
-                    <span class="job-msg-count">${msgCount > 0 ? msgCount : ''}</span>
-                    ${unreadHtml}
-                </div>
-            `;
-
+            if (jobPresentations.size) {
+                card.classList.add('job-pipeline-card');
+                card.classList.toggle('job-card-attention', attention);
+                const statusLabel = jobPipelineLabels.get(filter) ?? group.label;
+                const escape = window.escapeHtml;
+                const date = new Date(a.created_at * 1000);
+                const time = a.created_at && Number.isFinite(date.getTime())
+                    ? `<time datetime="${date.toISOString()}">${escape(date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</time>`
+                    : '';
+                card.innerHTML = `
+                    <div class="job-card-header">
+                        ${attention ? '<span class="job-attention-dot" title="Needs your attention"></span>' : ''}
+                        <span class="job-title">${escape(a.title)}</span>
+                        <span class="job-stage-badge" data-stage="${filter ?? ''}">${escape(statusLabel)}</span>
+                        ${unreadHtml}
+                    </div>
+                    ${a.body ? `<div class="job-card-preview">${escape(a.body)}</div>` : ''}
+                    ${a.channel || time ? `<div class="job-card-footer">
+                        ${a.channel ? `<span class="job-origin">#${escape(a.channel)}</span>` : ''}${time}
+                    </div>` : ''}
+                `;
+            } else {
+                const msgCount = (a.messages || []).filter(m => !m?.deleted).length;
+                card.innerHTML = `
+                    <div class="job-card-header">
+                        <span class="job-status-dot ${a.status}"></span>
+                        <span class="job-title">${window.escapeHtml(a.title)}</span>
+                        <span class="job-msg-count">${msgCount > 0 ? msgCount : ''}</span>
+                        ${unreadHtml}
+                    </div>
+                `;
+            }
 
             card.draggable = !group.readOnly;
             card.addEventListener('dragstart', (e) => {
@@ -1144,11 +1212,59 @@ function appendJobMessage(msg) {
                 <span class="job-msg-time">${msg.time || ''}</span>
                 ${deleteActionHtml}
             </div>
-            ${msg.text ? `<div class="job-msg-text">${window.renderMarkdown(msg.text)}</div>` : ''}
+            ${msg.text ? `<div class="job-msg-text">${renderOrchEvent(msg.text) ?? window.renderMarkdown(msg.text)}</div>` : ''}
             ${attHtml}
         `;
     }
     container.appendChild(div);
+}
+
+function renderOrchEvent(text) {
+    const prefix = 'orch-event ';
+    if (!text.startsWith(prefix)) return null;
+
+    const raw = text.slice(prefix.length);
+    let event;
+    try {
+        event = JSON.parse(raw);
+    } catch {
+        return null;
+    }
+    if (event?.v !== 1 || typeof event.kind !== 'string' || !event.kind.trim()) return null;
+
+    const escape = window.escapeHtml;
+    const revision = Number.isSafeInteger(event.revision) && event.revision > 0
+        ? ` · Rev ${event.revision}` : '';
+    const disclosure = `<details class="job-event">
+        <summary title="Toggle raw Orch event JSON">
+            <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5.5 4-4 4 4 4m5-8 4 4-4 4m-1-10-3 12"/></svg>
+            <span>orch-event · ${escape(event.kind)}${revision}</span>
+        </summary>
+        <pre class="job-event-json">${escape(raw)}</pre>
+    </details>`;
+
+    const brief = event.brief;
+    if (event.kind !== 'brief' || typeof brief?.outcome !== 'string') return disclosure;
+
+    const strings = values => Array.isArray(values)
+        ? values.filter(value => typeof value === 'string' && value.trim()) : [];
+    const list = (label, values) => {
+        const items = strings(values);
+        return items.length
+            ? `<section><h4>${label}</h4><ul>${items.map(item => `<li>${escape(item)}</li>`).join('')}</ul></section>`
+            : '';
+    };
+    const gates = strings(brief.gates);
+    const repo = typeof brief.repo === 'string' && brief.repo.trim()
+        ? `<span class="job-event-tag">${escape(brief.repo)}</span>` : '';
+    return `${disclosure}
+        <article class="job-event-brief">
+            <header><h3>Brief${revision}</h3>${repo}</header>
+            <section><h4>What</h4><p>${escape(brief.outcome)}</p></section>
+            ${list('Done when', brief.checks)}
+            ${list('Limits', brief.constraints)}
+            ${gates.length ? `<section class="job-event-gates"><h4>Gates</h4>${gates.map(gate => `<span class="job-event-tag">${escape(gate[0].toUpperCase() + gate.slice(1))}</span>`).join('')}</section>` : ''}
+        </article>`;
 }
 
 // ---------------------------------------------------------------------------
