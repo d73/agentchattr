@@ -3369,28 +3369,72 @@ function setupScroll() {
 
 // --- Reply ---
 
-function copyMessage(msgId, event) {
+function copySelectedText(text) {
+    if (typeof document.execCommand !== 'function') return false;
+    const focused = document.activeElement;
+    const selection = document.getSelection();
+    const ranges = Array.from({ length: selection?.rangeCount || 0 }, (_, index) => selection.getRangeAt(index));
+    const input = document.createElement('textarea');
+    input.value = text;
+    input.readOnly = true;
+    input.tabIndex = -1;
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    document.body.appendChild(input);
+    try {
+        input.select();
+        return document.execCommand('copy');
+    } catch {
+        return false;
+    } finally {
+        input.remove();
+        focused?.focus({ preventScroll: true });
+        if (ranges.length) {
+            selection.removeAllRanges();
+            ranges.forEach(range => selection.addRange(range));
+        }
+    }
+}
+
+async function writeMessageClipboard(markdown, html) {
+    const clipboard = navigator.clipboard;
+    if (clipboard?.write && typeof ClipboardItem === 'function') {
+        try {
+            await clipboard.write([new ClipboardItem({
+                'text/html': new Blob([html], { type: 'text/html' }),
+                'text/plain': new Blob([markdown], { type: 'text/plain' }),
+            })]);
+            return true;
+        } catch {
+            // Some browsers allow plain text even when they reject HTML.
+        }
+    }
+    if (clipboard?.writeText) {
+        try {
+            await clipboard.writeText(markdown);
+            return true;
+        } catch {
+            // Fall back to a selection-based copy while the click is still active.
+        }
+    }
+    return copySelectedText(markdown);
+}
+
+async function copyMessage(msgId, event) {
     if (event) event.stopPropagation();
     const el = document.querySelector(`.message[data-id="${msgId}"]`);
     if (!el) return;
     const msgText = el.querySelector('.msg-text');
     const html = msgText?.innerHTML || '';
     const markdown = el.dataset.rawText || msgText?.innerText || '';
-    const done = () => {
-        const btn = el.querySelector('.bubble-copy');
-        if (btn) {
-            btn.classList.add('copied');
-            setTimeout(() => btn.classList.remove('copied'), 1500);
-        }
-    };
-    // Rich HTML + raw markdown — rich editors get HTML, code/markdown editors get source
-    if (navigator.clipboard.write) {
-        navigator.clipboard.write([new ClipboardItem({
-            'text/html': new Blob([html], {type: 'text/html'}),
-            'text/plain': new Blob([markdown], {type: 'text/plain'}),
-        })]).then(done);
-    } else {
-        navigator.clipboard.writeText(markdown).then(done);
+    if (!await writeMessageClipboard(markdown, html)) {
+        showToast('Could not copy message.', 'error');
+        return;
+    }
+    const button = el.querySelector('.bubble-copy');
+    if (button) {
+        button.classList.add('copied');
+        setTimeout(() => button.classList.remove('copied'), 1500);
     }
 }
 
