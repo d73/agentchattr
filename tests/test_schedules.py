@@ -21,6 +21,54 @@ def _store():
 
 
 class ScheduleDispatchTests(unittest.TestCase):
+    def test_incomplete_legacy_schedules_are_neither_pending_work_nor_due(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "schedules.json"
+            path.write_text(json.dumps([
+                {"id": "blank-prompt", "active": True, "prompt": "", "targets": ["codex"], "next_run": 100},
+                {"id": "blank-target", "active": True, "prompt": "ping", "targets": [""], "next_run": 100},
+            ]), encoding="utf-8")
+            schedules = ScheduleStore(str(path))
+
+            with patch("schedules.time.time", return_value=200):
+                self.assertFalse(schedules.has_active())
+                self.assertEqual(schedules.run_due(), [])
+                with schedules.dispatch_due("blank-target") as item:
+                    self.assertIsNone(item)
+            self.assertEqual(len(schedules.list_all()), 2)
+
+    def test_failed_one_shot_does_not_block_other_due_tasks(self):
+        import app
+        from store import MessageStore, atomic_write_text
+
+        with tempfile.TemporaryDirectory() as folder:
+            schedules = ScheduleStore(str(Path(folder) / "schedules.json"))
+            message_path = Path(folder) / "messages.jsonl"
+            messages = MessageStore(str(message_path))
+            with patch("schedules.time.time", return_value=100):
+                failed = schedules.create("first", ["codex"], one_shot=True, send_at=200)
+                ready = schedules.create("second", ["codex"], one_shot=True, send_at=200)
+
+            def fail_first_write(path, text):
+                if "@codex first" in text:
+                    raise OSError("message log temporarily unavailable")
+                atomic_write_text(path, text)
+
+            with (
+                patch("schedules.time.time", return_value=200),
+                patch.object(app, "schedules", schedules),
+                patch.object(app, "store", messages),
+                patch("store.atomic_write_text", side_effect=fail_first_write),
+            ):
+                with self.assertLogs(app.log, "ERROR") as logs:
+                    app._dispatch_due_schedules()
+
+            self.assertIn(failed["id"], logs.output[0])
+            persisted = MessageStore(str(message_path))
+            self.assertEqual([m["text"] for m in persisted.get_recent()], ["@codex second"])
+            self.assertIsNotNone(schedules.get(failed["id"]))
+            self.assertIsNone(schedules.get(ready["id"]))
+
     def test_dispatch_skips_tasks_deleted_or_paused_after_poll(self):
         import app
 
@@ -362,6 +410,13 @@ class RelativeSendAtTests(unittest.TestCase):
         payload = {"prompt": "ping", "targets": ["claude"]}
         payload.update(body)
         return asyncio.run(self.app.create_schedule(_FakeRequest(payload)))
+
+    def test_empty_normalized_prompt_or_targets_are_rejected(self):
+        for extra in ({"prompt": "   "}, {"targets": [" ", "@"]}):
+            with self.subTest(extra=extra):
+                response = self._post(spec="every 2h", **extra)
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.app.schedules.list_all(), [])
 
     def test_invalid_daily_clock_is_rejected_without_saving(self):
         for clock in ("24:00", "12:60", "24:60"):

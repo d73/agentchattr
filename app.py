@@ -788,20 +788,21 @@ def _dispatch_due_schedules() -> None:
     if schedules is None:
         return
     for candidate in schedules.run_due():
-        with schedules.dispatch_due(candidate["id"]) as schedule:
-            if schedule is None:
-                continue
-            prompt = schedule.get("prompt", "")
-            targets = schedule.get("targets", [])
-            if prompt and targets:
+        schedule_id = candidate["id"]
+        try:
+            with schedules.dispatch_due(schedule_id) as schedule:
+                if schedule is None:
+                    continue
                 sender = schedule.get("created_by", "user")
-                mentions = " ".join(f"@{target}" for target in targets)
+                mentions = " ".join(f"@{target}" for target in schedule["targets"] if target)
                 channel = schedule.get("channel", "general")
-                _post_scheduled_message(schedule, sender, f"{mentions} {prompt}", channel)
-        if prompt and targets and schedule.get("one_shot"):
-            schedules.delete(schedule["id"])
-        else:
-            schedules.mark_run(schedule["id"])
+                _post_scheduled_message(schedule, sender, f"{mentions} {schedule['prompt']}", channel)
+            if schedule.get("one_shot"):
+                schedules.delete(schedule_id)
+            else:
+                schedules.mark_run(schedule_id)
+        except Exception:
+            log.exception("Could not dispatch schedule %s", schedule_id)
 
 
 def _post_scheduled_message(schedule: dict, sender: str, text: str, channel: str) -> None:
