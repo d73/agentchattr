@@ -34,6 +34,7 @@ from session_engine import SessionEngine
 from plugin_host import ASSET_PREFIX
 from operator_auth import verify_operator
 from orch_workflow import history as orch_history, history_context as orch_history_context
+from orch_workflow import history_event_context as orch_history_event_context
 from orch_workflow import record_reply as record_orch_reply, reply_metadata as orch_reply_metadata
 
 log = logging.getLogger(__name__)
@@ -2818,6 +2819,12 @@ async def get_orch_history(job_uid: str):
 async def get_orch_history_context(job_uid: str, message_id: int):
     result = orch_history_context(jobs, store, job_uid, message_id)
     return result if result is not None else JSONResponse({"error": "Orch message not found"}, status_code=404)
+
+
+@app.get("/api/jobs/{job_uid}/orch-events/{event_id}")
+async def get_orch_history_event(job_uid: str, event_id: str):
+    result = orch_history_event_context(jobs, store, job_uid, event_id)
+    return result if result is not None else JSONResponse({"error": "Event unavailable"}, status_code=404)
 
 
 @app.post("/api/jobs/{job_id}/messages")

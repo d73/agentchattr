@@ -162,6 +162,7 @@ class JobStore:
         public.pop("_orch_gates", None)
         public.pop("_orch_workflow_history", None)
         public.pop("_orch_workflow_completed", None)
+        public.pop("_orch_history_events", None)
         coordinator = orch_coordinator(job)
         if coordinator is not None:
             public["orch_coordinator"] = coordinator
@@ -260,6 +261,39 @@ class JobStore:
                         job["_orch_workflow_completed"] = previous
                     raise
             return {"job_uid": job_uid, "channel": job["channel"], "prompt_id": prompt_id, "completed": True}
+
+    def orch_history_events(self, job_uid):
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            return deepcopy(job.get("_orch_history_events", {})) if job is not None else {}
+
+    def record_orch_history_event(self, job_uid, *, coordinator, event):
+        changed = None
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            bound = orch_coordinator(job) if job is not None else None
+            if not bound or bound.casefold() != coordinator.casefold():
+                return None
+            events = job.get("_orch_history_events", {})
+            event_id = event["event_id"]
+            if event_id in events:
+                if events[event_id] != event:
+                    raise ValueError("Orch history operation already has different data")
+            else:
+                job["_orch_history_events"] = {**events, event_id: deepcopy(event)}
+                try:
+                    self._save()
+                except OSError:
+                    if events:
+                        job["_orch_history_events"] = events
+                    else:
+                        del job["_orch_history_events"]
+                    raise
+                changed = self._snapshot(job)
+            result = {"job_uid": job_uid, "channel": job["channel"], "event_id": event_id}
+        if changed is not None:
+            self._fire("update", changed)
+        return result
 
     def activate_orch_workflow(self, job_uid, *, coordinator):
         if not isinstance(coordinator, str) or not coordinator.strip():

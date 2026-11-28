@@ -121,7 +121,30 @@ const jobHistoryLabels = new Map([
     ['brief', 'Brief'], ['spec', 'Spec'], ['mockup', 'Mockup'],
     ['staffing', 'Staffing'], ['blocker', 'Blocker'], ['cancel', 'Cancellation'],
     ['reopen', 'Reopen request'], ['closeout', 'Outcome'],
+    ['attach', 'Orch attached'], ['set_flags', 'Flags changed'], ['complete', 'Job completed'],
+    ['submit_brief', 'Brief submitted'], ['revise_brief', 'Brief revision requested'],
+    ['approve_brief', 'Brief approved'], ['plan_ready', 'Plan ready'], ['revise_plan', 'Plan revision requested'],
+    ['change_scope', 'Scope changed'], ['start', 'Work started'], ['return_to_backlog', 'Returned to planning'],
+    ['begin_review', 'Moved to review'], ['resume_coding', 'Returned to coding'],
+    ['assignment', 'Task assigned'], ['pr_ready', 'PR ready'], ['changes_requested', 'Changes requested'],
+    ['merge_verified', 'Merge verified'], ['result_rejected', 'Result rejected'],
+    ['deadline_missed', 'Blocked'], ['delivery_unconfirmed', 'Delivery unconfirmed'],
+    ['result_accepted_late', 'Recovered'], ['ack_accepted_late', 'Acknowledgment accepted late'],
+    ['operator_retry', 'Operator retried'], ['result_accepted', 'Result accepted'],
+    ['cleanup_required', 'Cleanup required'],
 ]);
+const jobHistoryReasons = new Map([
+    ['approval_only_for_spec', 'Approval is only valid for spec review'],
+    ['invalid_result', 'Submitted result did not meet the task requirements'],
+    ['ack_deadline', 'Acknowledgment deadline passed'],
+    ['evidence_deadline', 'Evidence deadline passed'],
+]);
+const jobHistoryEventPattern = /^(?:orch:[0-9a-f]{32}|message:[0-9]{1,16}|(?:lifecycle|reopen):[a-zA-Z0-9_-]{1,128})$/;
+const jobHistoryDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const jobHistoryExactDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'long', timeStyle: 'long' });
+const jobHistoryTime = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+const jobHistoryWarningIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3zm0 6v5m0 3h.01"/></svg>';
+const jobHistoryDetailsIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16M8 5v4m8 1v4m-6 1v4"/></svg>';
 
 // ---------------------------------------------------------------------------
 // Message Renderers
@@ -1071,6 +1094,63 @@ async function jumpFromJobHistory(job, messageId, channel, feedback) {
     }
 }
 
+function historyDate(value) {
+    if (typeof value !== 'number') return null;
+    const date = new Date(value * 1000);
+    return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function historyLabel(kind) {
+    return jobHistoryLabels.get(kind) || (kind || 'History entry').replace(/[_-]+/g, ' ')
+        .replace(/^./, letter => letter.toUpperCase());
+}
+
+function historyDisplayDate(date) {
+    if (date.toDateString() === new Date().toDateString()) return `Today ${jobHistoryTime.format(date)}`;
+    return jobHistoryDate.format(date);
+}
+
+function addHistoryOutcome(summary, entry) {
+    const flags = rows => rows.map(historyLabel).join(', ');
+    let outcome = jobHistoryReasons.get(entry.reason_code);
+    if (Array.isArray(entry.flags_added) && Array.isArray(entry.flags_removed)) {
+        outcome = [entry.flags_added.length && `Added ${flags(entry.flags_added)}`,
+            entry.flags_removed.length && `Removed ${flags(entry.flags_removed)}`].filter(Boolean).join(' · ');
+    } else if (Array.isArray(entry.flags)) {
+        outcome = entry.flags.length ? flags(entry.flags) : 'No flags';
+    }
+    const resolution = historyDate(entry.resolved_at);
+    const line = document.createElement('div');
+    line.className = 'job-history-text';
+    if (outcome) line.textContent = outcome;
+    if (resolution) {
+        const resolved = document.createElement('span');
+        resolved.className = 'job-history-resolution';
+        resolved.textContent = `✓ Resolved ${jobHistoryTime.format(resolution)}`;
+        resolved.title = jobHistoryExactDate.format(resolution);
+        line.append(resolved);
+    }
+    if (typeof entry.repo === 'string' && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(entry.repo)) {
+        const [owner, repo] = entry.repo.split('/');
+        if ([owner, repo].every(part => part !== '.' && part !== '..')) {
+            const base = `https://github.com/${owner}/${repo}`;
+            for (const [label, path] of [
+                Number.isSafeInteger(entry.pr) && [`PR #${entry.pr}`, `pull/${entry.pr}`],
+                typeof entry.commit === 'string' && /^[a-f0-9]{40,64}$/.test(entry.commit)
+                    && [entry.commit.slice(0, 8), `commit/${entry.commit}`],
+            ].filter(Boolean)) {
+                const link = document.createElement('a');
+                link.href = `${base}/${path}`;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = label;
+                line.append(link);
+            }
+        }
+    }
+    if (line.textContent) summary.append(line);
+}
+
 function renderOrchJobHistory(job, history) {
     const channel = history.channel || job.channel;
     document.getElementById('job-history-title').textContent = job.title;
@@ -1081,11 +1161,10 @@ function renderOrchJobHistory(job, history) {
     stage.textContent = jobPipelineLabels.get(stage.dataset.stage) || '';
     const feedback = document.getElementById('job-history-status');
     const footer = document.getElementById('job-history-jump');
-    const target = history.current_action_message_id ?? history.source_message_id
-        ?? job.source_msg_id ?? job.anchor_msg_id;
-    footer.hidden = !channel && !Number.isSafeInteger(target);
-    const label = history.current_action_message_id != null
-        ? `Reply or approve in #${channel}` : `Open conversation in #${channel}`;
+    const target = history.current_action_message_id;
+    footer.hidden = !Number.isSafeInteger(target);
+    document.getElementById('job-history-footer').hidden = footer.hidden;
+    const label = `Reply or approve in #${channel}`;
     footer.textContent = label;
     footer.insertAdjacentHTML('beforeend', jobHistoryJumpIcon);
     footer.title = label;
@@ -1093,29 +1172,68 @@ function renderOrchJobHistory(job, history) {
 
     const timeline = document.getElementById('job-history-timeline');
     const focusedMessage = timeline.contains(document.activeElement) ? document.activeElement.dataset.messageId : null;
+    const focusedEvent = timeline.contains(document.activeElement) ? document.activeElement.dataset.eventId : null;
+    const details = document.getElementById('job-history-details');
+    const detailCount = (history.entries || []).filter(entry => entry.detail).length;
+    function showDetails(open) {
+        details.setAttribute('aria-expanded', String(open));
+        details.title = `${open ? 'Hide' : 'Show'} details (${detailCount})`;
+        details.setAttribute('aria-label', details.title);
+        for (const row of timeline.querySelectorAll('[data-history-detail]')) row.hidden = !open;
+        for (const group of timeline.querySelectorAll('.job-history-group')) {
+            group.hidden = ![...group.querySelectorAll('.job-history-row')].some(row => !row.hidden);
+        }
+    }
+    details.hidden = !detailCount;
+    details.innerHTML = jobHistoryDetailsIcon;
+    details.onclick = () => showDetails(details.getAttribute('aria-expanded') !== 'true');
     timeline.replaceChildren();
+    let activeRevision, groupRows;
     for (const entry of history.entries || []) {
+        const revision = Number.isSafeInteger(entry.revision) ? entry.revision : null;
+        if (activeRevision !== revision) {
+            activeRevision = revision;
+            const group = document.createElement('li');
+            group.className = 'job-history-group';
+            if (revision !== null) {
+                const title = document.createElement('h4');
+                title.textContent = `Rev ${revision}`;
+                group.append(title);
+            }
+            groupRows = document.createElement('ol');
+            group.append(groupRows);
+            timeline.append(group);
+        }
         const item = document.createElement('li');
+        item.className = 'job-history-row';
+        if (entry.detail) item.dataset.historyDetail = '';
+        if (typeof entry.event_id === 'string' && jobHistoryEventPattern.test(entry.event_id)) {
+            item.dataset.eventId = entry.event_id;
+            item.tabIndex = -1;
+        }
+        if (entry.problem) {
+            const icon = document.createElement('span');
+            icon.className = 'job-history-problem';
+            icon.title = entry.resolved_at ? 'Resolved problem' : 'Needs attention';
+            icon.innerHTML = jobHistoryWarningIcon;
+            item.append(icon);
+            item.classList.add(entry.resolved_at ? 'job-history-resolved' : 'job-history-needs-action');
+        }
         const summary = document.createElement('div');
         summary.className = 'job-history-milestone';
         const heading = document.createElement('strong');
-        const kind = jobHistoryLabels.get(entry.kind) || 'Job update';
-        const revision = Number.isSafeInteger(entry.revision) ? ` · Rev ${entry.revision}` : '';
-        heading.textContent = [kind + revision, entry.choice].filter(Boolean).join(' · ');
+        heading.textContent = [historyLabel(entry.kind), entry.choice].filter(Boolean).join(' · ');
         summary.appendChild(heading);
-        const stamp = [entry.time, entry.actor].filter(Boolean).join(' · ');
+        const date = historyDate(entry.time);
+        const stamp = [date && historyDisplayDate(date), entry.actor].filter(Boolean).join(' · ');
         if (stamp) {
             const meta = document.createElement('div');
             meta.className = 'job-history-meta';
             meta.textContent = stamp;
+            if (date) meta.title = jobHistoryExactDate.format(date);
             summary.appendChild(meta);
         }
-        if (entry.text) {
-            const text = document.createElement('div');
-            text.className = 'job-history-text';
-            text.innerHTML = window.renderMarkdown(entry.text);
-            summary.appendChild(text);
-        }
+        addHistoryOutcome(summary, entry);
         item.appendChild(summary);
         if (Number.isSafeInteger(entry.message_id)) {
             const destination = entry.channel || channel;
@@ -1132,11 +1250,15 @@ function renderOrchJobHistory(job, history) {
         if (entry.message_id === history.current_action_message_id && entry.message_id != null) {
             item.classList.add('job-history-needs-action');
         }
-        timeline.appendChild(item);
+        groupRows.appendChild(item);
     }
+    showDetails(details.getAttribute('aria-expanded') === 'true');
     if (focusedMessage) {
         [...timeline.querySelectorAll('[data-message-id]')]
             .find(button => button.dataset.messageId === focusedMessage)?.focus({ preventScroll: true });
+    } else if (focusedEvent) {
+        [...timeline.querySelectorAll('[data-event-id]')]
+            .find(row => row.dataset.eventId === focusedEvent)?.focus({ preventScroll: true });
     }
 }
 
@@ -1155,12 +1277,13 @@ async function refreshOrchJobHistory(job) {
         feedback.textContent = history.entries?.length ? '' : 'No milestones recorded yet.';
     } catch {
         if (activeJobId === job.id && request === orchHistoryRequest) {
-            feedback.textContent = 'Job history is unavailable. You can still open the source conversation.';
+            feedback.textContent = 'Job History is unavailable.';
         }
     }
 }
 
 async function loadOrchJobHistory(job) {
+    document.getElementById('job-history-details').setAttribute('aria-expanded', 'false');
     renderOrchJobHistory(job, {});
     const brief = document.getElementById('job-history-brief');
     brief.innerHTML = job.body ? window.renderMarkdown(job.body) : '';
@@ -2500,6 +2623,68 @@ for (const type of ['message', 'message_update']) {
 function _jobsInit() {
     setupJobsInput();
     setupJobMentions();
+    window.addEventListener('hashchange', openJobEventLink);
+    document.addEventListener('click', event => {
+        const href = event.target.closest('a')?.getAttribute('href');
+        if (href?.startsWith('#job/') && href === window.location.hash && event.button === 0
+                && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+            event.preventDefault();
+            void openJobEventLink();
+        }
+    });
+    void openJobEventLink();
+}
+
+async function openJobEventLink() {
+    const hash = window.location.hash;
+    const route = /^#job\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/event\/([^/]{1,160})$/.exec(hash);
+    if (!hash.startsWith('#job/')) return;
+    try {
+        if (!route) throw new Error('Event unavailable');
+        const [, uid, eventId] = route;
+        const options = { headers: { 'X-Session-Token': window.SESSION_TOKEN } };
+        const result = await fetch(`/api/jobs/${uid}/orch-events/${encodeURIComponent(eventId)}`, options);
+        if (!result.ok) throw new Error('Event unavailable');
+        const event = await result.json();
+        if (event.job_uid !== uid || hash !== window.location.hash) return;
+        let sourceUnavailable = false;
+        if (event.event_id === eventId && Number.isSafeInteger(event.message_id)) {
+            try {
+                await window.showOrchHistoryMessage(uid, event.message_id);
+                return;
+            } catch {
+                sourceUnavailable = true;
+            }
+        }
+        let job = jobsData.find(row => row.uid === uid);
+        if (!job) {
+            const response = await fetch('/api/jobs', options);
+            if (!response.ok) throw new Error('Event unavailable');
+            const jobs = await response.json();
+            job = jobs.find(row => row.uid === uid);
+            if (job && !jobsData.some(row => row.uid === uid)) jobsData.push(job);
+        }
+        if (hash !== window.location.hash) return;
+        if (!jobUsesOrchHistory(job)) throw new Error('Event unavailable');
+        window.setSidePanelOpen('jobs', true);
+        await openJobConversation(job.id, { focus: false });
+        if (hash !== window.location.hash || activeJobId !== job.id) return;
+        const timeline = document.getElementById('job-history-timeline');
+        const row = event.event_id === eventId && [...timeline.querySelectorAll('[data-event-id]')]
+            .find(element => element.dataset.eventId === eventId);
+        if (row) {
+            if (row.hidden) document.getElementById('job-history-details').click();
+            row.focus({ preventScroll: true });
+            row.scrollIntoView({ block: 'center' });
+            if (sourceUnavailable) {
+                document.getElementById('job-history-status').textContent = 'Source message unavailable. The event is shown in Job History.';
+            }
+        } else {
+            document.getElementById('job-history-status').textContent = 'Event unavailable.';
+        }
+    } catch {
+        if (hash === window.location.hash) window.showToast?.('Event unavailable.', 'error');
+    }
 }
 
 // ---------------------------------------------------------------------------

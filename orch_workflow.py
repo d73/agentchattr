@@ -6,6 +6,46 @@ import uuid
 from jobs import JobStore, _ORCH_GATE_STAGE
 
 
+_HISTORY_REASONS = {
+    "assignment": set(), "pr_ready": set(), "changes_requested": set(), "merge_verified": set(),
+    "result_rejected": {"approval_only_for_spec", "invalid_result"},
+    "deadline_missed": {"ack_deadline", "evidence_deadline"},
+    "delivery_unconfirmed": set(), "result_accepted_late": set(), "ack_accepted_late": set(),
+    "operator_retry": set(), "cleanup_required": set(), "closeout": set(), "canceled": set(),
+    "result_accepted": set(),
+}
+_EVENT_ID = re.compile(r"(?:orch:[0-9a-f]{32}|message:[0-9]{1,16}|(?:lifecycle|reopen):[a-zA-Z0-9_-]{1,128})")
+_JOB_UID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+
+
+def publish_orch_history_event(jobs, job_uid, *, coordinator, payload):
+    required = {"v", "kind", "revision", "attempt", "operation_id", "time"}
+    optional = {"task", "actor", "reason_code", "repo", "pr", "commit"}
+    if not isinstance(payload, dict) or not required <= payload.keys() <= required | optional:
+        raise ValueError("Invalid Orch history fields")
+    v, kind, revision, attempt, operation, stamp = (payload[key] for key in
+        ("v", "kind", "revision", "attempt", "operation_id", "time"))
+    if (type(v) is not int or v != 1 or not isinstance(kind, str) or kind not in _HISTORY_REASONS
+            or revision is not None and (type(revision) is not int or not 0 < revision < 2**53)
+            or attempt is not None and (not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt))
+            or not isinstance(operation, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", operation)
+            or type(stamp) not in (int, float) or not 0 < stamp < 253402300800):
+        raise ValueError("Invalid Orch history event")
+    patterns = {"task": r"[0-9a-f]{32}", "actor": r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}",
+                "repo": r"[a-zA-Z0-9_.-]{1,100}/[a-zA-Z0-9_.-]{1,100}", "commit": r"[0-9a-f]{40,64}"}
+    for field, pattern in patterns.items():
+        if field in payload and (not isinstance(payload[field], str) or not re.fullmatch(pattern, payload[field])):
+            raise ValueError("Invalid Orch history identifier")
+    if ("pr" in payload and (type(payload["pr"]) is not int or not 0 < payload["pr"] < 2**53)
+            or "reason_code" in payload and (not isinstance(payload["reason_code"], str)
+                                             or payload["reason_code"] not in _HISTORY_REASONS[kind])
+            or "commit" in payload and kind != "merge_verified"):
+        raise ValueError("Invalid Orch history outcome")
+    event_id = "orch:" + uuid.uuid5(uuid.NAMESPACE_URL,
+        f"agentchattr:orch-history:{job_uid}:{revision}:{attempt}:{kind}:{operation}").hex
+    return jobs.record_orch_history_event(job_uid, coordinator=coordinator, event={**payload, "event_id": event_id})
+
+
 def _workflow_binding(message):
     return (message.get("metadata") or {}).get("orch_workflow")
 
@@ -54,7 +94,7 @@ def _belongs_to_job(state, message):
 
 
 def publish_orch_workflow(jobs, store, job_uid, *, coordinator, operation_id, kind,
-                          revision, parent_message_id, text, recipient=None, requires_reply=False):
+                          revision, parent_message_id, text, recipient=None, requires_reply=False, event_id=None):
     if (not isinstance(operation_id, str) or not operation_id.strip()
             or not isinstance(kind, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", kind)
             or revision is not None and (type(revision) is not int or revision < 1)
@@ -74,6 +114,14 @@ def publish_orch_workflow(jobs, store, job_uid, *, coordinator, operation_id, ki
         binding["recipient"] = recipient
     if requires_reply:
         binding["requires_reply"] = True
+    if (isinstance(event_id, str) and _EVENT_ID.fullmatch(event_id) and _JOB_UID.fullmatch(job_uid)
+            and (event_id in jobs.orch_history_events(job_uid)
+                 or any(event_id == f"reopen:{request['id']}" for request in job.get("reopen_requests", [])))):
+        binding["event_id"] = event_id
+        # Keep the delivery marker at the end for legacy outbox reconciliation.
+        head, marker, tail = text.rpartition("\n\n[orch:")
+        link = f"\n\n[View event](#job/{job_uid}/event/{event_id})"
+        text = head + link + marker + tail if marker else text + link
     uid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentchattr:orch-workflow:{job_uid}:{operation_id}"))
     message = store.get_by_uid(uid)
     if message is None:
@@ -184,6 +232,52 @@ def _history_entry(job, kind, text, *, event_id=None, time=None, message_id=None
             "channel": job["channel"], "choice": choice, "actor": actor, "time": time}
 
 
+def _lifecycle_entry(job, event, index):
+    kind = event.get("event") or "lifecycle"
+    kind = {"pr_ready": "begin_review", "changes_requested": "resume_coding"}.get(kind, kind)
+    operation = event.get("operation_id")
+    event_id = f"lifecycle:{operation}"
+    if isinstance(operation, str) and not _EVENT_ID.fullmatch(event_id):
+        event_id = "lifecycle:" + uuid.uuid5(uuid.NAMESPACE_URL, operation).hex
+    elif not isinstance(operation, str):
+        event_id = f"lifecycle:legacy-{index}"
+    before, after = event.get("before") or {}, event.get("after") or {}
+    row = _history_entry(job, kind, None, event_id=event_id, actor=event.get("actor"),
+                         time=event.get("time"), revision=event.get("revision"))
+    if kind == "set_flags":
+        old_flags, flags = before.get("flags"), after.get("flags", event.get("flags"))
+        if isinstance(flags, list):
+            row["flags"] = flags
+            if isinstance(old_flags, list):
+                row["flags_added"] = [flag for flag in flags if flag not in old_flags]
+                row["flags_removed"] = [flag for flag in old_flags if flag not in flags]
+        row["detail"] = True
+    return row
+
+
+def _attempt_history(job, events):
+    outcomes = {}
+    problems = {"result_rejected", "deadline_missed", "delivery_unconfirmed"}
+    recovery = {"result_accepted_late", "operator_retry", "merge_verified", "pr_ready",
+                "changes_requested", "result_accepted"}
+    for event in reversed(sorted(events, key=lambda row: row["time"])):
+        kind, attempt = event["kind"], event["attempt"]
+        key = (event["revision"], attempt)
+        row = _history_entry(job, kind, None, event_id=event["event_id"],
+                             time=event["time"], revision=event["revision"], actor=event.get("actor"))
+        row.update({field: event[field] for field in ("reason_code", "repo", "pr", "commit", "task", "attempt")
+                    if field in event})
+        if kind in problems:
+            row["problem"] = True
+            resolution = outcomes.get(key, {}).get(kind)
+            if resolution is not None:
+                row["resolved_at"] = resolution
+        elif attempt and (kind in recovery or kind == "ack_accepted_late"):
+            affected = problems - {"result_rejected"} if kind == "ack_accepted_late" else problems
+            outcomes.setdefault(key, {}).update(dict.fromkeys(affected, event["time"]))
+        yield row
+
+
 def _pending_actions(store, state, messages):
     job, gates, _, _ = state
     stage = job["lifecycle"]["stage_id"]
@@ -245,28 +339,30 @@ def history(jobs, store, job_uid):
     for message in messages.values():
         binding = _workflow_binding(message)
         is_prompt = binding["prompt_id"] == message["id"]
+        actor = message.get("sender")
+        if is_prompt and isinstance(actor, str) and _owned_by(job, actor):
+            actor = None
         entries.append(_history_entry(
-            job, binding["kind"] if is_prompt else "reply", message["text"], time=message["timestamp"],
-            message_id=message["id"], revision=binding["revision"], actor=message.get("sender"),
+            job, binding["kind"] if is_prompt else "reply", None, time=message["timestamp"],
+            message_id=message["id"], revision=binding["revision"], actor=actor,
         ))
     for gate in gates:
         card_id = gate["decision_id"]
         card = _job_message(store, job, card_id)
         entries.append(_history_entry(
-            job, gate["gate"], gate["text"], time=gate["decided_at"] or (card or {}).get("timestamp"),
+            job, gate["gate"], None, time=gate["decided_at"] or (card or {}).get("timestamp"),
             message_id=card_id, revision=gate["revision"], choice=gate["choice"], actor=gate["actor"],
         ))
     for request in job.get("reopen_requests", []):
         card = store.get_by_uid(f"job-reopen-{request['id']}")
         card_id = card["id"] if card and card["channel"] == job["channel"] else None
         decision = request["decisions"][-1] if request["decisions"] else {}
-        entries.append(_history_entry(job, "reopen", request["reason"], message_id=card_id,
+        entries.append(_history_entry(job, "reopen", None, message_id=card_id,
                                       event_id=f"reopen:{request['id']}",
                                       choice=decision.get("decision"), actor=decision.get("actor"),
                                       time=request["requested_at"]))
-    for event in job.get("lifecycle_events", []):
-        entries.append(_history_entry(job, "lifecycle", event["event"], actor=event["actor"], time=event["time"],
-                                      event_id=f"lifecycle:{event['operation_id']}"))
+    entries.extend(_lifecycle_entry(job, event, index) for index, event in enumerate(job.get("lifecycle_events", [])))
+    entries.extend(reversed(list(_attempt_history(job, jobs.orch_history_events(job_uid).values()))))
     entries.sort(key=lambda row: (row["time"] or 0, row["message_id"] or 0))
     actions = _pending_actions(store, state, messages)
     return {"job_uid": job_uid, "channel": job["channel"], "entries": entries,
@@ -283,3 +379,15 @@ def history_context(jobs, store, job_uid, message_id):
     if message is None or not _belongs_to_job(state, message):
         return None
     return {"channel": job["channel"], "message": message, "messages": store.get_message_context(message)}
+
+
+def history_event_context(jobs, store, job_uid, event_id):
+    if not _JOB_UID.fullmatch(job_uid):
+        return None
+    result = history(jobs, store, job_uid)
+    if result is None:
+        return None
+    entry = next((row for row in result["entries"] if row["event_id"] == event_id), None) if (
+        _EVENT_ID.fullmatch(event_id)) else None
+    return {"job_uid": job_uid, "event_id": entry["event_id"] if entry else None,
+            "message_id": entry["message_id"] if entry else None}
