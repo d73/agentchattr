@@ -210,7 +210,7 @@ class JobStore:
 
     @staticmethod
     def _gate_result(record):
-        return {key: deepcopy(record[key]) for key in _ORCH_GATE_FIELDS}
+        return {key: deepcopy(record[key]) for key in _ORCH_GATE_FIELDS} | {"actor_source": record.get("actor_source")}
 
     def _write_gates_locked(self, job, records):
         previous = job.get("_orch_gates")
@@ -291,7 +291,8 @@ class JobStore:
             if (job["lifecycle"]["stage_id"] != _ORCH_GATE_STAGE[gate]
                     or current["stage_version"] != self._stage_version(job)):
                 return None
-            committed = dict(current, choice=choice, actor=actor, decided_at=time.time())
+            committed = dict(current, choice=choice, actor=actor,
+                             actor_source="local-browser", decided_at=time.time())
             self._write_gates_locked(job, [committed if record is current else record for record in records])
             return self._gate_result(committed)
 

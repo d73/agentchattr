@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -11,7 +10,6 @@ from fastapi.testclient import TestClient
 
 import app
 from jobs import JobStore
-from operator_auth import PROOF_FILE, PROOF_KEY, prepare_operator_verifier
 from run import _publish_orch_gate
 from store import MessageStore
 
@@ -24,16 +22,10 @@ class OrchGateApprovalTests(unittest.TestCase):
         self.jobs = JobStore(str(self.directory / "jobs.json"))
         self.store = MessageStore(str(self.directory / "messages.jsonl"))
         self.config = {"operator": {"identity": "fixture-operator"}, "server": {"data_dir": str(self.directory)}}
-        self.proof = "ab" * 32
         self.browser = {"X-Session-Token": "fixture-session"}
-        self.operator = {**self.browser, "X-Orch-Operator-Proof": self.proof}
-        prepare_operator_verifier(self.directory)
-        self.verifier = self.directory / PROOF_FILE
-        self.assertEqual(self.verifier.read_text(), f"{PROOF_KEY}=\n")
-        self.verifier.write_text(f"{PROOF_KEY}={hashlib.sha256(self.proof.encode()).hexdigest()}\n")
-        prepare_operator_verifier(self.directory)
 
         api = FastAPI()
+        self.api = api
         api.add_api_route("/api/jobs/{job_uid}/orch-gates/{decision_id}/resolve", app.resolve_orch_gate, methods=["POST"])
         api.add_api_route("/api/messages/{msg_id}/resolve_decision", app.resolve_decision, methods=["POST"])
         for name, value in {"app": api, "session_token": None, "config": self.config,
@@ -60,25 +52,32 @@ class OrchGateApprovalTests(unittest.TestCase):
             text="Review the current plan", operation_id=operation_id or f"{gate}:{revision}",
         )
 
-    def resolve(self, card, *, headers=None, **overrides):
+    def resolve(self, card, *, headers=None, client=None, **overrides):
         values = {"job_uid": card["job_uid"], "decision_id": card["decision_id"],
                   "gate": card["gate"], "revision": card["revision"], "choice": card["choices"][0]}
         values.update(overrides)
         uid = values.pop("job_uid")
         decision_id = values.pop("decision_id")
-        return self.client.post(f"/api/jobs/{uid}/orch-gates/{decision_id}/resolve",
-                                headers=self.operator if headers is None else headers, json=values)
+        if client is None:
+            client = self.client
+        return client.post(f"/api/jobs/{uid}/orch-gates/{decision_id}/resolve",
+                           headers=self.browser if headers is None else headers, json=values)
 
-    def test_only_verified_operator_can_resolve_a_bound_card(self):
+    def test_only_direct_local_browser_session_can_resolve_a_bound_card(self):
         card = self.publish()
-        for headers in ({}, self.browser, {"X-Orch-Operator-Proof": self.proof},
-                        {**self.browser, "X-Orch-Operator-Proof": "cd" * 32},
-                        {**self.operator, "Authorization": "Bearer fixture-agent"},
-                        {**self.operator, "X-Agent-Token": "fixture-agent"}):
+        for headers in ({}, {"X-Session-Token": "wrong-session"},
+                        {**self.browser, "Authorization": "Bearer fixture-agent"},
+                        {**self.browser, "X-Agent-Token": "fixture-agent"},
+                        {**self.browser, "X-Forwarded-For": "127.0.0.1"},
+                        {**self.browser, "Forwarded": "for=127.0.0.1"}):
             with self.subTest(headers=list(headers)):
                 self.assertEqual(self.resolve(card, headers=headers, actor="fixture-operator").status_code, 403)
+        with TestClient(self.api, client=("192.0.2.10", 50000)) as lan:
+            self.assertEqual(self.resolve(card, client=lan).status_code, 403)
+            with patch.object(app, "is_local_client", return_value=True):
+                self.assertEqual(self.resolve(card, client=lan).status_code, 403)
         generic = self.client.post(f"/api/messages/{card['decision_id']}/resolve_decision",
-                                   headers=self.operator, json={"choice": "Approve"})
+                                   headers=self.browser, json={"choice": "Approve"})
         self.assertEqual(generic.status_code, 403)
         self.assertIsNone(self.jobs.read_orch_gate(card["job_uid"], coordinator="orch",
                                                   decision_id=card["decision_id"])["choice"])
@@ -86,6 +85,7 @@ class OrchGateApprovalTests(unittest.TestCase):
         response = self.resolve(card, actor="untrusted-label")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["actor"], "fixture-operator")
+        self.assertEqual(response.json()["actor_source"], "local-browser")
         self.assertEqual(response.json()["choice"], "Approve")
         self.assertTrue(self.store.get_by_id(card["decision_id"])["metadata"]["resolved"])
         self.broadcast.assert_awaited_once()
@@ -118,13 +118,21 @@ class OrchGateApprovalTests(unittest.TestCase):
                                                 decision_id=old["decision_id"]))
         self.broadcast.assert_awaited_once()
 
-    def test_unconfigured_operator_and_missing_verifier_fail_closed(self):
+    def test_unconfigured_operator_fails_closed(self):
         card = self.publish()
         with patch.dict(self.config, operator={}):
             self.assertEqual(self.resolve(card).status_code, 403)
-        self.verifier.unlink()
-        self.assertEqual(self.resolve(card).status_code, 403)
         self.broadcast.assert_not_called()
+
+    def test_ipv6_loopback_and_mapped_loopback_allow_retries(self):
+        card = self.publish()
+        with TestClient(self.api, client=("::1", 50000)) as local_ipv6:
+            first = self.resolve(card, client=local_ipv6)
+        self.assertEqual(first.status_code, 200)
+        with TestClient(self.api, client=("::ffff:127.0.0.1", 50000)) as mapped_loopback:
+            second = self.resolve(card, client=mapped_loopback)
+        self.assertEqual(second.json(), first.json())
+        self.broadcast.assert_awaited_once()
 
     def test_concurrent_clicks_commit_once_and_wait_requires_a_new_staffing_card(self):
         brief = self.publish()

@@ -32,7 +32,7 @@ from registry import RuntimeRegistry
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from plugin_host import ASSET_PREFIX
-from operator_auth import configured_operator, prepare_operator_verifier, verify_operator
+from operator_auth import verify_operator
 
 log = logging.getLogger(__name__)
 
@@ -524,11 +524,6 @@ def configure(cfg: dict, session_token: str = ""):
         log_path = legacy_log_path
 
     store = MessageStore(str(log_path))
-    if configured_operator(cfg):
-        try:
-            prepare_operator_verifier(Path(data_dir))
-        except OSError:
-            log.warning("Could not prepare the local operator verifier file")
     # Initialize store upload dir from config
     raw_upload_dir = cfg.get("images", {}).get("upload_dir", "./uploads")
     store.upload_dir = Path(raw_upload_dir)
@@ -2307,10 +2302,10 @@ async def resolve_decision(msg_id: int, request: Request):
 
 @app.post("/api/jobs/{job_uid}/orch-gates/{decision_id}/resolve")
 async def resolve_orch_gate(job_uid: str, decision_id: int, request: Request):
-    """Record an independently verified operator's choice for the exact current gate."""
+    """Record a local browser choice for the exact current gate."""
     actor = verify_operator(request, config, session_token)
     if actor is None:
-        return JSONResponse({"error": "verified operator required"}, status_code=403)
+        return JSONResponse({"error": "local browser session with configured operator required"}, status_code=403)
     try:
         body = await request.json()
     except ValueError:
