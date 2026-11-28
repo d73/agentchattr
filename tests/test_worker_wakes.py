@@ -31,7 +31,9 @@ class WorkerWakeTests(unittest.TestCase):
             if len(prompts) == 3:
                 raise StopWatcher()
 
-        with patch.object(wrapper.time, "sleep", side_effect=[None] * 6 + [StopWatcher()]), \
+        clock = Mock()
+        clock.sleep.side_effect = [None] * 6 + [StopWatcher()]
+        with patch.object(wrapper, "time", clock), \
              patch.object(wrapper, "_fetch_role", return_value=""), \
              patch.object(wrapper, "_fetch_active_rules", return_value=None), \
              self.assertRaises(StopWatcher):
