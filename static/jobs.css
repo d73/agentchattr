@@ -36,11 +36,16 @@
 
 .job-group-filters {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.35rem;
-    overflow-x: auto;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
-    scrollbar-width: thin;
+}
+
+.jobs-group-header.job-pipeline-group {
+    color: var(--text-muted);
+    font-size: var(--fs-base);
+    text-transform: none;
 }
 
 .job-group-filters button {

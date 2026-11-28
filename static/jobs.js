@@ -50,13 +50,15 @@ const jobPipelineLabels = new Map([
 const jobPipelineStages = new Map([
     ['orch.drafting', 'scoping'],
     ['orch.awaiting_approval', 'awaiting_approval'],
-    ['orch.planning', 'scoping'],
-    ['orch.ready', 'scoping'],
+    ['orch.planning', 'active_coding'],
+    ['orch.ready', 'active_coding'],
     ['orch.coding', 'active_coding'],
     ['orch.in_review', 'in_review'],
     ['orch.done', 'done'],
+    ['orch.cancelled', 'done'],
 ]);
 const manualJobFilters = { open: 'scoping', done: 'active_coding', archived: 'done' };
+const manualJobStatuses = new Map(Object.entries(manualJobFilters).map(([status, filter]) => [filter, status]));
 const proposalWriterOptions = [
     ['orch', 'Orch (Auto)'],
     ['antigravity', 'Agy (Manual Default)'],
@@ -88,20 +90,16 @@ function jobPresentation(job) {
     const stage = job.lifecycle?.stage_id;
     const pipeline = jobPipelineStages.get(stage);
     const flagged = job.lifecycle?.flags?.includes('attention') ?? false;
-    for (const [id, presentation] of jobPresentations) {
+    for (const presentation of jobPresentations.values()) {
         const row = presentation.rows.get(job.id);
-        const liveRow = row?.uid === job.uid ? row : null;
-        const status = stage ?? liveRow?.stage;
-        if (presentation.stages.has(status)) {
-            const labelKey = jobPipelineStages.get(status) ?? status;
-            const key = jobPipelineLabels.has(labelKey) ? `pipeline-${labelKey}` : `${id}-${status}`;
-            return { key, attention: Boolean(liveRow?.attention) || flagged };
-        }
+        if (!row || row.uid !== job.uid || !presentation.stages.has(row.stage)) continue;
+        const filter = pipeline ?? jobPipelineStages.get(row.stage) ?? row.stage;
+        if (jobPipelineLabels.has(filter)) return { filter, workflow: true, attention: Boolean(row.attention) || flagged };
     }
     if (jobPresentations.size && pipeline) {
-        return { key: `pipeline-${pipeline}`, attention: flagged };
+        return { filter: pipeline, workflow: true, attention: flagged };
     }
-    return { key: job.status, attention: false };
+    return { filter: manualJobFilters[job.status], workflow: false, attention: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +588,6 @@ function renderJobsList() {
         savedForm = activeForm.parentNode.removeChild(activeForm);
     }
     const oldFilters = list.querySelector('.job-group-filters');
-    const filterScroll = oldFilters?.scrollLeft ?? 0;
     const focusedFilter = oldFilters?.contains(document.activeElement)
         ? document.activeElement.dataset.filter : undefined;
     list.innerHTML = '';
@@ -598,32 +595,24 @@ function renderJobsList() {
     // Jobs are global — show all regardless of channel
     const channelJobs = jobsData;
 
-    // Group by status: open first, then done, then archived
-    const groups = [
+    const pipelineMode = jobPresentations.size > 0;
+    const groups = pipelineMode ? Array.from(jobPipelineLabels, ([filter, label]) => {
+        const status = manualJobStatuses.get(filter);
+        return { key: status ?? filter, label, filter, items: [], readOnly: !status };
+    }) : [
         { key: 'open', label: 'TO DO', items: [] },
         { key: 'done', label: 'ACTIVE', items: [] },
         { key: 'archived', label: 'CLOSED', items: [] },
     ];
-    if (jobPresentations.size) {
-        groups.unshift(...Array.from(jobPipelineLabels, ([filter, label]) => ({
-            key: `pipeline-${filter}`, label, filter, items: [], readOnly: true,
-        })));
-    }
-    for (const [id, presentation] of jobPresentations) {
-        for (const [stage, label] of presentation.stages) {
-            if (jobPipelineLabels.has(stage) || jobPipelineStages.has(stage)) continue;
-            groups.push({ key: `${id}-${stage}`, label, items: [], readOnly: true });
-        }
-    }
     const presentations = new Map();
     for (const a of channelJobs) {
         const presentation = jobPresentation(a);
         presentations.set(a.id, presentation);
-        const g = groups.find(g => g.key === presentation.key);
+        const g = groups.find(g => pipelineMode ? g.filter === presentation.filter : g.key === a.status);
         if (g) g.items.push(a);
     }
 
-    if (jobPresentations.size) {
+    if (pipelineMode) {
         const filters = document.createElement('div');
         filters.className = 'job-group-filters';
         filters.setAttribute('role', 'group');
@@ -641,7 +630,6 @@ function renderJobsList() {
             filters.appendChild(filter);
         }
         list.appendChild(filters);
-        filters.scrollLeft = filterScroll;
         if (focusedFilter !== undefined) {
             [...filters.children].find(button => button.dataset.filter === focusedFilter)?.focus();
         }
@@ -660,27 +648,26 @@ function renderJobsList() {
             if (btn) btn.click();
         };
         list.appendChild(ghost);
-    } else if (jobGroupFilter && !groups.some(group =>
-        (group.filter ?? manualJobFilters[group.key]) === jobGroupFilter && group.items.length)) {
+    } else if (jobGroupFilter && !groups.some(group => group.filter === jobGroupFilter && group.items.length)) {
         const empty = document.createElement('div');
         empty.className = 'jobs-empty';
         empty.textContent = 'No Jobs with this status.';
         list.appendChild(empty);
     }
 
-    const hasManualJobs = groups.some(group => !group.readOnly && group.items.length);
     for (const group of groups) {
-        const filter = group.filter ?? manualJobFilters[group.key];
+        const { filter } = group;
         if (jobGroupFilter && filter !== jobGroupFilter) continue;
-        if (!group.items.length && (group.readOnly || (jobPresentations.size && !hasManualJobs))) continue;
+        if (pipelineMode && !channelJobs.length) continue;
         // Sort by explicit manual order first; fallback to recency.
         group.items.sort(_compareJobsForList);
 
-        const isCollapsible = group.key === 'open' || group.key === 'archived';
-        const isExpanded = jobGroupFilter !== null || _expandedGroups.has(group.key);
+        const isCollapsible = !pipelineMode && (group.key === 'open' || group.key === 'archived');
+        const isExpanded = _expandedGroups.has(group.key);
         const isCollapsed = isCollapsible && !isExpanded;
         const header = document.createElement('div');
-        header.className = 'jobs-group-header ' + group.key + (isCollapsible ? ' collapsible' : '') + (isCollapsed ? ' collapsed' : '');
+        header.className = 'jobs-group-header ' + (pipelineMode ? 'job-pipeline-group' : group.key)
+            + (isCollapsible ? ' collapsible' : '') + (isCollapsed ? ' collapsed' : '');
         header.dataset.status = group.key;
         const isEmpty = group.items.length === 0;
         header.textContent = isEmpty ? group.label : `${group.label} (${group.items.length})`;
@@ -713,13 +700,13 @@ function renderJobsList() {
             header.classList.remove('drop-target');
             const draggedId = _draggedJobId;
             if (group.readOnly || !draggedId || _draggedJobStatus === group.key) return;
-            const oldStatus = _draggedJobStatus;
             try {
-                await fetch(`/api/jobs/${draggedId}`, {
+                const response = await fetch(`/api/jobs/${draggedId}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json', 'X-Session-Token': window.SESSION_TOKEN },
                     body: JSON.stringify({ status: group.key }),
                 });
+                if (!response.ok) throw new Error(`Status change rejected: ${response.status}`);
                 const act = jobsData.find(a => String(a.id) === String(draggedId));
                 _beginJobReorderMute({ ids: [draggedId], channel: window.activeChannel, status: group.key });
                 if (act) act.status = group.key;
@@ -728,7 +715,7 @@ function renderJobsList() {
             } catch (err) { console.error('Failed to change status:', err); }
         });
 
-        if (!group.readOnly) list.appendChild(header);
+        list.appendChild(header);
 
         // Wrap group items in a container for collapsing (CSS grid animation)
         const itemsContainer = document.createElement('div');
@@ -739,7 +726,8 @@ function renderJobsList() {
         for (const a of group.items) {
             const card = document.createElement('div');
             card.className = 'job-card';
-            const { attention } = presentations.get(a.id);
+            const { attention, workflow } = presentations.get(a.id);
+            const editableOrder = !group.readOnly && (!pipelineMode || !workflow);
             card.dataset.id = a.id;
             card.onclick = () => openJobConversation(a.id);
             card.addEventListener('selectstart', (e) => e.preventDefault());
@@ -749,10 +737,9 @@ function renderJobsList() {
             const unreadHtml = unread > 0
                 ? `<span class="job-unread-dot" title="Unread messages">${unread > 99 ? '99+' : unread}</span>`
                 : '';
-            if (jobPresentations.size) {
+            if (pipelineMode) {
                 card.classList.add('job-pipeline-card');
                 card.classList.toggle('job-card-attention', attention);
-                const statusLabel = jobPipelineLabels.get(filter) ?? group.label;
                 const escape = window.escapeHtml;
                 const date = new Date(a.created_at * 1000);
                 const time = a.created_at && Number.isFinite(date.getTime())
@@ -762,7 +749,7 @@ function renderJobsList() {
                     <div class="job-card-header">
                         ${attention ? '<span class="job-attention-dot" title="Needs your attention"></span>' : ''}
                         <span class="job-title">${escape(a.title)}</span>
-                        <span class="job-stage-badge" data-stage="${filter ?? ''}">${escape(statusLabel)}</span>
+                        <span class="job-stage-badge" data-stage="${filter}">${escape(group.label)}</span>
                         ${unreadHtml}
                     </div>
                     ${a.body ? `<div class="job-card-preview">${escape(a.body)}</div>` : ''}
@@ -782,8 +769,9 @@ function renderJobsList() {
                 `;
             }
 
-            card.draggable = !group.readOnly;
+            card.draggable = editableOrder;
             card.addEventListener('dragstart', (e) => {
+                if (!editableOrder) return;
                 let ids = [card.dataset.id];
                 if (group.key === 'archived') {
                     const selected = [...itemsContainer.querySelectorAll('.archive-selected')].map(c => c.dataset.id);
@@ -823,6 +811,7 @@ function renderJobsList() {
                 }
             });
             card.addEventListener('dragover', (e) => {
+                if (!editableOrder) return;
                 if (_draggedJobStatus !== group.key || !_draggedJobId || _draggedJobId === card.dataset.id) return;
                 e.preventDefault();
                 // Clear all other indicators first, then set this one
@@ -833,6 +822,7 @@ function renderJobsList() {
                 card.classList.toggle('reorder-target-after', !before);
             });
             card.addEventListener('drop', async (e) => {
+                if (!editableOrder) return;
                 const draggedId = _draggedJobId;
                 const draggedStatus = _draggedJobStatus;
                 _clearJobReorderTargets(itemsContainer);
@@ -865,7 +855,7 @@ function renderJobsList() {
             });
 
             // Archived cards: shift+click for multi-select
-            if (group.key === 'archived') {
+            if (editableOrder && group.key === 'archived') {
                 card.classList.add('archive-selectable');
                 const clearHoldState = () => card.classList.remove('archive-holding');
                 card.addEventListener('pointerdown', (e) => {
@@ -901,7 +891,7 @@ function renderJobsList() {
             _clearJobReorderTargets(itemsContainer);
             if (!draggedStatus || draggedStatus !== group.key || !draggedId) return;
             e.preventDefault();
-            const cards = [...itemsContainer.querySelectorAll('.job-card')];
+            const cards = [...itemsContainer.querySelectorAll('.job-card[draggable="true"]')];
             const lastCard = cards[cards.length - 1];
             if (!lastCard) return;
             if (String(lastCard.dataset.id) === String(draggedId)) return;
@@ -909,7 +899,7 @@ function renderJobsList() {
         });
 
         // Add trash zone at the bottom of archived group — always visible
-        if (group.key === 'archived' && group.items.length > 0) {
+        if (group.key === 'archived' && itemsInner.querySelector('.archive-selectable')) {
             const trashZone = document.createElement('div');
             trashZone.className = 'archive-trash-zone visible';
             trashZone.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V3h4v1M5 4v8.5h6V4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="archive-trash-hint">Drag here to delete</span>`;
