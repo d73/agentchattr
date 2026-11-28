@@ -18,7 +18,15 @@ _CLOCK_TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]")
 
 def _archive_time(record: dict) -> str | None:
     value = record.get("time")
-    return value if isinstance(value, str) and _CLOCK_TIME.fullmatch(value) else None
+    if isinstance(value, str) and _CLOCK_TIME.fullmatch(value):
+        return value
+    timestamp = record.get("timestamp")
+    if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+        return None
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(timestamp))
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _fingerprint(record: dict) -> str:
@@ -203,10 +211,10 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
     for m in store.get_recent(count=999_999_999):
         existing_msg_uids.add(_ensure_uid(m))
 
-    existing_job_uids = set()
+    existing_job_ids = {}
     if jobs_store:
         for j in jobs_store.list_all():
-            existing_job_uids.add(_ensure_uid(j))
+            existing_job_ids[_ensure_uid(j)] = j["id"]
 
     existing_rule_uids = set()
     if rules_store:
@@ -229,6 +237,14 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
         report["channels"]["remapped"].append({"from": ch, "to": "general", "reason": "invalid_or_full"})
         return "general"
 
+    imported_jobs = []
+    if "jobs.json" in zf.namelist() and jobs_store:
+        try:
+            imported_jobs = json.loads(zf.read("jobs.json"))
+        except json.JSONDecodeError:
+            warnings.append("jobs.json was malformed; skipped")
+    source_job_ids = {job["id"] for job in imported_jobs if type(job.get("id")) is int}
+
     # --- Import messages (preserve archive uid, timestamp, time, reply links) ---
     msg_report = {"created": 0, "duplicates": 0, "conflicts": 0, "skipped": 0}
     # Two-pass: first import all messages, then rebuild reply_to links
@@ -250,13 +266,19 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                 msg_report["duplicates"] += 1
                 continue
             channel = resolve_channel(msg.get("channel", "general"))
+            metadata = msg.get("metadata")
+            if msg.get("type") == "job_created" and isinstance(metadata, dict):
+                job_id = metadata.get("job_id")
+                if type(job_id) is not int or job_id not in source_job_ids:
+                    # Numeric IDs are local to the archive and require a Job to map them to.
+                    metadata = {key: value for key, value in metadata.items() if key != "job_id"}
             new_msg = store.add(
                 sender=msg.get("sender", "unknown"),
                 text=msg.get("text", ""),
                 msg_type=msg.get("type", "chat"),
                 attachments=msg.get("attachments"),
                 channel=channel,
-                metadata=msg.get("metadata"),
+                metadata=metadata,
                 uid=msg_uid,
                 timestamp=msg.get("timestamp"),
                 time_str=_archive_time(msg),
@@ -284,10 +306,10 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                     for local_id, reply_uid in pending_replies:
                         target_id = uid_to_id.get(reply_uid)
                         if target_id is not None:
-                            for m in store._messages:
-                                if m["id"] == local_id:
-                                    m["reply_to"] = target_id
-                                    break
+                            position, msg = store._message_row(local_id)
+                            if msg is not None:
+                                msg["reply_to"] = target_id
+                                store._save_message(position, msg)
             # Single rewrite covers both bulk messages and reply patches
             store.flush_bulk()
     report["sections"]["messages"] = msg_report
@@ -296,14 +318,12 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
     job_report = {"created": 0, "updated": 0, "messages_created": 0, "duplicates": 0, "conflicts": 0}
     _job_id_remap = {}  # old numeric job_id → new local job_id
     if "jobs.json" in zf.namelist() and jobs_store:
-        try:
-            imported_jobs = json.loads(zf.read("jobs.json"))
-        except json.JSONDecodeError:
-            imported_jobs = []
-            warnings.append("jobs.json was malformed; skipped")
         for job in imported_jobs:
             job_uid = job.get("uid") or "fp-" + _fingerprint(job)
-            if job_uid in existing_job_uids:
+            old_id = job.get("id")
+            if job_uid in existing_job_ids:
+                if type(old_id) is int:
+                    _job_id_remap[old_id] = existing_job_ids[job_uid]
                 job_report["duplicates"] += 1
                 continue
             channel = resolve_channel(job.get("channel", "general"))
@@ -344,23 +364,22 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                             jobs_store._save()
                             break
             # Track old→new ID mapping for breadcrumb remap
-            old_id = job.get("id")
-            if old_id is not None:
+            if type(old_id) is int:
                 _job_id_remap[old_id] = new_job["id"]
-            existing_job_uids.add(job_uid)
+            existing_job_ids[job_uid] = new_job["id"]
             job_report["created"] += 1
-        # Remap job_created breadcrumb messages to point at new job IDs
-        # Only touch imported messages (by uid), not pre-existing local ones
+        # Only touch imported messages, not pre-existing local ones.
         if _job_id_remap and imported_uid_to_local_id:
             imported_local_ids = set(imported_uid_to_local_id.values())
             with store._lock:
-                for m in store._messages:
-                    if (m.get("type") == "job_created"
-                            and m["id"] in imported_local_ids
-                            and isinstance(m.get("metadata"), dict)):
-                        old_jid = m["metadata"].get("job_id")
+                for local_id in imported_local_ids:
+                    position, msg = store._message_row(local_id)
+                    if (msg is not None and msg.get("type") == "job_created"
+                            and isinstance(msg.get("metadata"), dict)):
+                        old_jid = msg["metadata"].get("job_id")
                         if old_jid in _job_id_remap:
-                            m["metadata"]["job_id"] = _job_id_remap[old_jid]
+                            msg["metadata"]["job_id"] = _job_id_remap[old_jid]
+                            store._save_message(position, msg)
                 store._rewrite()
     report["sections"]["jobs"] = job_report
 

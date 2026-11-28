@@ -152,7 +152,8 @@ def _write_key(handle, char: str, key_down: bool, vk: int = 0, scan: int = 0):
     evt.wVirtualKeyCode = vk
     evt.wVirtualScanCode = scan
     written = wintypes.DWORD(0)
-    kernel32.WriteConsoleInputW(handle, ctypes.byref(rec), 1, ctypes.byref(written))
+    if not kernel32.WriteConsoleInputW(handle, ctypes.byref(rec), 1, ctypes.byref(written)) or written.value != 1:
+        raise OSError(ctypes.get_last_error(), "Console Enter delivery incomplete")
 
 
 def _send_wm_setfocus():

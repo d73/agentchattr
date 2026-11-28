@@ -647,6 +647,7 @@ let pendingHistory = [];
 let pendingLiveEvents = [];
 let historyScheduled = false;
 let historyGeneration = 0;
+let historyNeedsReset = false;
 let earlierHistory = {};  // channel -> whether the server has more saved messages
 const earlierRequests = new Map();
 
@@ -759,12 +760,20 @@ function scheduleHistoryRender() {
 
 function renderHistoryBatch() {
     historyScheduled = false;
+    const container = document.getElementById('messages');
+    if (historyNeedsReset) {
+        // Reconnect replays an authoritative snapshot. Keeping old message IDs
+        // would retain deleted messages and skip updated versions of existing ones.
+        container.replaceChildren();
+        lastMessageDate = null;
+        lastMessageDates = {};
+        historyNeedsReset = false;
+    }
     const fragment = document.createDocumentFragment();
     for (const msg of pendingHistory.splice(0, 100)) {
         appendMessage(msg, { history: true, container: fragment });
     }
     const breadcrumbs = [...fragment.querySelectorAll('.job-breadcrumb')];
-    const container = document.getElementById('messages');
     container.appendChild(fragment);
     for (const el of breadcrumbs) window._collapseJobBreadcrumbs?.(container, el);
     if (autoScroll) scrollToBottom(true);
@@ -775,6 +784,7 @@ function renderHistoryBatch() {
         soundEnabled = true;
         setHistoryIndicator(false);
         updateEarlierHistoryControl();
+        dayFloatRefresh();
         const events = pendingLiveEvents;
         pendingLiveEvents = [];
         for (const event of events) handleServerEvent(event);
@@ -797,7 +807,10 @@ function handleServerEvent(event) {
         renderLogStatus(event.data);
         return;
     }
-    if (historyLoading && ['message', 'edit', 'message_update', 'delete', 'clear', 'channel_renamed', 'agent_renamed'].includes(event.type)) {
+    const settingsAfterRename = event.type === 'settings'
+        && pendingLiveEvents.some(pending => pending.type === 'channel_renamed');
+    if (historyLoading && (settingsAfterRename
+        || ['message', 'edit', 'message_update', 'delete', 'clear', 'channel_renamed', 'agent_renamed'].includes(event.type))) {
         pendingLiveEvents.push(event);
         return;
     }
@@ -966,7 +979,8 @@ function handleServerEvent(event) {
             Store.set('activeChannel', event.new_name);
         }
         filterMessagesByChannel();
-        renderChannelTabs();
+        if (event.data) applySettings(event.data);
+        else renderChannelTabs();
         updateEarlierHistoryControl();
     } else if (event.type === 'edit') {
         // A message was edited/demoted — re-render it in place
@@ -1028,6 +1042,7 @@ function handleServerEvent(event) {
 }
 
 function connectWebSocket() {
+    historyNeedsReset = ws !== null;
     historyGeneration++;
     historyScheduled = false;
     historyLoading = true;
@@ -1036,9 +1051,11 @@ function connectWebSocket() {
     pendingLiveEvents = [];
     resetEarlierHistory();
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
+    const socket = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
+    ws = socket;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+        if (ws !== socket) return;
         console.log('WebSocket connected');
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
@@ -1046,9 +1063,12 @@ function connectWebSocket() {
         }
     };
 
-    ws.onmessage = (e) => handleServerEvent(JSON.parse(e.data));
+    socket.onmessage = (e) => {
+        if (ws === socket) handleServerEvent(JSON.parse(e.data));
+    };
 
-    ws.onclose = (e) => {
+    socket.onclose = (e) => {
+        if (ws !== socket) return;
         // Server sends 4003 when session token is invalid (server restarted).
         // Auto-reload to pick up the fresh token from the new HTML page.
         if (e.code === 4003) {
@@ -1069,9 +1089,10 @@ function connectWebSocket() {
         reconnectTimer = setTimeout(connectWebSocket, 2000);
     };
 
-    ws.onerror = (err) => {
+    socket.onerror = (err) => {
+        if (ws !== socket) return;
         console.error('WebSocket error:', err);
-        ws.close();
+        socket.close();
     };
 }
 
@@ -1331,7 +1352,9 @@ function appendMessage(msg, options = {}) {
         el.dataset.rawText = msg.text;
         const senderRole = _agentRoles[appearance.name] || '';
         const roleClass = senderRole ? 'bubble-role has-role' : 'bubble-role';
-        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this)" title="${senderRole ? escapeHtml(senderRole) : 'Set role'}">${senderRole || 'choose a role'}</button>` : '';
+        const roleLabel = escapeHtml(senderRole || 'choose a role');
+        const roleTitle = escapeHtml(senderRole || 'Set role').replaceAll('"', '&quot;');
+        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this)" title="${roleTitle}">${roleLabel}</button>` : '';
         // Inline decision choices (if present)
         let choicesHtml = '';
         const meta = msg.metadata || {};

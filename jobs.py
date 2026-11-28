@@ -6,17 +6,31 @@ import time
 import threading
 import uuid
 from pathlib import Path
+from typing import Callable
 
 
 class JobStore:
-    def __init__(self, path: str):
+    def __init__(self, path: str, *, history_next_id: Callable[[], int] | None = None):
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._id_path = self._path.with_name(self._path.name + ".next-id")
         self._jobs: list[dict] = []
         self._next_id = 1
         self._lock = threading.Lock()
         self._callbacks: list = []  # (action, job) on any change
+        has_marker = self._id_path.exists()
+        if has_marker:
+            try:
+                marker = int(self._id_path.read_text(encoding="utf-8"))
+                if marker < 1:
+                    raise ValueError("next ID must be positive")
+                self._next_id = max(self._next_id, marker)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Cannot read Job ID marker {self._id_path.resolve()}: {exc}") from exc
         self._load()
+        if not has_marker and history_next_id is not None:
+            self._next_id = max(self._next_id, history_next_id())
+            atomic_write_text(self._id_path, str(self._next_id))
 
     def _load(self):
         if not self._path.exists():
@@ -24,13 +38,11 @@ class JobStore:
         try:
             raw = json.loads(self._path.read_text("utf-8"))
             if not isinstance(raw, list):
-                raise ValueError("expected a JSON list")
-            if isinstance(raw, list):
-                self._jobs = raw
-                if self._jobs:
-                    self._next_id = max(a["id"] for a in self._jobs) + 1
-                    if self._ensure_sort_orders_locked():
-                        self._save()
+                raise ValueError("expected a JSON list of jobs")
+            self._jobs = raw
+            self._next_id = max(self._next_id, max((job["id"] for job in raw), default=0) + 1)
+            if self._ensure_sort_orders_locked():
+                self._save()
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Cannot load jobs from {self._path.resolve()}: {exc}. The file was not changed.") from exc
 
@@ -326,8 +338,14 @@ class JobStore:
         with self._lock:
             for i, a in enumerate(self._jobs):
                 if a["id"] == job_id:
+                    # Save the allocation floor before removing its evidence from jobs.json.
+                    atomic_write_text(self._id_path, str(self._next_id))
                     removed = self._jobs.pop(i)
-                    self._save()
+                    try:
+                        self._save()
+                    except OSError:
+                        self._jobs.insert(i, removed)
+                        raise
                     result = dict(removed)
                     break
             else:
