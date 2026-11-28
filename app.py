@@ -1818,18 +1818,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 import mcp_bridge
                 mcp_bridge.migrate_cursors_rename(old_name, new_name)
                 _save_settings()
-                await broadcast_settings()
-                # Tell clients to migrate DOM elements
-                rename_event = json.dumps({
+                # Keep the rename and its channel list in one event, including during history replay.
+                await _broadcast(json.dumps({
                     "type": "channel_renamed",
                     "old_name": old_name,
                     "new_name": new_name,
-                })
-                for c in list(ws_clients):
-                    try:
-                        await c.send_text(rename_event)
-                    except Exception:
-                        pass
+                    "data": _settings_payload(),
+                }))
 
             elif event.get("type") == "channel_delete":
                 name = (event.get("name") or "").strip().lower()
