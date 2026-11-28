@@ -797,7 +797,10 @@ function handleServerEvent(event) {
         renderLogStatus(event.data);
         return;
     }
-    if (historyLoading && ['message', 'edit', 'message_update', 'delete', 'clear', 'channel_renamed', 'agent_renamed'].includes(event.type)) {
+    const settingsAfterRename = event.type === 'settings'
+        && pendingLiveEvents.some(pending => pending.type === 'channel_renamed');
+    if (historyLoading && (settingsAfterRename
+        || ['message', 'edit', 'message_update', 'delete', 'clear', 'channel_renamed', 'agent_renamed'].includes(event.type))) {
         pendingLiveEvents.push(event);
         return;
     }
@@ -966,7 +969,8 @@ function handleServerEvent(event) {
             Store.set('activeChannel', event.new_name);
         }
         filterMessagesByChannel();
-        renderChannelTabs();
+        if (event.data) applySettings(event.data);
+        else renderChannelTabs();
         updateEarlierHistoryControl();
     } else if (event.type === 'edit') {
         // A message was edited/demoted — re-render it in place

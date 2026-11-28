@@ -36,14 +36,19 @@ class HistoryDeliveryTests(unittest.TestCase):
                             'ws_clients': set()}.items():
             self.stack.enter_context(patch.object(app, name, value))
 
-    def read_connection(self, interrupt=False):
+    def read_connection(self, interrupt=False, events=()):
         frames = []
+        incoming = iter(events)
         class Socket:
             query_params = {'token': 'test'}
             client = SimpleNamespace(host='127.0.0.1')
             interrupted = False
             async def accept(self): pass
-            async def receive_text(self): raise WebSocketDisconnect()
+            async def receive_text(self):
+                event = next(incoming, None)
+                if event is None:
+                    raise WebSocketDisconnect()
+                return json.dumps(event)
             async def send_text(socket, raw):
                 event = json.loads(raw)
                 frames.append(event)
@@ -89,6 +94,22 @@ class HistoryDeliveryTests(unittest.TestCase):
 
         asyncio.run(app.websocket_endpoint(Socket()))
         self.assertEqual(asyncio.run(app.get_browser_clients()), {'count': 0})
+
+    def test_channel_rename_sends_settings_with_the_transition(self):
+        self.settings['archived_channels'] = ['work']
+        self.messages.add('Ben', 'Keep this message', channel='work')
+        self.stack.enter_context(patch.object(app, '_save_settings'))
+        self.stack.enter_context(patch('mcp_bridge.migrate_cursors_rename'))
+
+        frames = self.read_connection(events=[
+            {'type': 'channel_rename', 'old_name': 'work', 'new_name': 'renamed'},
+        ])
+        self.assertEqual(sum(f['type'] == 'settings' for f in frames), 1)
+        [rename] = [f for f in frames if f['type'] == 'channel_renamed']
+        self.assertEqual((rename['old_name'], rename['new_name']), ('work', 'renamed'))
+        self.assertEqual(rename['data']['channels'], ['general', 'renamed'])
+        self.assertEqual(rename['data']['archived_channels'], ['renamed'])
+        self.assertEqual(len(self.messages.get_recent(10, channel='renamed')), 1)
 
     def test_history_setting_is_applied_per_channel_without_deleting_messages(self):
         self.settings['history_limit'] = '3'
