@@ -1331,7 +1331,9 @@ function appendMessage(msg, options = {}) {
         el.dataset.rawText = msg.text;
         const senderRole = _agentRoles[appearance.name] || '';
         const roleClass = senderRole ? 'bubble-role has-role' : 'bubble-role';
-        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this)" title="${senderRole ? escapeHtml(senderRole) : 'Set role'}">${senderRole || 'choose a role'}</button>` : '';
+        const roleLabel = escapeHtml(senderRole || 'choose a role');
+        const roleTitle = escapeHtml(senderRole || 'Set role').replaceAll('"', '&quot;');
+        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this)" title="${roleTitle}">${roleLabel}</button>` : '';
         // Inline decision choices (if present)
         let choicesHtml = '';
         const meta = msg.metadata || {};
