@@ -402,6 +402,7 @@ function buildSoundSettings() {
             : (agentConfig[name]?.label || name);
         const select = document.createElement('select');
         select.className = 'sound-select';
+        select.setAttribute('aria-label', name === 'default' ? label.textContent : label.textContent + ' sound');
         select.dataset.agent = name;
         const currentVal = soundPrefs[name]
             || (name === 'default' ? DEFAULT_SOUND : '');
@@ -502,6 +503,8 @@ function init() {
     setupDragDrop();
     setupPaste();
     setupScroll();
+    setupSidePanelGrips();
+    setupSettingsSections();
     setupSettingsKeys();
     setupUserColorSetting();
     setupAttentionStyleSetting();
@@ -2503,25 +2506,113 @@ const SIDE_PANELS = {
     jobs: 'jobs-panel', rules: 'rules-panel', schedules: 'schedules-panel',
     settings: 'settings-bar', pins: 'pins-panel',
 };
+function setSidePanelOpen(name, opening) {
+    const panel = document.getElementById(SIDE_PANELS[name]);
+    if (!panel) return;
+    if (opening) closeSidePanels(name);
+    if (!opening && name === 'jobs' && !panel.classList.contains('hidden')) {
+        window.closeJobMentionMenu?.();
+    }
+    panel.classList.toggle('hidden', !opening);
+    panel.inert = !opening;
+    const button = document.getElementById(name + '-toggle');
+    button?.classList.toggle('active', opening);
+    button?.setAttribute('aria-expanded', String(opening));
+}
+
 function closeSidePanels(except) {
-    for (const [name, id] of Object.entries(SIDE_PANELS)) {
-        if (name === except) continue;
-        document.getElementById(id)?.classList.add('hidden');
-        const btn = document.getElementById(name + '-toggle');
-        btn?.classList.remove('active');
-        if (name === 'schedules') btn?.setAttribute('aria-expanded', 'false');
+    for (const name of Object.keys(SIDE_PANELS)) {
+        if (name !== except) setSidePanelOpen(name, false);
     }
 }
 window.closeSidePanels = closeSidePanels;
 
+function closeSidePanel(name) {
+    window._preserveScroll(() => {
+        setSidePanelOpen(name, false);
+        document.getElementById(name + '-toggle')?.focus();
+    });
+}
+
 function toggleSettings() {
-    window.MentionAlerts.render();
     const bar = document.getElementById('settings-bar');
-    if (bar.classList.contains('hidden')) closeSidePanels('settings');
-    bar.classList.toggle('hidden');
-    document.getElementById('settings-toggle').classList.toggle('active', !bar.classList.contains('hidden'));
     if (!bar.classList.contains('hidden')) {
-        document.getElementById('setting-username').focus();
+        closeSidePanel('settings');
+        return;
+    }
+    window.MentionAlerts.render();
+    window._preserveScroll(() => {
+        setSidePanelOpen('settings', true);
+        const profile = bar.querySelector('[data-section="profile"]');
+        const focusTarget = profile.open ? document.getElementById('setting-username') : profile.querySelector('summary');
+        focusTarget.focus({ preventScroll: true });
+    });
+}
+
+function setupSidePanelGrips() {
+    for (const panel of document.querySelectorAll('.side-panel')) {
+        const grip = panel.querySelector('.side-panel-grip');
+        const bounds = () => {
+            const style = getComputedStyle(panel);
+            return [parseFloat(style.minWidth), parseFloat(style.maxWidth)];
+        };
+        const updateGrip = () => {
+            const [min, max] = bounds();
+            grip.setAttribute('aria-valuemin', Math.round(min));
+            grip.setAttribute('aria-valuemax', Math.round(max));
+            grip.setAttribute('aria-valuenow', panel.offsetWidth);
+        };
+        function resizeTo(width) {
+            const [min, max] = bounds();
+            panel.style.setProperty('--panel-size', Math.min(max, Math.max(min, width)) + 'px');
+            updateGrip();
+        }
+
+        let startX = 0;
+        let startWidth = 0;
+        grip.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0 || !event.isPrimary) return;
+            event.preventDefault();
+            grip.focus({ preventScroll: true });
+            startX = event.clientX;
+            startWidth = panel.offsetWidth;
+            grip.setPointerCapture(event.pointerId);
+            grip.classList.add('dragging');
+        });
+        grip.addEventListener('pointermove', (event) => {
+            if (grip.hasPointerCapture(event.pointerId)) {
+                resizeTo(startWidth + startX - event.clientX);
+            }
+        });
+        grip.addEventListener('lostpointercapture', () => grip.classList.remove('dragging'));
+        grip.addEventListener('keydown', (event) => {
+            const step = 16;
+            const [min, max] = bounds();
+            const widthByKey = {
+                ArrowLeft: panel.offsetWidth + step,
+                ArrowRight: panel.offsetWidth - step,
+                Home: min,
+                End: max,
+            };
+            if (!Object.hasOwn(widthByKey, event.key)) return;
+            event.preventDefault();
+            resizeTo(widthByKey[event.key]);
+        });
+        window.addEventListener('resize', updateGrip);
+        updateGrip();
+    }
+}
+
+function setupSettingsSections() {
+    for (const section of document.querySelectorAll('#settings-bar .settings-section')) {
+        const key = 'agentchattr-settings-section-' + section.dataset.section;
+        try {
+            const saved = localStorage.getItem(key);
+            if (saved === 'true' || saved === 'false') section.open = saved === 'true';
+        } catch {}
+        section.addEventListener('toggle', () => {
+            try { localStorage.setItem(key, String(section.open)); } catch {}
+        });
     }
 }
 
@@ -2556,8 +2647,7 @@ function clearChat() {
             ws.send(JSON.stringify({ type: 'message', text: '/clear', sender: username, channel: activeChannel }));
         }
         _clearClearChatConfirm();
-        document.getElementById('settings-bar').classList.add('hidden');
-        document.getElementById('settings-toggle')?.classList.remove('active');
+        setSidePanelOpen('settings', false);
         return;
     }
 
@@ -2583,8 +2673,7 @@ function clearChat() {
             ws.send(JSON.stringify({ type: 'message', text: '/clear', sender: username, channel: activeChannel }));
         }
         _clearClearChatConfirm();
-        document.getElementById('settings-bar').classList.add('hidden');
-        document.getElementById('settings-toggle')?.classList.remove('active');
+        setSidePanelOpen('settings', false);
     };
     confirmWrap.querySelector('.ch-confirm-no').onclick = (e) => {
         e.stopPropagation();
@@ -2712,8 +2801,9 @@ async function importHistory(input) {
     if (!file) return;
     input.value = ''; // Reset so same file can be picked again
     const btn = document.getElementById('import-history-btn');
-    const origText = btn.textContent;
-    btn.textContent = 'Importing...';
+    const originalTitle = btn.title;
+    btn.title = 'Importing history…';
+    btn.setAttribute('aria-busy', 'true');
     btn.disabled = true;
     try {
         const formData = new FormData();
@@ -2745,7 +2835,8 @@ async function importHistory(input) {
     } catch (e) {
         showToast('Import failed: ' + e.message, 'error');
     } finally {
-        btn.textContent = origText;
+        btn.title = originalTitle;
+        btn.removeAttribute('aria-busy');
         btn.disabled = false;
     }
 }
@@ -3637,14 +3728,14 @@ function handleDeleteBroadcast(ids) {
 }
 
 function togglePinsPanel() {
+    const opening = document.getElementById('pins-panel').classList.contains('hidden');
+    if (!opening) {
+        closeSidePanel('pins');
+        return;
+    }
     _preserveScroll(() => {
-        const panel = document.getElementById('pins-panel');
-        if (panel.classList.contains('hidden')) closeSidePanels('pins');
-        panel.classList.toggle('hidden');
-        document.getElementById('pins-toggle').classList.toggle('active', !panel.classList.contains('hidden'));
-        if (!panel.classList.contains('hidden')) {
-            renderTodosPanel();
-        }
+        setSidePanelOpen('pins', true);
+        renderTodosPanel();
     });
 }
 
@@ -4114,26 +4205,18 @@ function toggleSchedulesPanel(forceOpen) {
     const panel = document.getElementById('schedules-panel');
     if (!panel) return;
     const opening = typeof forceOpen === 'boolean' ? forceOpen : panel.classList.contains('hidden');
+    if (!opening) {
+        closeSidePanel('schedules');
+        return;
+    }
     window._preserveScroll(() => {
-        if (opening) {
-            // Avoid stacked sidebars on desktop and hidden controls beneath the
-            // overlay on narrow screens.
-            closeSidePanels('schedules');
-        }
-        panel.classList.toggle('hidden', !opening);
-        const button = document.getElementById('schedules-toggle');
-        button.classList.toggle('active', opening);
-        button.setAttribute('aria-expanded', String(opening));
-        if (opening) renderSchedulesPanel();
-        else button.focus();
+        setSidePanelOpen('schedules', true);
+        renderSchedulesPanel();
     });
 }
 
 function closeSchedulesPanel() {
-    document.getElementById('schedules-panel')?.classList.add('hidden');
-    const button = document.getElementById('schedules-toggle');
-    button?.classList.remove('active');
-    button?.setAttribute('aria-expanded', 'false');
+    setSidePanelOpen('schedules', false);
 }
 window.closeSchedulesPanel = closeSchedulesPanel;
 

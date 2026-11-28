@@ -373,35 +373,153 @@ header h1 {
 .dismiss-btn:hover { color: var(--text); }
 .dismiss-btn.danger:hover { color: var(--error-color); }
 
-/* --- Settings bar --- */
+/* --- Right-hand panels --- */
 
-/* Settings, Pinned, Jobs, Rules and Scheduled tasks all slide out from the right. */
 .side-panel {
-    width: 320px;
-    min-width: 220px;
-    max-width: 50vw;
-    flex-shrink: 0;
-    background: var(--bg-header);
-    border-left: 1px solid var(--border);
+    --panel-min: 260px;
+    --panel-max: 50vw;
+    --panel-width: clamp(var(--panel-min), var(--panel-size, 340px), var(--panel-max));
+    width: var(--panel-width);
+    min-width: var(--panel-min);
+    max-width: var(--panel-max);
+    flex: 0 0 auto;
     display: flex;
     flex-direction: column;
-    overflow-x: hidden;
-    overflow-y: auto;
+    position: relative;
+    overflow: hidden;
+    margin-right: 0;
+    background: var(--bg-header);
+    transition: margin-right 200ms cubic-bezier(0.2, 0, 0, 1), opacity 160ms ease;
 }
-.side-panel.hidden { display: none; }
-#settings-bar { padding: 0 0 12px; gap: 10px; align-items: stretch; }
-#settings-bar > .settings-field { padding: 0 16px; flex-wrap: wrap; justify-content: space-between; }
-/* Labels take the free space so every control (dropdowns included) sits flush right. */
-#settings-bar > .jobs-header .schedule-close { margin-left: auto; }
-#settings-bar .settings-field label { flex: 1 1 auto; }
-#settings-bar .settings-field select { width: 150px; margin-left: auto; text-align: right; text-align-last: right; }
+
+.side-panel.hidden {
+    margin-right: calc(-1 * var(--panel-width));
+    opacity: 0;
+    pointer-events: none;
+}
+
+@media (max-width: 700px) {
+    header { flex-wrap: wrap; gap: 8px; }
+    .header-right { width: 100%; min-width: 0; gap: 6px; }
+    .header-right > button { flex-shrink: 0; }
+    #agent-status { flex: 1; min-width: 0; max-width: none; padding-inline: 8px; }
+
+    #content-area { position: relative; }
+    .side-panel {
+        --panel-min: min(260px, 100vw);
+        --panel-max: 100vw;
+        position: absolute;
+        inset: 0 0 0 auto;
+        z-index: 20;
+    }
+    .side-panel:not(.hidden) { z-index: 21; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .side-panel { transition: none; }
+}
+
+.side-panel-grip {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 6px;
+    z-index: 10;
+    display: grid;
+    place-items: center;
+    background: var(--border);
+    cursor: col-resize;
+    touch-action: none;
+}
+.side-panel-grip:hover,
+.side-panel-grip:focus-visible,
+.side-panel-grip.dragging { background: var(--accent); }
+.side-panel-grip::after {
+    content: '';
+    width: 4px;
+    height: 32px;
+    border-inline: 1px solid var(--white-15);
+}
+
+.side-panel-header {
+    display: flex;
+    align-items: center;
+    flex: 0 0 44px;
+    padding: 0 12px 0 16px;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.side-panel-title {
+    min-width: 0;
+    margin-right: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+.side-panel-icon {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--sb-card-radius);
+    background: none;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+.side-panel-icon svg { width: 16px; height: 16px; }
+.side-panel-icon:hover { color: var(--text); border-color: var(--text-dim); }
+.side-panel-icon:disabled { opacity: .55; cursor: default; }
+.side-panel-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.side-panel-scroll { flex: 1; min-height: 0; overflow: auto; }
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* --- Settings --- */
+
+.settings-sections { padding-bottom: 12px; }
+.settings-section { border-bottom: 1px solid var(--border); }
+.settings-section summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+}
+.settings-section summary:hover { background: var(--white-06); }
+.settings-section summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settings-section summary::-webkit-details-marker { display: none; }
+.settings-section summary::after { content: '▾' / ''; color: var(--text-dim); }
+.settings-section[open] summary::after { content: '▴' / ''; }
+.settings-section-fields {
+    display: grid;
+    gap: 10px;
+    padding: 2px 16px 14px;
+}
+#settings-bar .settings-field { flex-wrap: wrap; justify-content: space-between; }
+#settings-bar .settings-field label { flex: 1; white-space: normal; }
+#settings-bar .settings-field select,
+#settings-bar .sound-select { width: min(150px, 55%); margin-left: auto; text-align: right; text-align-last: right; }
 #settings-bar .settings-field input { margin-left: auto; }
 #settings-bar #sound-settings { flex: 1 1 100%; flex-direction: column; flex-wrap: nowrap; gap: 10px; }
 #settings-bar .sound-row { justify-content: space-between; }
-#settings-bar .sound-label { flex: 1 1 auto; }
-#settings-bar .sound-select { width: 150px; margin-left: auto; text-align: right; text-align-last: right; }
+#settings-bar .sound-label { flex: 1; white-space: normal; }
 #settings-bar .mention-alerts-field { max-width: none; }
-#settings-bar .mention-alerts-field select { width: 150px; }
 #settings-bar .mention-alerts-field small { flex-basis: 100%; text-align: right; }
 
 .settings-field {
@@ -448,13 +566,6 @@ header h1 {
 }
 
 /* --- Sound settings --- */
-
-.settings-divider {
-    width: 1px;
-    height: 24px;
-    background: var(--border);
-    flex-shrink: 0;
-}
 
 .settings-history-btns {
     display: flex;
@@ -653,7 +764,7 @@ header h1 {
     display: flex;
     flex: 1;
     min-height: 0;
-    overflow: hidden;
+    overflow: clip;
 }
 
 /* --- Timeline --- */
@@ -1200,18 +1311,6 @@ main#timeline {
 
 /* --- Todos panel --- */
 
-.pins-header {
-    display: flex;
-    align-items: center;
-    padding: 10px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1;
-    color: var(--text-dim);
-    border-bottom: 1px solid var(--border);
-}
-
-
 .todo-item {
     padding: 4px 16px;
     font-size: 13px;
@@ -1536,30 +1635,6 @@ main#timeline {
 .channel-ctx-menu button.danger { color: var(--error-color); }
 .channel-ctx-menu button.danger:hover { background: var(--error-soft); }
 
-/* --- Sidebar panels (rules + jobs shared) --- */
-
-#rules-panel {
-    --panel-w: 320px;
-    width: var(--panel-w);
-    min-width: 220px;
-    max-width: 50vw;
-    flex-shrink: 0;
-    background: var(--bg-header);
-    border-left: none;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    margin-right: 0;
-    transition: margin-right 0.25s ease, opacity 0.2s ease;
-    position: relative;
-}
-
-#rules-panel.hidden {
-    margin-right: calc(-1 * var(--panel-w));
-    opacity: 0;
-    pointer-events: none;
-}
-
 /* --- Channel sidebar (Discord/Slack-style) --- */
 
 #channel-sidebar {
@@ -1784,53 +1859,6 @@ body.channels-in-sidebar #channel-bar {
     justify-content: center;
 }
 
-/* Full-height drag grip on left edge */
-.rules-grip,
-.jobs-grip {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 6px;
-    cursor: col-resize;
-    z-index: 10;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--border);
-    transition: background 0.15s;
-}
-
-.rules-grip:hover,
-.rules-grip.dragging,
-.jobs-grip:hover,
-.jobs-grip.dragging {
-    background: var(--accent);
-}
-
-.rules-grip::after,
-.jobs-grip::after {
-    content: '';
-    width: 2px;
-    height: 32px;
-    border-left: 1px solid var(--white-15);
-    border-right: 1px solid var(--white-15);
-}
-
-.rules-header,
-.jobs-header {
-    display: flex;
-    align-items: center;
-    padding: var(--sb-padding);
-    font-size: var(--sb-title-fs);
-    font-weight: var(--sb-title-fw);
-    line-height: var(--sb-title-lh);
-    color: var(--text-dim);
-    border-bottom: var(--sb-card-border-width) solid var(--border);
-    flex-shrink: 0;
-    gap: var(--sb-gap);
-}
-
 .rules-counter {
     font-size: var(--sb-label-fs);
     font-weight: 400;
@@ -1838,28 +1866,7 @@ body.channels-in-sidebar #channel-bar {
     opacity: 0.7;
 }
 
-.rules-remind-btn {
-    margin-left: auto;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    border: 1px solid var(--accent);
-    background: rgba(124, 58, 237, 0.1);
-    color: var(--accent);
-    transition: background 0.15s, color 0.15s;
-}
-
-.rules-remind-btn:hover {
-    background: var(--accent-hover);
-}
-
-.rules-remind-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-}
+.rules-remind-btn.confirmed { color: var(--success); opacity: 1; }
 
 .rules-soft-warning {
     padding: 4px var(--sb-padding);
@@ -3751,18 +3758,6 @@ a.file-attachment:hover { border-color: var(--accent); }
 
 /* --- Scheduled tasks (Jobs-style right sidebar) --- */
 
-#schedules-panel {
-    width: 360px;
-    min-width: 260px;
-    max-width: 50vw;
-    flex-shrink: 0;
-    background: var(--bg-header);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    border-left: 1px solid var(--border);
-}
-#schedules-panel.hidden { display: none; }
 #schedules-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .schedule-card { padding: var(--sb-padding); border-bottom: var(--sb-card-border-width) solid var(--sb-card-border-color); }
 .schedule-card:hover { background: var(--bg-msg-hover); }
@@ -3773,22 +3768,12 @@ a.file-attachment:hover { border-color: var(--accent); }
 .schedule-targets { font-size: var(--sb-meta-fs); color: var(--accent); overflow-wrap: anywhere; }
 .schedule-interval, .schedule-next { margin-top: 4px; font-size: var(--sb-meta-fs); color: var(--text-dim); }
 .schedule-actions { display: flex; gap: 8px; margin-top: 10px; }
-.schedule-actions button, .schedule-close { background: none; border: 1px solid var(--border); color: var(--text-dim); border-radius: var(--sb-card-radius); padding: 4px 8px; cursor: pointer; font: inherit; font-size: 12px; }
-.schedule-actions button:hover, .schedule-close:hover { color: var(--text); border-color: var(--text-dim); }
+.schedule-actions button { background: none; border: 1px solid var(--border); color: var(--text-dim); border-radius: var(--sb-card-radius); padding: 4px 8px; cursor: pointer; font: inherit; font-size: 12px; }
+.schedule-actions button:hover { color: var(--text); border-color: var(--text-dim); }
 .schedule-actions .schedule-delete:hover { color: var(--danger); }
-.schedule-close { padding: 0 5px; font-size: 18px; }
 #schedules-feedback { margin: 0; padding: var(--sb-padding); color: var(--success); font-size: var(--sb-meta-fs); }
 #schedules-feedback.error { color: var(--danger); }
 #schedules-feedback.hidden { display: none; }
-
-@media (max-width: 700px) {
-    #content-area { position: relative; }
-    /* #content-area prefix: beats jobs.css (loaded later) at equal id specificity */
-    #content-area #jobs-panel, #content-area #rules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; margin-right: 0; }
-    #content-area #jobs-panel.hidden, #content-area #rules-panel.hidden { display: none; }
-    .side-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
-    #schedules-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; width: min(360px, 100%); max-width: 100%; min-width: 0; }
-}
 
 /* --- Slash command menu --- */
 

@@ -38,45 +38,6 @@ function setupCharCounter(textareaId, counterId) {
 // Setup
 // ---------------------------------------------------------------------------
 
-function setupRulesGrip() {
-    const grip = document.getElementById('rules-grip');
-    const panel = document.getElementById('rules-panel');
-    if (!grip || !panel) return;
-
-    let dragging = false;
-    let startX = 0;
-    let startWidth = 0;
-
-    grip.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        dragging = true;
-        startX = e.clientX;
-        startWidth = panel.offsetWidth;
-        grip.classList.add('dragging');
-        panel.style.transition = 'none';
-        document.body.style.cursor = 'col-resize';
-        document.body.style.userSelect = 'none';
-    });
-
-    document.addEventListener('mousemove', (e) => {
-        if (!dragging) return;
-        const delta = startX - e.clientX;
-        const newWidth = Math.min(Math.max(startWidth + delta, 220), window.innerWidth * 0.5);
-        panel.style.setProperty('--panel-w', newWidth + 'px');
-        panel.style.width = newWidth + 'px';
-        panel.style.minWidth = newWidth + 'px';
-    });
-
-    document.addEventListener('mouseup', () => {
-        if (!dragging) return;
-        dragging = false;
-        grip.classList.remove('dragging');
-        panel.style.transition = '';
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-    });
-}
-
 function setupRuleForm() {
     // Form is now inline via showCreateRule(), no persistent elements to set up
 }
@@ -109,38 +70,42 @@ function handleRuleEvent(action, rule) {
 }
 
 function toggleRulesPanel() {
+    if (!document.getElementById('rules-panel').classList.contains('hidden')) {
+        window.closeSidePanel('rules');
+        return;
+    }
     window._preserveScroll(() => {
-        const panel = document.getElementById('rules-panel');
-        panel.classList.toggle('hidden');
-        document.getElementById('rules-toggle').classList.toggle('active', !panel.classList.contains('hidden'));
-        if (!panel.classList.contains('hidden')) {
-            // Mark all current drafts as seen
-            window.closeSidePanels?.('rules');
-            for (const r of window.rules) {
-                if (r.status === 'proposed' || r.status === 'draft') _seenRuleIds.add(r.id);
-            }
-            updateRulesBadge();
-            renderRulesPanel();
+        window.setSidePanelOpen('rules', true);
+        for (const rule of window.rules) {
+            if (rule.status === 'proposed' || rule.status === 'draft') _seenRuleIds.add(rule.id);
         }
+        updateRulesBadge();
+        renderRulesPanel();
     });
 }
 
-function remindAgents() {
-    const btn = document.querySelector('.rules-remind-btn');
-    if (btn) btn.disabled = true;
-    fetch('/api/rules/remind', { method: 'POST', headers: { 'X-Session-Token': window.SESSION_TOKEN } })
-        .then(r => r.json())
-        .then(() => {
-            if (btn) {
-                const orig = btn.textContent;
-                btn.textContent = 'Queued — next trigger';
-                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
-            }
-        })
-        .catch(err => {
-            console.error('remind failed', err);
-            if (btn) btn.disabled = false;
+async function remindAgents() {
+    const button = document.querySelector('.rules-remind-btn');
+    const status = document.getElementById('rules-remind-status');
+    button.disabled = true;
+    status.textContent = '';
+    try {
+        const response = await fetch('/api/rules/remind', {
+            method: 'POST',
+            headers: { 'X-Session-Token': window.SESSION_TOKEN },
         });
+        if (!response.ok) throw new Error('Could not queue rule reminder');
+        button.classList.add('confirmed');
+        status.textContent = 'Reminder queued for the next trigger.';
+        setTimeout(() => {
+            button.classList.remove('confirmed');
+            button.disabled = false;
+        }, 2500);
+    } catch (error) {
+        console.error('remind failed', error);
+        status.textContent = 'Could not queue rule reminder.';
+        button.disabled = false;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +528,6 @@ async function dismissRuleProposal(msgId) {
 
 function _rulesPanelInit() {
     setupRuleForm();
-    setupRulesGrip();
 }
 
 // ---------------------------------------------------------------------------
