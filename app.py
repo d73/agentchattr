@@ -739,12 +739,7 @@ def configure(cfg: dict, session_token: str = ""):
                     full_text = f"{mention_str} {prompt}" if mention_str else prompt
                     # store.add triggers _handle_new_message via callback,
                     # which routes @mentions to agents — no manual trigger needed.
-                    store.add(
-                        sender,
-                        full_text,
-                        channel=channel,
-                        sender_kind="human",
-                    )
+                    _post_scheduled_message(s, sender, full_text, channel)
                     if s.get("one_shot"):
                         schedules.delete(s["id"])
                     else:
@@ -801,6 +796,17 @@ def _on_log_status():
 
 async def _broadcast_log_status():
     await _broadcast(json.dumps({"type": "log_status", "data": store.log_status()}))
+
+
+def _post_scheduled_message(schedule: dict, sender: str, text: str, channel: str) -> None:
+    if schedule.get("one_shot"):
+        delivery_uid = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentchattr:one-shot:{schedule['id']}:{schedule.get('created_at')}",
+        ))
+        store.add(sender, text, channel=channel, sender_kind="human", uid=delivery_uid, once=True)
+    else:
+        store.add(sender, text, channel=channel, sender_kind="human")
 
 
 def _on_store_message(msg: dict):

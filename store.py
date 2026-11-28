@@ -94,10 +94,18 @@ class MessageStore:
             _bulk: bool = False, *,
             sender_kind: str | None = None,
             sender_identity: str | None = None,
-            sender_base: str | None = None) -> dict:
+            sender_base: str | None = None,
+            once: bool = False) -> dict:
+        """Add a message. With once=True, persist its stable UID before delivery."""
+        if once and (not uid or _bulk):
+            raise ValueError("An idempotent message requires a UID and immediate persistence")
         persistence_error = None
         log_status_changed = False
         with self._lock:
+            if once:
+                for existing in self._messages:
+                    if existing.get("uid") == uid:
+                        return existing
             previous_error = self._log_error
             ts = timestamp if timestamp is not None else time.time()
             msg = {
@@ -127,7 +135,7 @@ class MessageStore:
                 try:
                     if self._log_repair_required:
                         raise OSError(self._log_error)
-                    if self._log_dirty:
+                    if once or self._log_dirty:
                         self._rewrite()
                     else:
                         with open(self._path, "a", encoding="utf-8") as f:
@@ -137,6 +145,10 @@ class MessageStore:
                     self._log_dirty = False
                     self._log_error = None
                 except OSError as exc:
+                    if once:
+                        self._messages.pop()
+                        self._next_id -= 1
+                        raise
                     self._log_dirty = True
                     persistence_error = str(exc)
                     self._log_error = persistence_error
