@@ -5,10 +5,36 @@ loss mid-write leaves a partial file (and for settings, a silent reset to
 defaults on the next start). os.replace swaps the finished file in one step.
 """
 
+import json
+import logging
 import os
+import shutil
+import tempfile
 import time
 import uuid
 from pathlib import Path
+
+
+def repair_corrupt_json(path: Path, reason: str, recovered: dict) -> None:
+    """Save the original bytes and atomically replace the primary with recovered state."""
+    backup = path.with_name(f"{path.name}.corrupt-{uuid.uuid4().hex}")
+    temporary = None
+    try:
+        with path.open("rb") as source, tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".recovery", delete=False
+        ) as destination:
+            temporary = Path(destination.name)
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        temporary.replace(backup)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    logging.getLogger(__name__).warning(
+        "Invalid JSON state in %s (%s); preserved original at %s", path, reason, backup
+    )
+    atomic_write_text(path, json.dumps(recovered, indent=2) + "\n")
 
 
 def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:

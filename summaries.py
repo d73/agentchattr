@@ -1,7 +1,7 @@
 """Per-channel summary store — agents write, everyone reads."""
 
 import json
-from atomic_io import atomic_write_text
+from atomic_io import atomic_write_text, repair_corrupt_json
 import time
 import threading
 import uuid
@@ -19,14 +19,20 @@ class SummaryStore:
         self._load()
 
     def _load(self):
-        if not self._path.exists():
-            return
         try:
             raw = json.loads(self._path.read_text("utf-8"))
-            if isinstance(raw, dict):
-                self._summaries = raw
-        except (json.JSONDecodeError, KeyError):
-            self._summaries = {}
+        except FileNotFoundError:
+            return
+        except ValueError as exc:
+            repair_corrupt_json(self._path, type(exc).__name__, {})
+            return
+        if not isinstance(raw, dict):
+            repair_corrupt_json(self._path, "expected a summary object", {})
+            return
+        summaries = {channel: entry for channel, entry in raw.items() if isinstance(entry, dict)}
+        if len(summaries) != len(raw):
+            repair_corrupt_json(self._path, "invalid summary records", summaries)
+        self._summaries = summaries
 
     def _save(self):
         atomic_write_text(self._path, 
