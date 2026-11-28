@@ -2331,7 +2331,11 @@ async def resolve_decision(msg_id: int, request: Request):
 @app.post("/api/jobs/{job_uid}/orch-gates/{decision_id}/resolve")
 async def resolve_orch_gate(job_uid: str, decision_id: int, request: Request):
     """Record a local browser choice for the exact current gate."""
-    actor = verify_operator(request, config, session_token, room_username=room_settings.get("username", "user"))
+    actor = verify_operator(
+        request, config, session_token,
+        room_username=room_settings.get("username", "user"),
+        is_host_interface=is_local_client,
+    )
     if actor is None:
         return JSONResponse({"error": "local browser session required"}, status_code=403)
     try:
