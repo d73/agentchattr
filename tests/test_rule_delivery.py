@@ -1,8 +1,10 @@
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from agents import AgentTrigger
 import wrapper
 
 
@@ -15,18 +17,18 @@ class RuleDeliveryTests(unittest.TestCase):
         for failure in (False, OSError("prompt delivery failed")):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 queue = Path(directory) / "worker_queue.jsonl"
-                wake = '{"channel":"ops"}\n'
-                queue.write_text(wake, encoding="utf-8")
+                enqueue = AgentTrigger(None, directory)
+                enqueue.trigger_sync("worker", channel="ops")
                 inject = Mock(side_effect=[failure, True, True])
-                remaining_wakes = iter((wake, wake))
+                remaining_wakes = iter(("ops", "ops"))
 
                 def next_wake(seconds):
                     if seconds != 1:
                         return
-                    pending_wake = next(remaining_wakes, None)
-                    if pending_wake is None:
+                    channel = next(remaining_wakes, None)
+                    if channel is None:
                         raise StopWatcher()
-                    queue.write_text(pending_wake, encoding="utf-8")
+                    enqueue.trigger_sync("worker", channel=channel)
 
                 with (
                     patch.object(wrapper, "_fetch_role", return_value=""),
@@ -42,3 +44,21 @@ class RuleDeliveryTests(unittest.TestCase):
                 self.assertIn("fixture rule", prompts[1])
                 self.assertNotIn("fixture rule", prompts[2])
                 report.assert_called_once_with(8300, "worker", 4, "")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows console injector")
+    def test_windows_injector_surfaces_an_incomplete_enter_write(self):
+        import wrapper_windows
+
+        def write_input(handle, records, count, written):
+            if count > 1:
+                written._obj.value = count
+            return True
+
+        with (
+            patch.object(wrapper_windows, "_wait_for_input_drain"),
+            patch.object(wrapper_windows.time, "sleep"),
+            patch.object(wrapper_windows.kernel32, "GetStdHandle", return_value=1),
+            patch.object(wrapper_windows.kernel32, "WriteConsoleInputW", side_effect=write_input),
+            self.assertRaisesRegex(OSError, "Console Enter delivery incomplete"),
+        ):
+            wrapper_windows.inject("test prompt")

@@ -26,7 +26,7 @@ import threading
 import time
 from pathlib import Path
 
-from agents import take_identity_trigger
+from agents import take_trigger
 
 ROOT = Path(__file__).parent
 
@@ -538,109 +538,71 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
     while True:
         try:
             _, queue_file = get_identity_fn()
-            identity_trigger = (take_identity_trigger(queue_file.parent, get_identity_id_fn())
-                                if get_identity_id_fn else None)
-            lines = []
-            if identity_trigger is not None:
-                lines = [identity_trigger]
-            elif queue_file.exists() and queue_file.stat().st_size > 0:
-                with open(queue_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                queue_file.write_text("", "utf-8")
+            identity_id = get_identity_id_fn() if get_identity_id_fn else ""
+            entry = take_trigger(queue_file, identity_id)
+            if entry is not None:
+                # Signal activity before injecting, including while the CLI is thinking.
+                if trigger_flag is not None:
+                    trigger_flag[0] = True
+                time.sleep(0.5)
 
-            if lines:
-                has_trigger = False
-                channel = "general"
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    has_trigger = True
-                    if isinstance(data, dict) and "channel" in data:
-                        channel = data["channel"]
+                channel = entry.get("channel", "general")
+                job_id = entry.get("job_id")
+                custom_prompt = entry.get("prompt")
+                if isinstance(custom_prompt, str) and custom_prompt.strip():
+                    prompt = custom_prompt.strip()
+                elif entry.get("kind") == "suggestion_accepted" and job_id:
+                    prompt = f"use mcp to read job_id={job_id} - your suggestion was accepted, take appropriate action and respond"
+                elif job_id:
+                    prompt = f"use mcp to read job_id={job_id} - you're mentioned in a job thread, take appropriate action and respond"
+                else:
+                    prompt = f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond"
 
-                if has_trigger:
-                    # Signal activity BEFORE injecting — covers the thinking phase
-                    if trigger_flag is not None:
-                        trigger_flag[0] = True
-                    time.sleep(0.5)
+                # Use current identity (may have changed via rename)
+                current_name, _ = get_identity_fn()
+                # Append role if set — check both current name and base name
+                role = _fetch_role(server_port, current_name)
+                if not role and current_name != agent_name:
+                    role = _fetch_role(server_port, agent_name)
+                if role:
+                    prompt += f"\n\nROLE: {role}"
 
-                    # Check if this is a job/activity-scoped trigger
-                    job_id = None
-                    custom_prompt = ""
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            data = json.loads(line)
-                            if isinstance(data, dict) and "job_id" in data:
-                                job_id = data["job_id"]
-                            if isinstance(data, dict):
-                                raw_prompt = data.get("prompt", "")
-                                if isinstance(raw_prompt, str) and raw_prompt.strip():
-                                    custom_prompt = raw_prompt.strip()
-                        except json.JSONDecodeError:
-                            pass
+                # Smart rules injection: first trigger, epoch change, or periodic refresh
+                _token = get_token_fn() if get_token_fn else ""
+                rules_data = _fetch_active_rules(server_port, _token)
+                rules_epoch = None
+                trigger_count += 1
+                if rules_data:
+                    # Use server-side refresh_interval (live from settings UI)
+                    ri = rules_data.get("refresh_interval", refresh_interval)
+                    need_inject = (
+                        last_rules_epoch == 0
+                        or rules_data["epoch"] != last_rules_epoch
+                        or (ri > 0 and trigger_count % ri == 0)
+                    )
+                    if need_inject:
+                        if rules_data["rules"]:
+                            rules_text = "; ".join(rules_data["rules"])
+                            prompt += f"\n\nRULES:\n{rules_text}"
+                        rules_epoch = rules_data["epoch"]
 
-                    if custom_prompt:
-                        prompt = custom_prompt
-                    elif identity_trigger is not None and job_id:
-                        prompt = f"use mcp to read job_id={job_id} - your suggestion was accepted, take appropriate action and respond"
-                    elif job_id:
-                        prompt = f"use mcp to read job_id={job_id} - you're mentioned in a job thread, take appropriate action and respond"
-                    else:
-                        prompt = f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond"
-
-                    # Use current identity (may have changed via rename)
-                    current_name, _ = get_identity_fn()
-                    # Append role if set — check both current name and base name
-                    role = _fetch_role(server_port, current_name)
-                    if not role and current_name != agent_name:
-                        role = _fetch_role(server_port, agent_name)
-                    if role:
-                        prompt += f"\n\nROLE: {role}"
-
-                    # Smart rules injection: first trigger, epoch change, or periodic refresh
-                    _token = get_token_fn() if get_token_fn else ""
-                    rules_data = _fetch_active_rules(server_port, _token)
-                    rules_epoch = None
-                    trigger_count += 1
-                    if rules_data:
-                        # Use server-side refresh_interval (live from settings UI)
-                        ri = rules_data.get("refresh_interval", refresh_interval)
-                        need_inject = (
-                            last_rules_epoch == 0
-                            or rules_data["epoch"] != last_rules_epoch
-                            or (ri > 0 and trigger_count % ri == 0)
-                        )
-                        if need_inject:
-                            if rules_data["rules"]:
-                                rules_text = "; ".join(rules_data["rules"])
-                                prompt += f"\n\nRULES:\n{rules_text}"
-                            rules_epoch = rules_data["epoch"]
-
-                    if first_mention and is_multi_instance:
-                        prompt += _IDENTITY_HINT
-                        first_mention = False
-                    # Flatten to single line — multi-line text triggers paste
-                    # detection in CLIs (Claude Code shows "[Pasted text +N]")
-                    # which can break injection of long session prompts
-                    try:
-                        delivered = inject_fn(prompt.replace("\n", " "))
-                    except Exception:
-                        # Do not log prompt contents or claim non-delivery: a
-                        # lost acknowledgement can follow a successful paste.
-                        print("  [wrapper] Prompt delivery was not confirmed; check the agent before resending.", flush=True)
-                    else:
-                        # tmux reports unconfirmed delivery with False instead of raising.
-                        if delivered is not False and rules_epoch is not None:
-                            last_rules_epoch = rules_epoch
-                            _report_rule_sync(server_port, current_name, rules_epoch, _token)
+                if first_mention and is_multi_instance:
+                    prompt += _IDENTITY_HINT
+                    first_mention = False
+                # Flatten to single line — multi-line text triggers paste
+                # detection in CLIs (Claude Code shows "[Pasted text +N]")
+                # which can break injection of long session prompts
+                try:
+                    delivered = inject_fn(prompt.replace("\n", " "))
+                except Exception:
+                    # Do not log prompt contents or claim non-delivery: a
+                    # lost acknowledgement can follow a successful paste.
+                    print("  [wrapper] Prompt delivery was not confirmed; check the agent before resending.", flush=True)
+                else:
+                    # tmux reports unconfirmed delivery with False instead of raising.
+                    if delivered is not False and rules_epoch is not None:
+                        last_rules_epoch = rules_epoch
+                        _report_rule_sync(server_port, current_name, rules_epoch, _token)
         except Exception:
             pass
 
@@ -809,8 +771,6 @@ def main():
         return changed
 
     queue_file = _identity["queue"]
-    if queue_file.exists():
-        queue_file.write_text("", "utf-8")
 
     strip_vars = {"CLAUDECODE"} | set(agent_cfg.get("strip_env", []))
     env = {k: v for k, v in os.environ.items() if k not in strip_vars}
