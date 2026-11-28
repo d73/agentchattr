@@ -153,6 +153,20 @@ class ScheduleStore:
                     return dict(s)
             return None
 
+    def rename_channel(self, old_name: str, new_name: str):
+        with self._lock:
+            changed = [schedule for schedule in self._schedules if schedule.get("channel") == old_name]
+            if not changed:
+                return
+            for schedule in changed:
+                schedule["channel"] = new_name
+            try:
+                self._save()
+            except OSError:
+                for schedule in changed:
+                    schedule["channel"] = old_name
+                raise
+
     def create(
         self,
         prompt: str,

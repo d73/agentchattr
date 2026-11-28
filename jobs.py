@@ -321,6 +321,20 @@ class JobStore:
             self._write_gates_locked(job, [committed if record is current else record for record in records])
             return self._gate_result(committed)
 
+    def rename_channel(self, old_name: str, new_name: str):
+        with self._lock:
+            changed = [job for job in self._jobs if job.get("channel") == old_name]
+            if not changed:
+                return
+            for job in changed:
+                job["channel"] = new_name
+            try:
+                self._save()
+            except OSError:
+                for job in changed:
+                    job["channel"] = old_name
+                raise
+
     def create(self, title: str, job_type: str, channel: str,
                created_by: str, anchor_msg_id: int | None = None,
                assignee: str | None = None,

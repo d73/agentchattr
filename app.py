@@ -354,6 +354,17 @@ def _save_settings():
     atomic_write_text(p, json.dumps(room_settings, indent=2))
 
 
+def _rename_channel_references(old_name: str, new_name: str):
+    # Keep the old name available for retry until both dependent stores are saved.
+    schedules.rename_channel(old_name, new_name)
+    jobs.rename_channel(old_name, new_name)
+    for job in jobs.list_all(channel=new_name):
+        _on_job_change("update", job)
+    for schedule in schedules.list_all():
+        if schedule.get("channel") == new_name:
+            _on_schedule_change("update", schedule)
+
+
 def _extract_agent_token(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth and auth.lower().startswith("bearer "):
@@ -1858,6 +1869,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 if new_name in room_settings["channels"]:
                     continue
+                _rename_channel_references(old_name, new_name)
                 idx = room_settings["channels"].index(old_name)
                 room_settings["channels"][idx] = new_name
                 room_settings["archived_channels"] = [
