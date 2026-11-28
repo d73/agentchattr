@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import json
+import os
 import sys
 import time
 import tempfile
@@ -39,7 +40,7 @@ class ScheduleDispatchTests(unittest.TestCase):
 
     def test_failed_one_shot_does_not_block_other_due_tasks(self):
         import app
-        from store import MessageStore, atomic_write_text
+        from store import MessageStore
 
         with tempfile.TemporaryDirectory() as folder:
             schedules = ScheduleStore(str(Path(folder) / "schedules.json"))
@@ -49,16 +50,18 @@ class ScheduleDispatchTests(unittest.TestCase):
                 failed = schedules.create("first", ["codex"], one_shot=True, send_at=200)
                 ready = schedules.create("second", ["codex"], one_shot=True, send_at=200)
 
-            def fail_first_write(path, text):
-                if "@codex first" in text:
+            replace = os.replace
+
+            def fail_first_write(source, destination):
+                if Path(destination) == message_path and "@codex first" in Path(source).read_text(encoding="utf-8"):
                     raise OSError("message log temporarily unavailable")
-                atomic_write_text(path, text)
+                return replace(source, destination)
 
             with (
                 patch("schedules.time.time", return_value=200),
                 patch.object(app, "schedules", schedules),
                 patch.object(app, "store", messages),
-                patch("store.atomic_write_text", side_effect=fail_first_write),
+                patch("atomic_io.os.replace", side_effect=fail_first_write),
             ):
                 with self.assertLogs(app.log, "ERROR") as logs:
                     app._dispatch_due_schedules()
