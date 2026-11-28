@@ -1,7 +1,8 @@
 """Job store — bounded work conversations with threaded messages."""
 
 import json
-from atomic_io import atomic_write_text
+import logging
+from atomic_io import atomic_write_text, write_backup_once
 import time
 import threading
 import uuid
@@ -11,6 +12,8 @@ from typing import Callable
 
 from job_lifecycle import ACTIVE, CLOSED, DRAFTING, LEGACY_STATUS, TODO, core_status
 from job_lifecycle import new_lifecycle, next_lifecycle, validate_lifecycle
+
+log = logging.getLogger(__name__)
 
 
 class JobStore:
@@ -40,10 +43,12 @@ class JobStore:
         if not self._path.exists():
             return
         try:
-            raw = json.loads(self._path.read_text("utf-8"))
+            original = self._path.read_bytes()
+            raw = json.loads(original.decode("utf-8"))
             if not isinstance(raw, list):
                 raise ValueError("expected a JSON list of jobs")
             migrated = False
+            legacy_format = False
             for job in raw:
                 if not isinstance(job, dict):
                     raise ValueError("expected a Job record")
@@ -54,12 +59,14 @@ class JobStore:
                         raise ValueError(f"unknown Job status: {legacy!r}")
                     job["lifecycle"] = new_lifecycle(core)
                     migrated = True
+                    legacy_format = True
                 validate_lifecycle(job["lifecycle"])
                 canonical = job["lifecycle"]["core_id"]
                 if "status" in job:
                     if core_status(legacy) != canonical:
                         raise ValueError("conflicting Job status and lifecycle state")
                     migrated = True
+                    legacy_format = True
                 if not isinstance(job.get("uid"), str) or not job["uid"]:
                     job["uid"] = str(uuid.uuid4())
                     migrated = True
@@ -67,6 +74,10 @@ class JobStore:
             self._jobs = raw
             self._next_id = max(self._next_id, max((job["id"] for job in raw), default=0) + 1)
             reordered = self._ensure_sort_orders_locked()
+            if legacy_format:
+                backup = self._path.with_name(self._path.name + ".pre-lifecycle")
+                if write_backup_once(backup, original):
+                    log.info("Preserved pre-lifecycle Job format at %s", backup)
             if migrated or reordered:
                 self._save()
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:

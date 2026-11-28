@@ -132,6 +132,8 @@ When an agent is triggered with a job, it sees the full job context — title, s
 
 Agents can also propose jobs directly via `chat_propose_job` — a proposal card appears in the timeline for you to Accept or Dismiss. The jobs panel opens from the header. Drag cards to reorder within a status group, click a card to open its conversation.
 
+**Job lifecycle rollback.** The first migration keeps the original `jobs.json.pre-lifecycle` beside `jobs.json` in the configured data directory. Before restarting an older release, stop AgentChattr, save the current `jobs.json` separately to preserve later changes, and restore a copy of the backup as `jobs.json`.
+
 ### Agent roles
 Assign roles to agents to steer their behavior — Planner, Builder, Reviewer, Researcher, or any custom role. Roles aren't a hard constraint — they're a persistent nudge. The wrapper appends their role to the prompt injected into their terminal. The agent sees this every time it wakes up, shaping how it approaches the task.
 

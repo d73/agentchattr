@@ -35,8 +35,13 @@ class JobLifecycleTests(unittest.TestCase):
             {"id": 8, "uid": "closed-uid", "status": "archived", "sort_order": 2, "messages": []},
             {"id": 9, "sort_order": 8, "messages": []},
         ]
-        self.path.write_text(json.dumps(records), encoding="utf-8")
-        self.jobs = JobStore(self.path)
+        original = (json.dumps(records, indent=2).replace("\n", "\r\n") + "\r\n").encode("utf-8")
+        self.path.write_bytes(original)
+        backup = self.path.with_name("jobs.json.pre-lifecycle")
+        with self.assertLogs("jobs", "INFO") as logs:
+            self.jobs = JobStore(self.path)
+        self.assertIn(str(backup), logs.output[0])
+        self.assertEqual(backup.read_bytes(), original)
         expected = [("open", "core.todo"), ("done", "core.active"), ("archived", "core.closed"), ("open", "core.todo")]
         self.assertEqual([(job["status"], job["lifecycle"]["core_id"]) for job in self.jobs.list_all()], expected)
         active = self.jobs.get(7)
@@ -47,7 +52,30 @@ class JobLifecycleTests(unittest.TestCase):
         with patch("jobs.atomic_write_text") as write:
             self.assertEqual(JobStore(self.path).list_all(), self.jobs.list_all())
         write.assert_not_called()
+        self.assertEqual(backup.read_bytes(), original)
         self.assertEqual(self.create()["id"], 10)
+
+    def test_migration_keeps_original_backup_when_retrying_after_save_failure(self):
+        original = b'[{"id": 1, "status": "open"}]\n'
+        self.path.write_bytes(original)
+        backup = self.path.with_name("jobs.json.pre-lifecycle")
+        with patch("jobs.atomic_write_text", side_effect=OSError("save denied")):
+            with self.assertRaises(OSError):
+                JobStore(self.path)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(backup.read_bytes(), original)
+        # Another save of the legacy store must not replace the original rollback point.
+        self.path.write_bytes(b'[{"id": 1, "status": "done"}]\n')
+        self.assertEqual(JobStore(self.path).get(1)["lifecycle"]["core_id"], "core.active")
+        self.assertEqual(backup.read_bytes(), original)
+
+    def test_failed_backup_leaves_legacy_store_unchanged(self):
+        original = b'[{"id": 1, "status": "open"}]\n'
+        self.path.write_bytes(original)
+        with patch("jobs.write_backup_once", side_effect=OSError("backup denied")):
+            with self.assertRaises(OSError):
+                JobStore(self.path)
+        self.assertEqual(self.path.read_bytes(), original)
 
     def test_migration_does_not_replace_file_with_unknown_status(self):
         original = json.dumps([{"id": 1, "status": "unknown"}])
