@@ -134,7 +134,8 @@ class SessionEngine:
         sender = msg.get("sender", "")
 
         # Ignore system-generated messages (banners, phase markers, etc.)
-        if sender == "system" or msg.get("type", "chat") not in ("chat", "decision"):
+        if (msg.get("sender_kind") not in ("human", "agent")
+                or msg.get("type", "chat") not in ("chat", "decision")):
             return
 
         with self._lock:
@@ -150,7 +151,9 @@ class SessionEngine:
             return
 
         cast_agents = set(session.get("cast", {}).values())
-        sender_is_agent = self._is_agent(sender)
+        sender_is_agent = msg["sender_kind"] == "agent"
+        expected_is_agent = self._is_agent(expected_agent)
+        is_expected_sender = sender == expected_agent and sender_is_agent == expected_is_agent
 
         # Agent not in this session's cast — ignore
         if sender_is_agent and sender not in cast_agents:
@@ -158,7 +161,7 @@ class SessionEngine:
 
         # A choice card asks for input; it is not the participant's completed turn.
         if msg.get("type") == "decision":
-            if sender == expected_agent:
+            if is_expected_sender:
                 self._store.set_choice(session["id"], msg["id"])
             return
 
@@ -174,14 +177,14 @@ class SessionEngine:
                 return
 
         # Human spoke but it's not their turn — pause if an agent is expected
-        if not sender_is_agent and sender != expected_agent and self._is_agent(expected_agent):
+        if not sender_is_agent and expected_is_agent:
             if choice_id is not None:
                 self._store.set_choice(session["id"], None)
             self._store.pause(session["id"])
             log.info("Session %d paused: human interruption by %s", session["id"], sender)
             return
 
-        if sender == expected_agent:
+        if is_expected_sender:
             if choice_id is not None:
                 return
             # Auto-resume if paused

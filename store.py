@@ -91,7 +91,9 @@ class MessageStore:
             uid: str | None = None,
             timestamp: float | None = None,
             time_str: str | None = None,
-            _bulk: bool = False) -> dict:
+            _bulk: bool = False, *,
+            sender_kind: str | None = None,
+            sender_identity: str | None = None) -> dict:
         persistence_error = None
         log_status_changed = False
         with self._lock:
@@ -110,6 +112,10 @@ class MessageStore:
             }
             if reply_to is not None:
                 msg["reply_to"] = reply_to
+            if sender_kind is not None:
+                msg["sender_kind"] = sender_kind
+            if sender_identity is not None:
+                msg["sender_identity"] = sender_identity
             if metadata:
                 msg["metadata"] = metadata
             self._next_id += 1

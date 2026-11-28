@@ -255,6 +255,8 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                 timestamp=msg.get("timestamp"),
                 time_str=msg.get("time"),
                 _bulk=True,
+                sender_kind=msg.get("sender_kind"),
+                sender_identity=msg.get("sender_identity"),
             )
             imported_uid_to_local_id[msg_uid] = new_msg["id"]
             # Track reply links for second pass

@@ -142,18 +142,20 @@ class ChatCallbackActivityTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def post(self, sender, msg_type="chat"):
-        message = {"id": 1, "sender": sender, "text": "hello", "type": msg_type, "channel": "ops"}
+    def post(self, sender, sender_kind=None):
+        message = {"id": 1, "sender": sender, "text": "hello", "type": "chat", "channel": "ops",
+                   "sender_kind": sender_kind}
         asyncio.run(app._handle_new_message(message))
 
     def test_a_person_or_agent_message_un_archives_and_broadcasts_settings(self):
-        self.post("derek")
+        self.post("derek", sender_kind="human")
 
         self.assertEqual(app.room_settings["archived_channels"], [])
         app.broadcast_settings.assert_awaited_once()
 
     def test_summary_card_is_broadcast_without_routing_its_mentions(self):
-        message = {"id": 1, "sender": "agy", "text": "Selected @all", "type": "summary", "channel": "ops"}
+        message = {"id": 1, "sender": "agy", "text": "Selected @all", "type": "summary",
+                   "channel": "ops", "sender_kind": "agent"}
         asyncio.run(app._handle_new_message(message))
         app.broadcast.assert_awaited_once_with(message)
         app.router.get_targets.assert_not_called()
