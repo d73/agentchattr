@@ -54,6 +54,7 @@ session_store: SessionStore | None = None
 session_engine: SessionEngine | None = None
 config: dict = {}
 ws_clients: set[WebSocket] = set()
+_routing_refresh_lock = threading.Lock()
 
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
@@ -1384,12 +1385,12 @@ async def broadcast_agents():
 def _on_registry_change():
     """Called from registry (any thread) when instances register/deregister/claim/rename."""
     # Update router with current agent names (base names + registered instances)
-    if router and registry:
-        base_names = list(registry.get_bases().keys())
-        # Only include active instances in routing (pending ones are inert)
-        instance_names = registry.get_active_names()
-        all_names = list(set(base_names + instance_names))
-        router.update_agents(all_names)
+    with _routing_refresh_lock:
+        if router and registry:
+            base_names = list(registry.get_bases())
+            # Only include active instances in routing (pending ones are inert).
+            instance_names = registry.get_active_names()
+            router.update_agents(base_names + instance_names)
     # Broadcast to WebSocket clients
     if _event_loop:
         asyncio.run_coroutine_threadsafe(broadcast_agents(), _event_loop)
