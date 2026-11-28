@@ -513,12 +513,11 @@ function init() {
     const mentionRow = document.getElementById('mention-toggles');
     enableDragScroll(mentionRow, '[data-reorderable]');
     const statusRow = document.getElementById('agent-status');
-    enableDragScroll(statusRow, '[data-orch-pill]');
+    enableDragScroll(statusRow, '[data-reorderable]');
     setupHorizontalReorder(statusRow, {
         move: (item, anchor, after) => movePill(statusPillKey(item), statusPillKey(anchor), after),
         status: document.getElementById('agent-pill-order-status'),
         label: item => item.querySelector('.status-label').textContent,
-        canDrag: item => item.hasAttribute('data-orch-pill'),
     });
     setupHorizontalReorder(mentionRow, {
         move: (item, anchor, after) => moveAgentPill(item.dataset.agent, anchor.dataset.agent, after),
@@ -1964,8 +1963,11 @@ function buildStatusPills() {
         if (cfg.state === 'pending') pill.classList.add('pending');
         pill.id = `status-${name}`;
         pill.dataset.agent = name;
-        if (pillKey(name)) pill.dataset.reorderable = '';
-        pill.title = `@${name}`;  // Tooltip: canonical name for manual @-typing
+        pill.setAttribute('role', 'button');
+        pill.tabIndex = 0;
+        const reorderable = Boolean(pillKey(name));
+        if (reorderable) pill.dataset.reorderable = '';
+        pill.title = reorderable ? `@${name} · Drag to reorder` : `@${name}`;
         const unknown = document.createElement('span');
         unknown.className = 'status-unknown';
         unknown.textContent = 'ⓘ';
@@ -1985,6 +1987,11 @@ function buildStatusPills() {
                 name, label: cfg.label || name, color: cfg.color || '#888',
                 base: cfg.base || '', mode,
             });
+        });
+        pill.addEventListener('keydown', event => {
+            if (pill.hasAttribute('data-orch-pill') || !['Enter', ' '].includes(event.key)) return;
+            event.preventDefault();
+            if (!event.repeat) pill.click();
         });
         container.appendChild(pill);
     }
