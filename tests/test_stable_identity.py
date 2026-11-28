@@ -118,6 +118,24 @@ class StableIdentityTests(unittest.TestCase):
                 self.reg.register("codex", requested_name=name)
         self.assertEqual(self.reg.register("codex")["name"], "codex")
 
+    def test_canonical_name_falls_back_when_slot_one_has_an_alias(self):
+        worker = self.reg.register("codex", requested_name="c1")
+        self.assertEqual(worker["slot"], 1)
+        with self.assertRaisesRegex(ValueError, "Slot 1 already occupied"):
+            self.reg.register("codex", requested_name="codex-1")
+
+        primary = self.reg.register("codex", requested_name="codex")
+        self.assertEqual((primary["name"], primary["slot"]), ("codex", 2))
+        self.assertEqual(self.reg.resolve_to_instances("codex"), ["codex"])
+        self.assertEqual(self.reg.resolve_token(worker["token"])["name"], "c1")
+        with self.assertRaisesRegex(ValueError, "Name already in use: codex"):
+            self.reg.register("codex", requested_name="codex")
+
+        self.reg.deregister("c1")
+        self.assertEqual(self.reg.register("codex")["name"], "codex-3")
+        restored = self.restart().resolve_token(primary["token"])
+        self.assertEqual((restored["name"], restored["slot"]), ("codex", 2))
+
     def test_requested_name_can_replace_expired_instance(self):
         first = self.reg.register("codex", requested_name="c2")
         with patch("registry.time.time", return_value=first["registered_at"] + 16):
