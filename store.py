@@ -33,6 +33,8 @@ class MessageStore:
             "CREATE INDEX messages_by_id ON messages(msg_id);"
             "CREATE INDEX messages_by_uid ON messages(uid);"
             "CREATE INDEX messages_by_channel ON messages(channel, position);"
+            "CREATE INDEX messages_by_orch_workflow ON messages("
+            " json_extract(payload, '$.metadata.orch_workflow.job_uid'), channel, position);"
         )
         self._next_id: int = 0  # monotonically increasing, survives deletions
         self._todos: dict[int, str] = {}  # msg_id → "todo" | "done"
@@ -146,6 +148,9 @@ class MessageStore:
             if sender_base is not None:
                 msg["sender_base"] = sender_base
             if metadata:
+                workflow = metadata.get("orch_workflow")
+                if once and workflow and workflow.get("prompt_id") is None:
+                    metadata = {**metadata, "orch_workflow": {**workflow, "prompt_id": msg["id"]}}
                 msg["metadata"] = metadata
             position = self._insert_message(msg)
             self._next_id += 1
@@ -261,6 +266,38 @@ class MessageStore:
     def get_by_id(self, msg_id: int) -> dict | None:
         with self._lock:
             return self._message_row(msg_id)[1]
+
+    def get_by_uid(self, uid: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT payload FROM messages WHERE uid = ? ORDER BY position LIMIT 1",
+                (json.dumps(uid),),
+            ).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def get_orch_workflow_messages(self, channel: str, job_uid: str) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT payload FROM messages WHERE channel = ? "
+                "AND json_extract(payload, '$.metadata.orch_workflow.job_uid') = ? ORDER BY position",
+                (json.dumps(channel), job_uid),
+            )
+            return [json.loads(payload) for (payload,) in rows]
+
+    def get_message_context(self, message: dict, count: int = 15) -> list[dict]:
+        with self._lock:
+            channel = json.dumps(message["channel"])
+            earlier = self._db.execute(
+                "SELECT payload FROM messages WHERE channel = ? AND msg_id < ? "
+                "ORDER BY msg_id DESC LIMIT ?", (channel, message["id"], count),
+            ).fetchall()
+            later = self._db.execute(
+                "SELECT payload FROM messages WHERE channel = ? AND msg_id > ? "
+                "ORDER BY msg_id LIMIT ?", (channel, message["id"], count),
+            ).fetchall()
+            return [json.loads(row[0]) for row in reversed(earlier)] + [message] + [
+                json.loads(row[0]) for row in later
+            ]
 
     def get_recent(self, count: int = 50, channel: str | None = None) -> list[dict]:
         where, parameters = (" WHERE channel = ?", (json.dumps(channel),)) if channel else ("", ())

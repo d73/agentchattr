@@ -48,6 +48,11 @@ class Services:
     transition_job: Callable | None = None
     publish_orch_gate: Callable | None = None
     read_orch_gate: Callable | None = None
+    publish_orch_workflow: Callable | None = None
+    read_orch_workflow: Callable | None = None
+    activate_orch_workflow: Callable | None = None
+    list_orch_workflow_actions: Callable | None = None
+    complete_orch_workflow: Callable | None = None
 
 
 @dataclass(frozen=True)

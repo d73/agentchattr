@@ -19,12 +19,19 @@ sys.path.insert(0, str(ROOT))
 
 
 def _publish_orch_gate(jobs, store, job_uid, *, coordinator, gate, revision, choices, text, operation_id):
-    def add_card(channel, binding):
+    def add_card(channel, binding, source_message_id):
         # Reuse the card if persisting the separate Job record needs a retry.
         key = json.dumps([job_uid, coordinator, gate, revision, operation_id])
         card_uid = str(uuid5(NAMESPACE_URL, "agentchattr:orch-gate:" + key))
         metadata = {"orch_gate": binding, "choices": choices, "resolved": False}
+        parent = store.get_by_id(source_message_id) if source_message_id is not None else None
+        for message in reversed(store.get_orch_workflow_messages(channel, job_uid)):
+            workflow = (message.get("metadata") or {}).get("orch_workflow", {})
+            if workflow.get("prompt_id") == message["id"]:
+                parent = message
+                break
         card = store.add(coordinator, text, msg_type="decision", channel=channel,
+                         reply_to=parent["id"] if parent and parent["channel"] == channel else None,
                          metadata=metadata, uid=card_uid, sender_kind="agent", once=True)
         recorded = card.get("metadata") or {}
         if (card.get("type"), card.get("channel"), card.get("sender"), card.get("text"),
@@ -148,6 +155,8 @@ def main():
     if config.get("plugins"):
         from copy import deepcopy
         from plugin_host import PluginHost, Services
+        from orch_workflow import complete_orch_workflow, list_orch_workflow_actions
+        from orch_workflow import publish_orch_workflow, read_orch_workflow
 
         plugins = PluginHost(data_dir)
         orch_entry = config["plugins"].get("orch")
@@ -175,6 +184,11 @@ def main():
             transition_job=transition_plugin_job,
             publish_orch_gate=partial(_publish_orch_gate, jobs, store),
             read_orch_gate=jobs.read_orch_gate,
+            publish_orch_workflow=partial(publish_orch_workflow, jobs, store),
+            read_orch_workflow=partial(read_orch_workflow, jobs, store),
+            activate_orch_workflow=jobs.activate_orch_workflow,
+            list_orch_workflow_actions=partial(list_orch_workflow_actions, jobs, store),
+            complete_orch_workflow=partial(complete_orch_workflow, jobs, store),
         )
         plugins.load(config["plugins"], services, core_routes=app.router.routes,
                      core_tools=(tool.__name__ for tool in mcp_bridge._ALL_TOOLS))

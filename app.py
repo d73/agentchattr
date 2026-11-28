@@ -33,6 +33,8 @@ from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from plugin_host import ASSET_PREFIX
 from operator_auth import verify_operator
+from orch_workflow import history as orch_history, history_context as orch_history_context
+from orch_workflow import record_reply as record_orch_reply, reply_metadata as orch_reply_metadata
 
 log = logging.getLogger(__name__)
 
@@ -1102,6 +1104,9 @@ async def _handle_new_message(msg: dict):
     # Summary cards are channel history, not new requests to their mentions.
     if msg_type == "summary":
         return
+    workflow = (msg.get("metadata") or {}).get("orch_workflow")
+    if workflow and workflow.get("closed"):
+        return
 
     # Check for slash commands — use stripped text (sans @mentions)
     if stripped == "/continue":
@@ -1218,10 +1223,14 @@ async def _handle_new_message(msg: dict):
                            "errors": ["Invalid JSON in session block"], "valid": False},
             )
 
-    raw_targets = router.get_targets(
-        text, channel, sender_is_agent=sender_is_agent,
-        allow_default=not (msg_type == "chat" and _has_orch_mention(text)),
-    )
+    recipient = workflow and workflow.get("recipient")
+    if recipient and (not sender_is_agent or workflow["prompt_id"] == msg.get("id")):
+        raw_targets = [recipient]
+    else:
+        raw_targets = router.get_targets(
+            text, channel, sender_is_agent=sender_is_agent,
+            allow_default=not workflow and not (msg_type == "chat" and _has_orch_mention(text)),
+        )
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
     targets = []
@@ -1585,12 +1594,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 if reply_to is not None:
                     reply_to = int(reply_to)
 
-                message = store.add(sender, text, attachments=attachments, reply_to=reply_to,
-                                    channel=channel, sender_kind="human")
                 try:
+                    metadata = orch_reply_metadata(jobs, store, channel, reply_to)
+                except ValueError as exc:
+                    await _send_ws_frame(websocket, json.dumps({"type": "message_error", "error": str(exc)}))
+                    continue
+                if metadata:
+                    sender = room_settings.get("username", "user")
+                message = store.add(sender, text, attachments=attachments, reply_to=reply_to,
+                                    channel=channel, metadata=metadata, sender_kind="human")
+                try:
+                    record_orch_reply(jobs, message)
                     _offer_orch_intake(message)
                 except OSError:
-                    log.exception("Could not persist the Orch intake card for message %s", message["id"])
+                    log.exception("Could not persist Orch history or intake for message %s", message["id"])
 
             elif event.get("type") == "delete":
                 ids = event.get("ids", [])
@@ -2318,7 +2335,12 @@ async def resolve_decision(msg_id: int, request: Request):
         metadata = {"decision_author_identity": sender_identity}
     reply_text = f"@{sender} {chosen}" if sender else chosen
     try:
-        store.add(username, reply_text, reply_to=msg_id, channel=channel, sender_kind="human", metadata=metadata)
+        bound = orch_reply_metadata(jobs, store, channel, msg_id)
+        if bound:
+            metadata = {**(metadata or {}), **bound}
+        reply = store.add(username, reply_text, reply_to=msg_id, channel=channel,
+                          sender_kind="human", metadata=metadata)
+        record_orch_reply(jobs, reply)
     except Exception:
         import traceback; traceback.print_exc()
     # Broadcast updated decision card so the UI swaps buttons to resolved state
@@ -2532,6 +2554,7 @@ def _get_source_job(source):
 def _offer_orch_intake(message):
     """Offer intake only for a message received through authenticated browser chat."""
     if (message.get("sender_kind") != "human" or message.get("type") != "chat"
+            or (message.get("metadata") or {}).get("orch_workflow")
             or not _has_orch_mention(message.get("text", ""))):
         return
     channel = message["channel"]
@@ -2683,6 +2706,8 @@ async def create_job(request: Request):
 async def update_job(job_id: int, request: Request):
     """Update a job's status, title, or assignee."""
     body = await request.json()
+    if _read_only_orch_job(job_id):
+        return _orch_history_read_only()
     result = None
     if "status" in body:
         result = jobs.update_status(job_id, body["status"])
@@ -2714,9 +2739,19 @@ async def create_job_reopen_request(job_id: int, request: Request):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     reopen = result["request"]
+    job = result["job"]
+    parent_id = None
+    if job.get("orch_workflow_active"):
+        latest = orch_history(jobs, store, job["uid"])
+        candidates = [entry["message_id"] for entry in latest["entries"]
+                      if entry["kind"] == "closeout" and entry["message_id"] is not None]
+        parent_id = next(
+            (message_id for message_id in reversed(candidates) if store.get_by_id(message_id)),
+            job.get("source_msg_id"),
+        )
     card = store.add(
         "system", f"Job #{job_id} reopen request: {reopen['reason']}",
-        msg_type="decision", channel=result["job"]["channel"], sender_kind="system",
+        msg_type="decision", channel=job["channel"], sender_kind="system", reply_to=parent_id,
         metadata={"choices": ["Approve", "Decline", "Needs clarification"],
                   "job_reopen": {"job_id": job_id, "job_uid": reopen["job_uid"],
                                  "expected_version": reopen["job_version"], "request_id": reopen["id"]}},
@@ -2737,11 +2772,26 @@ async def decide_job_reopen_request(job_id: int, request_id: str, request: Reque
     if not isinstance(body, dict) or body.get("decision") not in ("approve", "decline", "clarify"):
         return JSONResponse({"error": "Invalid reopen decision"}, status_code=400)
     try:
-        return jobs.decide_reopen(job_id, request_id, expected_uid=body.get("job_uid"),
-                                  expected_version=body.get("expected_version"), actor=actor,
-                                  role="owner", decision=body["decision"], source="local-browser")
+        result = jobs.decide_reopen(job_id, request_id, expected_uid=body.get("job_uid"),
+                                    expected_version=body.get("expected_version"), actor=actor,
+                                    role="owner", decision=body["decision"], source="local-browser")
     except ReopenConflict as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
+    reopen = result["request"]
+    if reopen["status"] != "pending" and result["job"].get("orch_workflow_active"):
+        card = store.get_by_uid(f"job-reopen-{request_id}")
+        if card:
+            metadata = card["metadata"]
+            if not metadata.get("resolved"):
+                metadata.update(resolved=True, chosen={"approved": "Approve", "declined": "Decline"}[reopen["status"]])
+                try:
+                    updated = store.update_message(card["id"], {"metadata": metadata})
+                except OSError:
+                    log.exception("Could not update Orch reopen card %s", card["id"])
+                else:
+                    if updated:
+                        await _broadcast(json.dumps({"type": "message_update", "message": updated}))
+    return result
 
 
 @app.post("/api/jobs/reorder")
@@ -2765,10 +2815,24 @@ async def get_job_messages(job_id: int):
     return msgs
 
 
+@app.get("/api/jobs/{job_uid}/orch-history")
+async def get_orch_history(job_uid: str):
+    result = orch_history(jobs, store, job_uid)
+    return result if result is not None else JSONResponse({"error": "Orch Job not found"}, status_code=404)
+
+
+@app.get("/api/jobs/{job_uid}/orch-history/{message_id}")
+async def get_orch_history_context(job_uid: str, message_id: int):
+    result = orch_history_context(jobs, store, job_uid, message_id)
+    return result if result is not None else JSONResponse({"error": "Orch message not found"}, status_code=404)
+
+
 @app.post("/api/jobs/{job_id}/messages")
 async def post_job_message(job_id: int, request: Request):
     """Post a message to a job."""
     body = await request.json()
+    if _read_only_orch_job(job_id):
+        return _orch_history_read_only()
     text = body.get("text", "").strip()
     sender = body.get("sender", "user")
     attachments = body.get("attachments", [])
@@ -2810,6 +2874,8 @@ async def post_job_message(job_id: int, request: Request):
 @app.delete("/api/jobs/{job_id}/messages/{msg_id}")
 async def delete_job_message(job_id: int, msg_id: int):
     """Soft-delete a message in a job thread."""
+    if _read_only_orch_job(job_id):
+        return _orch_history_read_only()
     result = jobs.delete_message(job_id, msg_id)
     if result is None:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -2824,6 +2890,8 @@ async def resolve_job_message(job_id: int, msg_index: int, request: Request):
     job = jobs.get(job_id)
     if not job:
         return JSONResponse({"error": "not found"}, status_code=404)
+    if job.get("orch_workflow_active"):
+        return _orch_history_read_only()
     msgs = job.get("messages", [])
     if msg_index < 0 or msg_index >= len(msgs):
         return JSONResponse({"error": "invalid message index"}, status_code=400)
@@ -2838,9 +2906,19 @@ async def resolve_job_message(job_id: int, msg_index: int, request: Request):
     return {"ok": True, "resolution": resolution}
 
 
+def _read_only_orch_job(job_id):
+    return bool((jobs.get(job_id) or {}).get("orch_workflow_active"))
+
+
+def _orch_history_read_only():
+    return JSONResponse({"error": "Use the Job's main-channel conversation"}, status_code=409)
+
+
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: int, request: Request):
     """Delete or archive a job. ?permanent=true for real delete."""
+    if _read_only_orch_job(job_id):
+        return _orch_history_read_only()
     permanent = request.query_params.get("permanent", "").lower() == "true"
     if permanent:
         result = jobs.delete(job_id)
