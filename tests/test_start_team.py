@@ -5,6 +5,7 @@ import io
 import subprocess
 import tempfile
 import unittest
+from urllib.error import HTTPError
 from unittest.mock import patch, Mock
 
 import app
@@ -163,6 +164,42 @@ class TeamLauncherTests(unittest.TestCase):
         sleep.assert_called_once_with(1)
         browser.assert_called_once_with("http://127.0.0.1:8300")
 
+    def test_registration_probe_distinguishes_outages_from_permanent_errors(self):
+        url = "http://127.0.0.1:8300"
+        for error, expected in (
+            (TimeoutError(), ConnectionError),
+            (HTTPError(url, 503, "Unavailable", {}, None), ConnectionError),
+            (HTTPError(url, 403, "Forbidden", {}, None), RuntimeError),
+            (HTTPError(url, 404, "Not found", {}, None), RuntimeError),
+        ):
+            with (
+                self.subTest(error=error),
+                patch.object(team.urllib.request, "urlopen", side_effect=error),
+                self.assertRaises(expected),
+            ):
+                team.server_registrations(url, "test-token")
+
+    def test_transient_registration_probe_failure_is_retried_after_launch(self):
+        existing = {"claude", "antigravity"}
+        registered = [
+            existing, ConnectionError("temporary timeout"),
+            set(COMMANDS), set(COMMANDS), set(COMMANDS),
+        ]
+        with (
+            patch.object(team, "process_inventory", return_value=[]),
+            patch.object(team, "find_conemu", return_value=None),
+            patch.object(team, "server_session_token", return_value="test-token"),
+            patch.object(team, "server_registrations", side_effect=registered),
+            patch.object(team.subprocess, "Popen", return_value=Mock(poll=lambda: None)) as popen,
+            patch.object(team.time, "sleep") as sleep,
+            patch.object(team.webbrowser, "open") as browser,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
+        popen.assert_called_once()
+        sleep.assert_called_once_with(1)
+        browser.assert_called_once_with("http://127.0.0.1:8300")
+
     def test_visible_wrapper_that_does_not_register_cannot_report_success(self):
         wrapper = {"Name": "python.exe", "CommandLine": "python wrapper.py codex"}
         with (
@@ -176,7 +213,7 @@ class TeamLauncherTests(unittest.TestCase):
             patch.object(team.webbrowser, "open") as browser,
             contextlib.redirect_stdout(io.StringIO()) as output,
         ):
-            with self.assertRaisesRegex(RuntimeError, "wrapper did not register"):
+            with self.assertRaisesRegex(RuntimeError, "No registration was confirmed"):
                 team.start_team("http://127.0.0.1:8300", {}, COMMANDS)
         popen.assert_called_once()
         self.assertNotIn("started and registered", output.getvalue())
