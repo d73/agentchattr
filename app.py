@@ -74,6 +74,7 @@ DEFAULT_THEME_PALETTE = "indigo"
 THEME_MODES = (DEFAULT_THEME_MODE, "light", "auto")
 THEME_PALETTES = (DEFAULT_THEME_PALETTE, "green", "blue", "amber")
 _AGENT_IDENTITY_RE = _re.compile(r"[0-9a-f]{32}")
+_WORKFLOW_PILL_KEY_RE = _re.compile(r"orch:[a-z][a-z0-9_]{0,39}")
 _MAX_AGENT_PILL_ORDER = 4096
 DEFAULT_TOOLBAR_ORDER = (
     "jobs-toggle", "schedules-toggle", "rules-toggle",
@@ -110,7 +111,9 @@ room_settings: dict = {
 def _clean_agent_pill_order(raw: object) -> list[str] | None:
     if not isinstance(raw, list) or len(raw) > _MAX_AGENT_PILL_ORDER:
         return None
-    if any(not isinstance(identity, str) or not _AGENT_IDENTITY_RE.fullmatch(identity) for identity in raw):
+    if any(not isinstance(identity, str) or not (
+        _AGENT_IDENTITY_RE.fullmatch(identity) or _WORKFLOW_PILL_KEY_RE.fullmatch(identity)
+    ) for identity in raw):
         return None
     return list(dict.fromkeys(raw))
 
