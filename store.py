@@ -29,8 +29,9 @@ class MessageStore:
             "PRAGMA temp_store = FILE;"
             "PRAGMA cache_size = -2048;"
             "CREATE TABLE messages (position INTEGER PRIMARY KEY, msg_id INTEGER NOT NULL,"
-            " channel TEXT, has_channel INTEGER, sender TEXT, activity REAL, payload TEXT NOT NULL);"
+            " uid TEXT, channel TEXT, has_channel INTEGER, sender TEXT, activity REAL, payload TEXT NOT NULL);"
             "CREATE INDEX messages_by_id ON messages(msg_id);"
+            "CREATE INDEX messages_by_uid ON messages(uid);"
             "CREATE INDEX messages_by_channel ON messages(channel, position);"
         )
         self._next_id: int = 0  # monotonically increasing, survives deletions
@@ -118,9 +119,11 @@ class MessageStore:
         log_status_changed = False
         with self._lock:
             if once:
-                for existing in self._messages:
-                    if existing.get("uid") == uid:
-                        return existing
+                row = self._db.execute(
+                    "SELECT payload FROM messages WHERE uid = ? ORDER BY position LIMIT 1", (json.dumps(uid),)
+                ).fetchone()
+                if row:
+                    return json.loads(row[0])
             previous_error = self._log_error
             ts = timestamp if timestamp is not None else time.time()
             msg = {
@@ -144,7 +147,7 @@ class MessageStore:
                 msg["sender_base"] = sender_base
             if metadata:
                 msg["metadata"] = metadata
-            self._insert_message(msg)
+            position = self._insert_message(msg)
             self._next_id += 1
             if not _bulk:
                 try:
@@ -161,7 +164,7 @@ class MessageStore:
                     self._log_error = None
                 except OSError as exc:
                     if once:
-                        self._messages.pop()
+                        self._db.execute("DELETE FROM messages WHERE position = ?", (position,))
                         self._next_id -= 1
                         raise
                     self._log_dirty = True
@@ -198,15 +201,16 @@ class MessageStore:
         timestamp = msg.get("timestamp")
         activity = timestamp if isinstance(timestamp, (int, float)) and timestamp > 0 else None
         return (
-            msg["id"], json.dumps(msg.get("channel", "general")), "channel" in msg,
+            msg["id"], json.dumps(msg.get("uid")), json.dumps(msg.get("channel", "general")), "channel" in msg,
             json.dumps(msg.get("sender")), activity, json.dumps(msg, ensure_ascii=False),
         )
 
     def _insert_message(self, msg):
-        self._db.execute(
-            "INSERT INTO messages (msg_id, channel, has_channel, sender, activity, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        return self._db.execute(
+            "INSERT INTO messages (msg_id, uid, channel, has_channel, sender, activity, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             self._message_fields(msg),
-        )
+        ).lastrowid
 
     def _message_row(self, msg_id):
         row = self._db.execute(
@@ -216,7 +220,7 @@ class MessageStore:
 
     def _save_message(self, position, msg):
         self._db.execute(
-            "UPDATE messages SET msg_id = ?, channel = ?, has_channel = ?, sender = ?, activity = ?, payload = ?"
+            "UPDATE messages SET msg_id = ?, uid = ?, channel = ?, has_channel = ?, sender = ?, activity = ?, payload = ?"
             " WHERE position = ?",
             (*self._message_fields(msg), position),
         )
