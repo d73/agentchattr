@@ -284,10 +284,10 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                     for local_id, reply_uid in pending_replies:
                         target_id = uid_to_id.get(reply_uid)
                         if target_id is not None:
-                            for m in store._messages:
-                                if m["id"] == local_id:
-                                    m["reply_to"] = target_id
-                                    break
+                            position, msg = store._message_row(local_id)
+                            if msg is not None:
+                                msg["reply_to"] = target_id
+                                store._save_message(position, msg)
             # Single rewrite covers both bulk messages and reply patches
             store.flush_bulk()
     report["sections"]["messages"] = msg_report
@@ -354,13 +354,14 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
         if _job_id_remap and imported_uid_to_local_id:
             imported_local_ids = set(imported_uid_to_local_id.values())
             with store._lock:
-                for m in store._messages:
-                    if (m.get("type") == "job_created"
-                            and m["id"] in imported_local_ids
-                            and isinstance(m.get("metadata"), dict)):
-                        old_jid = m["metadata"].get("job_id")
+                for local_id in imported_local_ids:
+                    position, msg = store._message_row(local_id)
+                    if (msg is not None and msg.get("type") == "job_created"
+                            and isinstance(msg.get("metadata"), dict)):
+                        old_jid = msg["metadata"].get("job_id")
                         if old_jid in _job_id_remap:
-                            m["metadata"]["job_id"] = _job_id_remap[old_jid]
+                            msg["metadata"]["job_id"] = _job_id_remap[old_jid]
+                            store._save_message(position, msg)
                 store._rewrite()
     report["sections"]["jobs"] = job_report
 
