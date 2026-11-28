@@ -803,6 +803,15 @@ async def _broadcast_log_status():
     await _broadcast(json.dumps({"type": "log_status", "data": store.log_status()}))
 
 
+def _log_message_dispatch_result(future):
+    if future.cancelled():
+        return
+    try:
+        future.result()
+    except Exception:
+        log.exception("Chat message dispatch failed")
+
+
 def _on_store_message(msg: dict):
     """Called from any thread when a message is added to the store."""
     if _event_loop is None:
@@ -812,11 +821,13 @@ def _on_store_message(msg: dict):
         # schedule directly as a task
         loop = asyncio.get_running_loop()
         if loop is _event_loop:
-            asyncio.ensure_future(_handle_new_message(msg))
+            task = asyncio.ensure_future(_handle_new_message(msg))
+            task.add_done_callback(_log_message_dispatch_result)
             return
     except RuntimeError:
         pass  # No running loop — we're in a different thread (MCP)
-    asyncio.run_coroutine_threadsafe(_handle_new_message(msg), _event_loop)
+    task = asyncio.run_coroutine_threadsafe(_handle_new_message(msg), _event_loop)
+    task.add_done_callback(_log_message_dispatch_result)
 
 
 def _on_rule_change(action: str, rule: dict):
@@ -1200,10 +1211,17 @@ async def _handle_new_message(msg: dict):
         # Session guard: suppress out-of-turn agent triggers
         if allowed_agent and target != allowed_agent:
             continue
+        if not agents.is_available(target):
+            continue
+        try:
+            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt)
+        except OSError:
+            log.exception("Failed to queue wake for %s in #%s", target, channel)
+            store.add("system", f"Could not queue a wake for @{target}.",
+                      msg_type="system", channel=channel, reply_to=msg.get("id"))
+            continue
         if not mcp_bridge.is_online(target):
             store.add("system", f"{target} appears offline — message queued.", msg_type="system", channel=channel)
-        if agents.is_available(target):
-            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt)
 
 
 # --- broadcasting ---
