@@ -10,7 +10,8 @@ let channelUploads = 0;
 let autoScroll = true;
 let reconnectTimer = null;
 let username = 'user';
-let agentConfig = {};  // { name: { color, label } } — registered instances (used for pills)
+let agentConfig = Object.create(null);  // Registered agents keyed by chat ID.
+let agentNamesByIdentity = new Map();
 let baseColors = {};   // { name: { color, label } } — base agent colors (for message coloring)
 let todos = {};  // { msg_id: "todo" | "done" }
 let todoSummaries = {};  // { msg_id: { id, status, sender, text, time, timestamp, channel } }
@@ -382,26 +383,6 @@ const BRAND_AVATARS = {
     copilot: `<svg viewBox="0 0 16 16" fill="white"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>`,
 };
 const USER_AVATAR = `<svg viewBox="0 0 32 32" fill="none"><circle cx="16" cy="12" r="5" fill="white" opacity="0.85"/><path d="M7 27C7 21.5 11 18 16 18C21 18 25 21.5 25 27" fill="white" opacity="0.85"/></svg>`;
-
-function getAvatarSvg(sender) {
-    const s = sender.toLowerCase();
-    const resolved = resolveAgent(s);
-    if (resolved) {
-        if (BRAND_AVATARS[resolved]) return BRAND_AVATARS[resolved];
-        // Use base field from agent config (handles custom names like "claudeypops" → claude)
-        const cfg = agentConfig[resolved];
-        if (cfg && cfg.base && BRAND_AVATARS[cfg.base]) return BRAND_AVATARS[cfg.base];
-        // Fallback: parse base-N pattern (claude-2 → claude)
-        const base = resolved.replace(/-\d+$/, '');
-        if (base !== resolved && BRAND_AVATARS[base]) return BRAND_AVATARS[base];
-    }
-    // Fall back for offline agents: check config base, then parse pattern
-    const cfg = agentConfig[s];
-    if (cfg && cfg.base && BRAND_AVATARS[cfg.base]) return BRAND_AVATARS[cfg.base];
-    const base = s.replace(/-\d+$/, '');
-    if (BRAND_AVATARS[base]) return BRAND_AVATARS[base];
-    return USER_AVATAR;
-}
 
 // --- Update check ---
 
@@ -872,59 +853,18 @@ function handleServerEvent(event) {
             if (idx !== -1) arr[idx] = event.new_name;
         }
         persistMentions();
-        // Update sender name, color, and avatar on all existing messages in the DOM
-        const newColor = getColor(event.new_name);
-        const newAvatar = getAvatarSvg(event.new_name);
-        const newAgentKey = (resolveAgent(event.new_name.toLowerCase()) || event.new_name).toLowerCase();
-        const newHat = agentHats[newAgentKey] || '';
-        document.querySelectorAll('#messages .message').forEach(el => {
-            // Regular chat messages
-            const senderEl = el.querySelector('.msg-sender');
-            if (senderEl && senderEl.textContent === event.old_name) {
-
-                senderEl.textContent = event.new_name;
-                senderEl.style.color = newColor;
-                // Update bubble accent color
-                const bubble = el.querySelector('.chat-bubble');
-                if (bubble) bubble.style.setProperty('--bubble-color', newColor);
-                // Update avatar
-                const avatarWrap = el.querySelector('.avatar-wrap');
-                if (avatarWrap) {
-                    avatarWrap.dataset.agent = newAgentKey;
-                    const avatar = avatarWrap.querySelector('.avatar');
-                    if (avatar) {
-                        avatar.style.backgroundColor = newColor;
-                        avatar.innerHTML = newAvatar;
-                    }
-                    // Update hat
-                    let hatEl = avatarWrap.querySelector('.hat-overlay');
-                    if (newHat) {
-                        if (!hatEl) {
-                            hatEl = document.createElement('div');
-                            hatEl.className = 'hat-overlay';
-                            avatarWrap.appendChild(hatEl);
-                        }
-                        hatEl.dataset.agent = newAgentKey;
-                        hatEl.innerHTML = newHat;
-                    } else if (hatEl) {
-                        hatEl.remove();
-                    }
-                }
-            }
-            // Join/leave messages (separate structure, no .msg-sender)
-            const joinText = el.querySelector('.join-text strong');
-            if (joinText && joinText.textContent === event.old_name) {
-
-                joinText.textContent = event.new_name;
-                joinText.style.color = newColor;
-                const joinDot = el.querySelector('.join-dot');
-                if (joinDot) joinDot.style.background = newColor;
+        // Only legacy messages rely on sender names during a rename.
+        document.querySelectorAll('#messages .message[data-sender]').forEach(el => {
+            if (!el.dataset.senderIdentity && el.dataset.senderKind !== 'human' && el.dataset.sender === event.old_name) {
+                el.dataset.sender = event.new_name;
             }
         });
+        recolorMessages();
     } else if (event.type === 'agents') {
         applyAgentConfig(event.data);
     } else if (event.type === 'base_colors') {
         baseColors = event.data || {};
+        recolorMessages();
     } else if (event.type === 'todos') {
         todos = {};
         for (const [id, status] of Object.entries(event.data || {})) {
@@ -1259,24 +1199,29 @@ function appendMessage(msg, options = {}) {
     el.className = options.history ? 'message history-message' : 'message';
     el.id = `message-${msg.id}`;
     el.dataset.id = msg.id;
+    el.dataset.sender = msg.sender;
+    el.dataset.senderKind = msg.sender_kind || '';
+    el.dataset.senderIdentity = msg.sender_identity || '';
+    el.dataset.senderBase = msg.sender_base || '';
+    const appearance = senderAppearance(msg);
     const msgChannel = msg.channel || 'general';
     el.dataset.channel = msgChannel;
     if (window.noteChannelActivity) window.noteChannelActivity(msgChannel, msg.timestamp);
 
     if (msg.type === 'join' || msg.type === 'leave') {
         el.classList.add('join-msg');
-        const color = getColor(msg.sender);
-        el.innerHTML = `<span class="join-dot" style="background: ${color}"></span><span class="join-text"><strong style="color: ${color}">${escapeHtml(msg.sender)}</strong> ${msg.type === 'join' ? 'joined' : 'left'}</span>`;
+        const color = appearance.color;
+        el.innerHTML = `<span class="join-dot" style="background: ${color}"></span><span class="join-text"><strong style="color: ${color}">${escapeHtml(appearance.name)}</strong> ${msg.type === 'join' ? 'joined' : 'left'}</span>`;
     } else if (msg.type === 'summary') {
         el.classList.add('summary-msg');
-        const color = getColor(msg.sender);
-        el.innerHTML = `<div class="summary-card"><span class="summary-pill">Summary</span><span class="summary-author" style="color: ${color}">${escapeHtml(msg.sender)}</span><div class="summary-text">${escapeHtml(msg.text)}</div></div>`;
+        const color = appearance.color;
+        el.innerHTML = `<div class="summary-card"><span class="summary-pill">Summary</span><span class="summary-author" style="color: ${color}">${escapeHtml(appearance.name)}</span><div class="summary-text">${escapeHtml(msg.text)}</div></div>`;
     } else if (msg.type === 'job_proposal') {
         el.classList.add('proposal-msg');
         const meta = msg.metadata || {};
         const title = escapeHtml(meta.title || '');
         const body = meta.body ? renderMarkdown(meta.body) : '';
-        const color = getColor(msg.sender);
+        const color = appearance.color;
         const status = meta.status || 'pending';
         const isPending = status === 'pending';
         el.dataset.proposalTitle = meta.title || '';
@@ -1286,7 +1231,7 @@ function appendMessage(msg, options = {}) {
             <div class="proposal-card ${isPending ? '' : 'proposal-resolved'}">
                 <div class="proposal-header">
                     <span class="proposal-pill">Job Proposal</span>
-                    <span class="proposal-author" style="color: ${color}">${escapeHtml(msg.sender)}</span>
+                    <span class="proposal-author" style="color: ${color}">${escapeHtml(appearance.name)}</span>
                 </div>
                 <div class="proposal-title">${title}</div>
                 ${body ? `<div class="proposal-body">${body}</div>` : ''}
@@ -1305,7 +1250,7 @@ function appendMessage(msg, options = {}) {
         el.classList.add('proposal-msg');
         const meta = msg.metadata || {};
         const ruleText = escapeHtml(meta.text || msg.text || '');
-        const color = getColor(msg.sender);
+        const color = appearance.color;
         const status = meta.status || 'pending';
         const isPending = status === 'pending';
         el.innerHTML = `
@@ -1335,8 +1280,9 @@ function appendMessage(msg, options = {}) {
         const isError = msg.text.startsWith('[') && msg.text.includes('error');
         if (isError) el.classList.add('error-msg');
 
-        // Update last mentioned agent if message is from user (Ben)
-        if (msg.sender.toLowerCase() === username.toLowerCase()) {
+        const isSelf = msg.sender_kind !== 'agent' && !msg.sender_identity
+            && msg.sender.toLowerCase() === username.toLowerCase();
+        if (isSelf) {
             const mentions = msg.text.match(/@(\w[\w-]*)/g);
             if (mentions) {
                 const lastMention = mentions[mentions.length - 1].slice(1).toLowerCase();
@@ -1349,8 +1295,7 @@ function appendMessage(msg, options = {}) {
 
         let textHtml = styleHashtags(renderMarkdown(msg.text));
 
-        const senderColor = getColor(msg.sender);
-        const isSelf = msg.sender.toLowerCase() === username.toLowerCase();
+        const senderColor = appearance.color;
         el.classList.add(isSelf ? 'self' : 'other');
 
         let attachmentsHtml = '';
@@ -1377,16 +1322,16 @@ function appendMessage(msg, options = {}) {
             }
         }
 
-        const agentKey = (resolveAgent(msg.sender.toLowerCase()) || msg.sender).toLowerCase();
-        const hatSvg = agentHats[agentKey] || '';
+        const agentKey = appearance.agent || '';
+        const hatSvg = agentKey && agentHats[agentKey];
         const hatHtml = hatSvg ? `<div class="hat-overlay" data-agent="${escapeHtml(agentKey)}">${hatSvg}</div>` : '';
-        const avatarHtml = `<div class="avatar-wrap" data-agent="${escapeHtml(agentKey)}"><div class="avatar" style="background-color: ${senderColor}">${getAvatarSvg(msg.sender)}</div>${hatHtml}</div>`;
+        const avatarHtml = `<div class="avatar-wrap" data-agent="${escapeHtml(agentKey)}"><div class="avatar" style="background-color: ${senderColor}">${appearance.avatar}</div>${hatHtml}</div>`;
 
         const pinAction = todoAction(todoStatus);
         el.dataset.rawText = msg.text;
-        const senderRole = _agentRoles[msg.sender] || '';
+        const senderRole = _agentRoles[appearance.name] || '';
         const roleClass = senderRole ? 'bubble-role has-role' : 'bubble-role';
-        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this, '${escapeHtml(msg.sender)}')" title="${senderRole ? escapeHtml(senderRole) : 'Set role'}">${senderRole || 'choose a role'}</button>` : '';
+        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this)" title="${senderRole ? escapeHtml(senderRole) : 'Set role'}">${senderRole || 'choose a role'}</button>` : '';
         // Inline decision choices (if present)
         let choicesHtml = '';
         const meta = msg.metadata || {};
@@ -1400,7 +1345,7 @@ function appendMessage(msg, options = {}) {
                 ).join('') + '</div>';
             }
         }
-        el.innerHTML = `<div class="todo-strip"></div>${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(msg.sender)}</span>${rolePillHtml}<span class="msg-time">${msg.time || ''}</span><span class="msg-num">#${msg.id}</span></div><div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}<button class="convert-job-pill" onclick="startJobFromMessage(${msg.id}); event.stopPropagation();" title="Convert to job">convert to job</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div><div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)" title="Reply" aria-label="Reply">${messageActionIcon('reply')}</button><button class="todo-hint" onclick="todoCycle(${msg.id}); event.stopPropagation();" title="${pinAction.label}" aria-label="${pinAction.label}">${messageActionIcon(pinAction.icon)}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete" aria-label="Delete">${messageActionIcon('delete')}</button></div>`;
+        el.innerHTML = `<div class="todo-strip"></div>${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(appearance.name)}</span>${rolePillHtml}<span class="msg-time">${msg.time || ''}</span><span class="msg-num">#${msg.id}</span></div><div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}<button class="convert-job-pill" onclick="startJobFromMessage(${msg.id}); event.stopPropagation();" title="Convert to job">convert to job</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div><div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)" title="Reply" aria-label="Reply">${messageActionIcon('reply')}</button><button class="todo-hint" onclick="todoCycle(${msg.id}); event.stopPropagation();" title="${pinAction.label}" aria-label="${pinAction.label}">${messageActionIcon(pinAction.icon)}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete" aria-label="Delete">${messageActionIcon('delete')}</button></div>`;
         if (todoStatus) el.classList.add('msg-todo', `msg-todo-${todoStatus}`);
         if (msg.metadata?.session_output) el.classList.add('session-output');
 
@@ -1439,41 +1384,41 @@ function appendMessage(msg, options = {}) {
     }
 }
 
-function getSenderClass(sender) {
-    const s = sender.toLowerCase();
-    if (s === 'system') return 'system';
-    if (resolveAgent(s)) return 'agent';
-    // Check base colors for offline agents
-    const base = s.replace(/-\d+$/, '');
-    if (base in baseColors) return 'agent';
-    return 'user';
+function resolveAgent(name) {
+    const key = name.toLowerCase();
+    return Object.hasOwn(agentConfig, key) ? key : null;
 }
 
-function resolveAgent(name) {
-    const s = name.toLowerCase();
-    if (s in agentConfig) return s;
-    // Try prefix match: "gemini-cli" → "gemini"
-    for (const key of Object.keys(agentConfig)) {
-        if (s.startsWith(key)) return key;
-    }
-    return null;
+function senderAppearance({ sender, sender_kind, sender_identity, sender_base }) {
+    const human = sender_kind === 'human';
+    const agent = human ? null : sender_identity
+        ? agentNamesByIdentity.get(sender_identity) || null
+        : resolveAgent(sender);
+    const cfg = agent ? agentConfig[agent] : null;
+    const base = human ? null : (cfg?.base || sender_base);
+    const baseColor = base && Object.hasOwn(baseColors, base) ? baseColors[base].color : null;
+    const override = agent && Object.hasOwn(colorOverrides, agent) ? colorOverrides[agent] : null;
+    const color = sender.toLowerCase() === 'system' && !human ? 'var(--system-color)'
+        : override || cfg?.color || baseColor || 'var(--user-color)';
+    return {
+        agent,
+        name: agent || sender,
+        color,
+        avatar: base && Object.hasOwn(BRAND_AVATARS, base) ? BRAND_AVATARS[base] : USER_AVATAR,
+    };
+}
+
+function renderedSender(el) {
+    return {
+        sender: el.dataset.sender,
+        sender_kind: el.dataset.senderKind,
+        sender_identity: el.dataset.senderIdentity,
+        sender_base: el.dataset.senderBase,
+    };
 }
 
 function getColor(sender) {
-    const s = sender.toLowerCase();
-    if (s === 'system') return 'var(--system-color)';
-    const resolved = resolveAgent(s);
-    if (resolved) {
-        if (colorOverrides[resolved]) return colorOverrides[resolved];
-        return agentConfig[resolved].color;
-    }
-    // Check overrides for unresolved names too
-    if (colorOverrides[s]) return colorOverrides[s];
-    // Fall back to base agent colors (for historical messages from offline agents)
-    const base = s.replace(/-\d+$/, '');
-    if (colorOverrides[base]) return colorOverrides[base];
-    if (base in baseColors) return baseColors[base].color;
-    return 'var(--user-color)';
+    return senderAppearance(typeof sender === 'string' ? { sender } : sender).color;
 }
 
 function colorMentions(textHtml) {
@@ -1539,9 +1484,12 @@ function repositionScrollAnchor() {
 
 function applyAgentConfig(data) {
     _agentConfigReady = true;
-    agentConfig = {};
+    agentConfig = Object.create(null);
+    agentNamesByIdentity = new Map();
     for (const [name, cfg] of Object.entries(data)) {
-        agentConfig[name.toLowerCase()] = cfg;
+        const key = name.toLowerCase();
+        agentConfig[key] = cfg;
+        if (cfg.identity_id) agentNamesByIdentity.set(cfg.identity_id, key);
     }
     buildStatusPills();
     buildMentionToggles();
@@ -1566,19 +1514,25 @@ function refreshAgentColors() {
 }
 
 function recolorMessages() {
-    const msgs = document.querySelectorAll('.message[data-id]');
+    const msgs = document.querySelectorAll('.message[data-sender]');
     for (const el of msgs) {
-        const sender = el.querySelector('.msg-sender');
+        const { agent, name, color, avatar } = senderAppearance(renderedSender(el));
+        if (agent && el.dataset.senderIdentity) el.dataset.sender = name;
+        const sender = el.querySelector('.msg-sender, .join-text strong, .summary-author, .proposal-author');
         if (!sender) continue;
-        const name = sender.textContent.trim();
-        const color = getColor(name);
+        sender.textContent = name;
         sender.style.color = color;
-        // Update bubble color
+        const dot = el.querySelector('.join-dot');
+        if (dot) dot.style.background = color;
         const bubble = el.querySelector('.chat-bubble');
         if (bubble) bubble.style.setProperty('--bubble-color', color);
-        // Update avatar color
-        const avatar = el.querySelector('.avatar');
-        if (avatar) avatar.style.backgroundColor = color;
+        const wrap = el.querySelector('.avatar-wrap');
+        if (wrap) {
+            wrap.dataset.agent = agent || '';
+            const icon = wrap.querySelector('.avatar');
+            icon.style.backgroundColor = color;
+            if (icon.innerHTML !== avatar) icon.innerHTML = avatar;
+        }
         // Re-render markdown with updated mention colors and hashtags
         const textEl = el.querySelector('.msg-text');
         if (textEl && el.dataset.rawText) {
@@ -1586,6 +1540,8 @@ function recolorMessages() {
             addCodeCopyButtons(el);
         }
     }
+    updateAllHats();
+    if (replyingTo) renderReplyPreview();
 }
 
 // --- Hats ---
@@ -1594,17 +1550,17 @@ function updateAllHats() {
     // Update hat overlays on all message avatars
     document.querySelectorAll('.avatar-wrap[data-agent]').forEach(wrap => {
         const agent = wrap.dataset.agent;
-        const svg = agentHats[agent] || '';
+        const svg = agent && agentHats[agent];
         let overlay = wrap.querySelector('.hat-overlay');
 
         if (svg) {
             if (!overlay) {
                 overlay = document.createElement('div');
                 overlay.className = 'hat-overlay';
-                overlay.dataset.agent = agent;
                 wrap.appendChild(overlay);
             }
-            overlay.innerHTML = svg;
+            overlay.dataset.agent = agent;
+            if (overlay.innerHTML !== svg) overlay.innerHTML = svg;
         } else {
             if (overlay) overlay.remove();
         }
@@ -2134,7 +2090,11 @@ function showPillPopover(pillEl, opts) {
 
 // --- Bubble role picker ---
 
-function showBubbleRolePicker(btn, agentName) {
+function showBubbleRolePicker(btn) {
+    const msgEl = btn.closest('.message');
+    const sender = renderedSender(msgEl);
+    const { agent, name: agentName } = senderAppearance(sender);
+    if (sender.sender_identity && !agent) return;
     // Close any existing picker and reset z-index on its parent message
     document.querySelectorAll('.bubble-role-picker').forEach(p => {
         const msg = p.closest('.message');
@@ -2193,7 +2153,6 @@ function showBubbleRolePicker(btn, agentName) {
 
     // Place inside the chat-bubble, positioned below the clicked button
     const bubble = btn.closest('.chat-bubble');
-    const msgEl = btn.closest('.message');
     if (msgEl) msgEl.style.zIndex = '50';
     bubble.appendChild(picker);
 
@@ -3265,14 +3224,14 @@ function startReply(msgId, event) {
     if (event) event.stopPropagation();
     const el = document.querySelector(`.message[data-id="${msgId}"]`);
     if (!el) return;
-    const sender = el.querySelector('.msg-sender')?.textContent?.trim() || '?';
+    const sender = renderedSender(el);
     const text = el.dataset.rawText || el.querySelector('.msg-text')?.textContent || '';
     replyingTo = { id: msgId, sender, text };
     renderReplyPreview();
 
     // Auto-activate mention chip for the replied-to sender, deactivate others
-    const resolved = resolveAgent(sender.toLowerCase());
-    if (resolved) {
+    const resolved = senderAppearance(sender).agent;
+    if (resolved && agentConfig[resolved].state !== 'pending') {
         for (const btn of document.querySelectorAll('.mention-toggle')) {
             const agent = btn.dataset.agent;
             if (agent === resolved) {
@@ -3303,8 +3262,8 @@ function renderReplyPreview() {
         inputRow.parentNode.insertBefore(container, inputRow);
     }
     const truncated = replyingTo.text.length > 100 ? replyingTo.text.slice(0, 100) + '...' : replyingTo.text;
-    const color = getColor(replyingTo.sender);
-    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${color}; font-weight: 600">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
+    const { color, name } = senderAppearance(replyingTo.sender);
+    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${color}; font-weight: 600">${escapeHtml(name)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
 }
 
 function cancelReply() {
@@ -3628,7 +3587,8 @@ function renderTodosPanel() {
         const time = summary?.time || el?.querySelector('.msg-time')?.textContent || '';
         const sender = (summary?.sender || el?.querySelector('.msg-sender')?.textContent || '').trim();
         const text = summary?.text || el?.querySelector('.msg-text')?.textContent || '';
-        const senderColor = (sender ? getColor(sender) : '') || el?.querySelector('.msg-sender')?.style.color || 'var(--text)';
+        const senderColor = el?.querySelector('.msg-sender')?.style.color
+            || (sender ? getColor(summary || sender) : 'var(--text)');
         const msgChannel = summary?.channel || el?.dataset.channel || 'general';
 
         const item = document.createElement('div');

@@ -1143,7 +1143,7 @@ function appendJobMessage(msg) {
     const div = document.createElement('div');
     div.className = 'job-msg' + (msg.type === 'suggestion' ? ' job-suggestion' : '');
     div.dataset.msgId = String(msg.id ?? '');
-    const senderColor = window.getColor(msg.sender);
+    const senderColor = window.getColor(msg);
     const msgId = Number(msg.id);
     const canDelete = Number.isFinite(msgId);
     const deleteActionHtml = canDelete

@@ -982,6 +982,7 @@ async def _handle_new_message(msg: dict):
     channel = msg.get("channel", "general")
     sender_kind = msg.get("sender_kind")
     sender_identity = msg.get("sender_identity")
+    sender_base = msg.get("sender_base")
     sender_is_agent = sender_kind == "agent"
     if sender_kind not in ("human", "agent"):
         await broadcast(msg)
@@ -1042,7 +1043,8 @@ async def _handle_new_message(msg: dict):
         agent_names = registry.get_all_names() if registry else list(config.get("agents", {}).keys())
         mentions = " ".join(f"@{a}" for a in agent_names)
         store.add(sender, f"{mentions} Time for a roast review! Inspect each other's work and constructively roast it.",
-                  channel=channel, sender_kind=sender_kind, sender_identity=sender_identity)
+                  channel=channel, sender_kind=sender_kind, sender_identity=sender_identity,
+                  sender_base=sender_base)
         return
 
     if stripped.startswith("/artchallenge"):
@@ -1058,6 +1060,7 @@ async def _handle_new_message(msg: dict):
             channel=channel,
             sender_kind=sender_kind,
             sender_identity=sender_identity,
+            sender_base=sender_base,
         )
         return
 
@@ -1081,6 +1084,7 @@ async def _handle_new_message(msg: dict):
             channel=channel,
             sender_kind=sender_kind,
             sender_identity=sender_identity,
+            sender_base=sender_base,
         )
         return
 
@@ -1097,7 +1101,7 @@ async def _handle_new_message(msg: dict):
             "sonnet": "Write a sonnet about the current state of this codebase.",
         }
         store.add(sender, f"{mentions} {prompts[form]}", channel=channel,
-                  sender_kind=sender_kind, sender_identity=sender_identity)
+                  sender_kind=sender_kind, sender_identity=sender_identity, sender_base=sender_base)
         return
 
     # Detect session draft blocks from agents only.
@@ -1717,7 +1721,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             import mcp_bridge
                             mcp_bridge.migrate_identity(agent_name, new_id)
                             # Update sender on all historical messages
-                            store.rename_sender(agent_name, new_id)
+                            store.rename_sender(agent_name, new_id, result["identity_id"])
                             _migrate_agent_last_channel(agent_name, new_id)
                             # Notify clients so they can update sender in DOM
                             rename_event = json.dumps({
@@ -1757,7 +1761,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 import mcp_bridge
                                 mcp_bridge.migrate_identity(agent_name, new_id)
                                 # Update sender on all historical messages
-                                store.rename_sender(agent_name, new_id)
+                                store.rename_sender(agent_name, new_id, result["identity_id"])
                                 _migrate_agent_last_channel(agent_name, new_id)
                                 rename_event = json.dumps({
                                     "type": "agent_renamed",
@@ -1993,7 +1997,7 @@ async def api_send(request: Request):
     channel = body.get("channel", "general")
 
     msg = store.add(sender, text, channel=channel, sender_kind="agent",
-                    sender_identity=inst["identity_id"])
+                    sender_identity=inst["identity_id"], sender_base=inst["base"])
     return JSONResponse(msg)
 
 
@@ -2691,7 +2695,7 @@ async def rename_agent_label(name: str, request: Request):
     import mcp_bridge
     mcp_bridge.migrate_identity(name, new_id)
     # Update sender on all historical messages
-    store.rename_sender(name, new_id)
+    store.rename_sender(name, new_id, result["identity_id"])
     _migrate_agent_last_channel(name, new_id)
     return JSONResponse({"ok": True, "new_name": new_id})
 

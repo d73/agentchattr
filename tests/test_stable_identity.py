@@ -22,6 +22,15 @@ class StableIdentityTests(unittest.TestCase):
         reg.seed(self.config)
         return reg
 
+    def test_browser_roster_follows_rename_without_exposing_token(self):
+        first = self.reg.register("codex")
+        self.reg.rename(first["name"], "builder")
+        roster = self.reg.get_agent_config()
+        self.assertNotIn(first["name"], roster)
+        self.assertEqual(roster["builder"]["identity_id"], first["identity_id"])
+        self.assertEqual(roster["builder"]["base"], "codex")
+        self.assertNotIn("token", roster["builder"])
+
     def test_concurrent_instance_never_renames_or_recolors_survivor(self):
         first = self.reg.register("codex")
         second = self.reg.register("codex")
