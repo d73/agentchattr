@@ -54,6 +54,20 @@ class UnreadCursorTests(unittest.TestCase):
         self.assertEqual(unread[:1], self.read(since_id=0, limit=1))
         self.assertEqual(unread[1:], self.read(since_id=0, limit=1))
 
+    def test_one_wake_can_drain_all_pages_without_guessing_when_to_read_again(self):
+        self.add(2)
+        initial = json.loads(bridge.chat_read("reader", channel="general", limit=1))
+        self.assertNotIn("has_more", initial[-1])
+        unread = self.add(4)
+        with patch.object(self.store, "get_since", wraps=self.store.get_since) as get_since:
+            first = json.loads(bridge.chat_read("reader", channel="general", limit=2))
+        get_since.assert_called_once_with(initial[-1]["id"], channel="general", limit=3)
+        self.assertTrue(first[-1]["has_more"])
+        self.assertNotIn("has_more", first[0])
+        last = json.loads(bridge.chat_read("reader", channel="general", limit=2))
+        self.assertNotIn("has_more", last[-1])
+        self.assertEqual(unread, [item["id"] for item in first + last])
+
     def test_first_read_and_resync_still_take_most_recent_context(self):
         initial = self.add(3)
         self.assertEqual(initial[-1:], self.read(limit=1))
