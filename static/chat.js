@@ -81,6 +81,7 @@ let savedAgentColors = readColorMap(COLOR_CACHE_KEY);
 const pendingAgentColors = new Map(Object.entries(readColorMap(COLOR_CHANGES_KEY, true)));
 let colorOverrides = agentColorsWithPendingChanges();
 let receivedColorSettings = false;
+let latestAgentColorRevision = -1;
 let agentColorSeed;
 let nextColorRequest = 0;
 let colorRequest = null;
@@ -106,8 +107,9 @@ function persistPendingAgentColors() {
     } catch (e) {}
 }
 
-function applyAgentColorSettings(colors) {
-    if (colors && typeof colors === 'object' && !Array.isArray(colors)) {
+function applyAgentColorSettings(colors, revision = 0) {
+    if (revision >= latestAgentColorRevision && colors && typeof colors === 'object' && !Array.isArray(colors)) {
+        latestAgentColorRevision = revision;
         savedAgentColors = colors;
         agentColorSeed = undefined;
         try { localStorage.setItem(COLOR_CACHE_KEY, JSON.stringify(savedAgentColors)); } catch (e) {}
@@ -143,7 +145,7 @@ function handleAgentColorsSaved(event) {
         if (pendingAgentColors.get(name) === color) pendingAgentColors.delete(name);
     }
     persistPendingAgentColors();
-    applyAgentColorSettings(event.data);
+    applyAgentColorSettings(event.data, event.revision);
 }
 let schedulesList = [];  // array of schedule objects from server
 
@@ -1137,6 +1139,7 @@ function connectWebSocket() {
     socket.onclose = (e) => {
         if (ws !== socket) return;
         receivedColorSettings = false;
+        latestAgentColorRevision = -1;
         colorRequest = null;
         // Server sends 4003 when session token is invalid (server restarted).
         // Auto-reload to pick up the fresh token from the new HTML page.
@@ -2439,7 +2442,7 @@ function applySettings(data) {
         _seededUiPrefs = true;
         saveUiPrefs();
     }
-    applyAgentColorSettings(data.agent_colors);
+    applyAgentColorSettings(data.agent_colors, data.agent_colors_revision);
     if (data.max_agent_hops !== undefined) {
         const hopsInput = document.getElementById('setting-hops');
         if (document.activeElement !== hopsInput) hopsInput.value = data.max_agent_hops;

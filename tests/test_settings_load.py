@@ -130,8 +130,10 @@ class SettingsLoadTests(unittest.TestCase):
             asyncio.run(app.websocket_endpoint(Socket()))
 
         expected = {"claude": "#333333", "codex": "#444444"}
-        self.assertIn({"type": "agent_colors_saved", "request_id": 1, "data": expected}, frames)
-        self.assertEqual([f for f in frames if f["type"] == "settings"][-1]["data"]["agent_colors"], expected)
+        self.assertIn({"type": "agent_colors_saved", "request_id": 1, "data": expected, "revision": 1}, frames)
+        latest_settings = [f for f in frames if f["type"] == "settings"][-1]["data"]
+        self.assertEqual(latest_settings["agent_colors"], expected)
+        self.assertEqual(latest_settings["agent_colors_revision"], 1)
 
 
 if __name__ == "__main__":

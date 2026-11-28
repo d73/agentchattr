@@ -65,3 +65,16 @@ test('acknowledging one edit keeps a newer queued edit for the same agent', () =
     assert.deepEqual(colors(), { codex: '#444444' });
     assert.deepEqual(sent[1], { type: 'agent_color_changes', request_id: 2, changes: { codex: '#444444' } });
 });
+
+test('an older acknowledgement or settings frame cannot roll back newer colors', () => {
+    const { ctx, ws, colors } = startClient(makeStorage());
+    ws.readyState = 1;
+    ctx.applyAgentColorSettings({ claude: '#111111' }, 1);
+    ctx.setAgentColorOverride('codex', '#444444');
+    ctx.applyAgentColorSettings({ claude: '#333333', codex: '#444444' }, 3);
+    ctx.handleAgentColorsSaved({
+        request_id: 1, revision: 2, data: { claude: '#111111', codex: '#444444' },
+    });
+    ctx.applyAgentColorSettings({ claude: '#111111', codex: '#444444' }, 2);
+    assert.deepEqual(colors(), { claude: '#333333', codex: '#444444' });
+});

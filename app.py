@@ -131,12 +131,14 @@ def _clean_agent_colors(raw) -> dict:
 def _save_agent_color_changes(changes: dict, seed) -> dict:
     """Persist one client's edits without replacing other clients' overrides."""
     previous = room_settings.get("agent_colors")
+    previous_revision = room_settings.get("agent_colors_revision")
     colors = dict(previous) if previous is not None else _clean_agent_colors(seed)
     colors.update(_clean_agent_colors(changes))
     for name, color in changes.items():
         if color is None and len(name) <= 64:
             colors.pop(name, None)
     room_settings["agent_colors"] = colors
+    room_settings["agent_colors_revision"] = (previous_revision or 0) + 1
     try:
         _save_settings()
     except OSError:
@@ -144,6 +146,10 @@ def _save_agent_color_changes(changes: dict, seed) -> dict:
             room_settings.pop("agent_colors", None)
         else:
             room_settings["agent_colors"] = previous
+        if previous_revision is None:
+            room_settings.pop("agent_colors_revision", None)
+        else:
+            room_settings["agent_colors_revision"] = previous_revision
         raise
     return colors
 
@@ -273,6 +279,9 @@ def _load_settings():
             room_settings["agent_colors"] = _clean_agent_colors(room_settings["agent_colors"])
         else:
             del room_settings["agent_colors"]
+    revision = room_settings.get("agent_colors_revision")
+    if type(revision) is not int or revision < 0:
+        room_settings.pop("agent_colors_revision", None)
     # settings.json is hand-editable, so the file bypasses every check the
     # live update path applies. Re-normalise on load rather than trust it.
     room_settings["subtitle"] = normalize_room_subtitle(room_settings.get("subtitle")) or ""
@@ -1715,7 +1724,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     log.exception("Could not save agent colors")
                     await websocket.send_text(json.dumps(ack))
                     continue
-                await websocket.send_text(json.dumps({**ack, "data": colors}))
+                await websocket.send_text(json.dumps({
+                    **ack, "data": colors, "revision": room_settings["agent_colors_revision"],
+                }))
                 await broadcast_settings()
 
             elif event.get("type") == "update_settings":
@@ -1741,6 +1752,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     room_settings["ui_prefs"] = _clean_ui_prefs(new["ui_prefs"])
                 if "agent_colors" not in room_settings and isinstance(new.get("agent_colors"), dict):
                     room_settings["agent_colors"] = _clean_agent_colors(new["agent_colors"])
+                    room_settings["agent_colors_revision"] = room_settings.get("agent_colors_revision", 0) + 1
                 if "rules_refresh_interval" in new:
                     try:
                         ri = int(new["rules_refresh_interval"])
