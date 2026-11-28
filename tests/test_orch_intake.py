@@ -157,6 +157,19 @@ class OrchIntakeTests(unittest.TestCase):
         self.assertEqual(two["channel"], "notes")
         self.assertEqual(one["proposal_writer"], "orch")
 
+    def test_proposal_acceptance_assigns_the_verified_writer_after_rename(self):
+        source = self.message()
+        proposal = self.messages.add(
+            "former-name", "Job proposal", msg_type="job_proposal", channel=source["channel"],
+            metadata={"status": "pending", "source_msg_id": source["id"]},
+            sender_kind="agent", sender_identity=self.writer["identity_id"], sender_base="codex",
+        )
+        self.registry.register("codex", requested_name="former-name")
+        job = self.accept(proposal)
+        self.assertEqual(job["lifecycle"]["stage_id"], "orch.drafting")
+        self.assertEqual(job["assignee"], "writer")
+        self.assertEqual(job["proposal_author_identity"], self.writer["identity_id"])
+
     def test_orch_and_manual_acceptance_share_one_source_in_either_order(self):
         for manual_first in (True, False):
             with self.subTest(manual_first=manual_first):

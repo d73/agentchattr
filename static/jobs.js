@@ -1715,17 +1715,12 @@ async function acceptProposal(msgId) {
     if (!title) return;
 
     try {
-        const identity = msgEl.dataset.senderIdentity;
-        const currentWriter = identity && Object.keys(window.agentConfig).find(
-            name => window.agentConfig[name].identity_id === identity,
-        );
         const job = await postJobAction('/api/jobs', {
             title,
             body: body || '',
             type: 'job',
             channel: msgEl.dataset.channel || window.activeChannel,
             created_by: proposalSender,
-            assignee: currentWriter || proposalSender,
             anchor_msg_id: msgId,
         });
         if (job && job.id) {

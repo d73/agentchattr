@@ -1357,7 +1357,7 @@ function appendMessage(msg, options = {}) {
             ${!isPending ? `<div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)" title="Reply" aria-label="Reply">${messageActionIcon('reply')}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete" aria-label="Delete">${messageActionIcon('delete')}</button></div>` : ''}`;
     } else if (window._messageRenderers && window._messageRenderers[msg.type]) {
         window._messageRenderers[msg.type](el, msg);
-    } else if (msg.type === 'system' || msg.sender === 'system') {
+    } else if (msg.type === 'system' || (msg.sender === 'system' && msg.type !== 'decision')) {
         el.classList.add('system-msg');
         el.innerHTML = `<span class="msg-text">${escapeHtml(msg.text)}</span>`;
     } else {
@@ -1435,18 +1435,20 @@ function appendMessage(msg, options = {}) {
         if (todoStatus) el.classList.add('msg-todo', `msg-todo-${todoStatus}`);
         if (msg.metadata?.session_output) el.classList.add('session-output');
 
-        el.querySelectorAll('[data-choice-index]').forEach(button => {
-            const choice = choicesList[Number(button.dataset.choiceIndex)];
-            button.addEventListener('click', () => {
-                if (meta.orch_intake) {
-                    window.createOrchJobFromCard(button, meta.orch_intake.source_msg_id, msg.id);
-                } else if (meta.orch_gate || meta.job_reopen) {
-                    resolveBoundJobDecision(msg, choice, button);
-                } else {
-                    resolveDecision(msg.id, choice);
-                }
+        if (choicesHtml && !meta.resolved) {
+            el.querySelectorAll('[data-choice-index]').forEach(button => {
+                const choice = choicesList[Number(button.dataset.choiceIndex)];
+                button.addEventListener('click', () => {
+                    if (meta.orch_intake) {
+                        window.createOrchJobFromCard(button, meta.orch_intake.source_msg_id, msg.id);
+                    } else if (meta.orch_gate || meta.job_reopen) {
+                        resolveBoundJobDecision(msg, choice, button);
+                    } else {
+                        resolveDecision(msg.id, choice);
+                    }
+                });
             });
-        });
+        }
 
         // Add copy buttons to code blocks
         addCodeCopyButtons(el);

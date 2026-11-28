@@ -2629,6 +2629,13 @@ async def create_job(request: Request):
     if proposal and proposal.get("channel", "general") != channel:
         return JSONResponse({"error": "proposal is in a different channel"}, status_code=409)
     meta = dict(proposal.get("metadata") or {}) if proposal else {}
+    if proposal:
+        author_identity = proposal.get("sender_identity")
+        if author_identity and registry:
+            writer = registry.get_active_instance_by_identity(author_identity)
+            assignee = writer["name"] if writer else ""
+        else:
+            assignee = proposal.get("sender", "")
     if meta.get("status") == "accepted":
         linked_id = meta.get("job_id")
         existing = jobs.get(linked_id) if type(linked_id) is int else None
