@@ -921,18 +921,6 @@ function handleServerEvent(event) {
         }
         appendMessage(event.data);
     } else if (event.type === 'agent_renamed') {
-        // Migrate active mentions before the agents config rebuild
-        if (activeMentions.has(event.old_name)) {
-            activeMentions.delete(event.old_name);
-            activeMentions.add(event.new_name);
-        }
-        // Migrate the per-channel remembered toggles too
-        for (const ch of Object.keys(_channelMentions)) {
-            const arr = _channelMentions[ch];
-            const idx = arr.indexOf(event.old_name);
-            if (idx !== -1) arr[idx] = event.new_name;
-        }
-        persistMentions();
         // Only legacy messages rely on sender names during a rename.
         document.querySelectorAll('#messages .message[data-sender]').forEach(el => {
             if (!el.dataset.senderIdentity && el.dataset.senderKind !== 'human' && el.dataset.sender === event.old_name) {
@@ -1579,6 +1567,7 @@ function repositionScrollAnchor() {
 
 function applyAgentConfig(data) {
     _agentConfigReady = true;
+    const previous = agentConfig;
     agentConfig = Object.create(null);
     agentNamesByIdentity = new Map();
     for (const [name, cfg] of Object.entries(data)) {
@@ -1586,6 +1575,21 @@ function applyAgentConfig(data) {
         agentConfig[key] = cfg;
         if (cfg.identity_id) agentNamesByIdentity.set(cfg.identity_id, key);
     }
+    const currentName = name => {
+        const identity = previous[name]?.identity_id;
+        const current = identity ? agentNamesByIdentity.get(identity) : name;
+        return current && agentConfig[current] && agentConfig[current].state !== 'pending' ? current : null;
+    };
+    activeMentions = new Set([...activeMentions].map(currentName).filter(Boolean));
+    let savedMentionsChanged = false;
+    for (const [channel, mentions] of Object.entries(_channelMentions)) {
+        const current = mentions.map(currentName).filter(Boolean);
+        if (current.length !== mentions.length || current.some((name, index) => name !== mentions[index])) {
+            _channelMentions[channel] = current;
+            savedMentionsChanged = true;
+        }
+    }
+    if (savedMentionsChanged) persistMentions();
     buildStatusPills();
     buildMentionToggles();
     buildSoundSettings();
@@ -3091,10 +3095,10 @@ function sendMessage() {
         }
     }
     if (activeMentions.size > 0 && text && !skipMentions) {
-        const prefix = [...activeMentions].map(n => `@${n}`).join(' ');
-        // Only prepend if user didn't already @mention these agents
-        const lower = text.toLowerCase();
-        const missing = [...activeMentions].filter(n => !lower.includes(`@${n}`));
+        // A longer ID or a mention shown as code does not reach this agent.
+        const visible = text.replace(/(`+)([\s\S]*?)\1/g, '');
+        const mentioned = new Set(visible.toLowerCase().match(/@[\p{L}\p{N}_-]+/gu) || []);
+        const missing = [...activeMentions].filter(name => !mentioned.has(`@${name}`));
         if (missing.length > 0) {
             text = missing.map(n => `@${n}`).join(' ') + ' ' + text;
         }

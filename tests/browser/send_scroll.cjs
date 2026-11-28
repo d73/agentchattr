@@ -35,6 +35,19 @@ test('sending a message resumes auto-scroll and jumps to the latest message', ()
     assert.equal(s.input.value, '');
 });
 
+test('a selected mention is suppressed only by the same active mention', () => {
+    for (const [text, expected] of [
+        ['@builder-tools hello', '@builder @builder-tools hello'],
+        ['Use `@builder`', '@builder Use `@builder`'],
+        ['@Builder hello', '@Builder hello'],
+    ]) {
+        const s = setup({ text });
+        s.ctx.activeMentions.add('builder');
+        s.ctx.sendMessage();
+        assert.equal(s.sent[0].text, expected);
+    }
+});
+
 test('empty, uploading, disconnected, and failed sends do not change the reading position', () => {
     for (const options of [{ text: ' ' }, { uploads: 1 }, { open: false }, { throws: true }]) {
         const s = setup(options);
