@@ -448,6 +448,9 @@ class JobStore:
             approval = reopen_requests[-1]
             record["reopen_approval"] = {key: deepcopy(approval[key])
                                          for key in ("id", "approval_basis", "decisions")}
+            source = approval["decisions"][-1].get("source")
+            if source:
+                record["source"] = source
             job["reopen_requests"] = reopen_requests
         job.update(status=status, lifecycle=deepcopy(updated), updated_at=now,
                    lifecycle_events=[*job.get("lifecycle_events", []), record])
@@ -486,8 +489,9 @@ class JobStore:
         self._fire("update", snapshot)
         return {"request": deepcopy(current), "job": snapshot}
 
-    def decide_reopen(self, job_id, request_id, *, expected_uid, expected_version, actor, role, decision):
-        """Persist a verified decision and any resulting reopen atomically."""
+    def decide_reopen(self, job_id, request_id, *, expected_uid, expected_version, actor, role, decision,
+                      source=None):
+        """Persist an authorized decision and any resulting reopen atomically."""
         with self._lock:
             job = next((item for item in self._jobs if item["id"] == job_id), None)
             if job is None or job["uid"] != expected_uid:
@@ -499,7 +503,8 @@ class JobStore:
                 raise ReopenConflict("Reopen request no longer matches the Job")
             state = job["lifecycle"]
             try:
-                updated = record_decision(current, actor=actor, role=role, decision=decision, now=time.time())
+                updated = record_decision(current, actor=actor, role=role, decision=decision,
+                                          now=time.time(), source=source)
             except ValueError as exc:
                 raise ReopenConflict(str(exc)) from exc
             if updated is current:

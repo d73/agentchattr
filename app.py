@@ -2520,7 +2520,7 @@ async def create_job_reopen_request(job_id: int, request: Request):
 async def decide_job_reopen_request(job_id: int, request_id: str, request: Request):
     actor = verify_operator(request, config, session_token)
     if actor is None:
-        return JSONResponse({"error": "Verified Job operator required"}, status_code=403)
+        return JSONResponse({"error": "Local browser session required"}, status_code=403)
     try:
         body = await request.json()
     except ValueError:
@@ -2530,7 +2530,7 @@ async def decide_job_reopen_request(job_id: int, request_id: str, request: Reque
     try:
         return jobs.decide_reopen(job_id, request_id, expected_uid=body.get("job_uid"),
                                   expected_version=body.get("expected_version"), actor=actor,
-                                  role="owner", decision=body["decision"])
+                                  role="owner", decision=body["decision"], source="local-browser")
     except ReopenConflict as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
