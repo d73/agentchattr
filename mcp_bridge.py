@@ -5,6 +5,7 @@ Serves two transports for compatibility:
   - SSE on port 8201 (Gemini)
 """
 
+import hmac
 import json
 import os
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from atomic_io import atomic_write_text
 from job_lifecycle import ACTIVE
+from jobs import orch_coordinator
 from job_reopen import ReopenConflict, delegate_role
 
 from attachment_storage import copy_image_attachment
@@ -33,6 +35,7 @@ registry = None       # set by run.py — RuntimeRegistry instance
 config = None         # set by run.py — full config.toml dict
 router = None         # set by run.py — Router instance
 agents = None         # set by run.py — AgentManager instance
+orch_job_auth = None  # (coordinator identity, credential file) for the active local Orch plugin
 _presence: dict[str, float] = {}
 _activity: dict[str, bool] = {}   # True = screen changed on last poll
 _activity_known: dict[str, bool] = {}  # absent means legacy wrapper behavior
@@ -171,6 +174,32 @@ def _authenticated_instance(ctx: Context | None) -> dict | None:
     return registry.resolve_token(token)
 
 
+def _authenticated_orch_coordinator(ctx):
+    headers = _request_headers(ctx)
+    given = headers.get("x-orch-job-token", "") if headers else ""
+    if not orch_job_auth or not given or not given.isascii() or len(given) > 512:
+        return None
+    request = ctx.request_context.request
+    if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+        return None
+    identity, credentials = orch_job_auth
+    try:
+        tokens = [
+            value.strip() for name, sep, value in
+            (line.partition("=") for line in credentials.read_text(encoding="utf-8-sig").splitlines())
+            if sep and name.strip() == "ORCH_CLOSEOUT_TOKEN"
+        ]
+    except (OSError, UnicodeError):
+        return None
+    if len(tokens) != 1:
+        return None
+    expected = tokens[0]
+    if (32 <= len(expected) <= 512 and expected.isascii()
+            and not any(char.isspace() for char in expected) and hmac.compare_digest(given, expected)):
+        return identity
+    return None
+
+
 def _resolve_tool_identity(
     raw_name: str,
     ctx: Context | None,
@@ -249,9 +278,19 @@ def chat_send(
       chat_send(sender="claude", message="Should I merge?", choices=["Yes", "No", "Show diff first"])
     For normal messages without choices, pass choices=[]:
       chat_send(sender="claude", message="Done.", choices=[])"""
-    sender, authenticated, err = _resolve_tool_actor(sender, ctx, field_name="sender", required=True)
-    if err:
-        return err
+    job = jobs.get(job_id) if jobs and job_id and (job_uid or job_channel) else None
+    lifecycle = job.get("lifecycle", {}) if job else {}
+    managed = lifecycle.get("managed_by") == "orch"
+    coordinator = None
+    if managed:
+        coordinator = _authenticated_orch_coordinator(ctx)
+        if not coordinator or not isinstance(sender, str) or sender.strip().casefold() != coordinator.casefold():
+            return "Error: scoped Orch Job sends require the configured coordinator credential."
+        sender, authenticated = coordinator, None
+    else:
+        sender, authenticated, err = _resolve_tool_actor(sender, ctx, field_name="sender", required=True)
+        if err:
+            return err
     sender_identity = authenticated["identity_id"] if authenticated else None
     sender_base = authenticated["base"] if authenticated else None
 
@@ -270,33 +309,34 @@ def chat_send(
     if not channel and not job_id:
         channel = "general"
     # Block pending instances (identity not yet confirmed)
-    if registry and registry.is_pending(sender):
+    if coordinator is None and registry and registry.is_pending(sender):
         return "Error: identity not confirmed. Call chat_claim(sender=your_base_name) to get your identity."
     # Block base family names when multi-instance is active
     # (but allow if sender is a registered+active instance — e.g. slot-1 'claude' that already claimed)
-    if registry and sender in registry.get_bases() and registry.family_instance_count(sender) >= 2:
+    if coordinator is None and registry and sender in registry.get_bases() and registry.family_instance_count(sender) >= 2:
         inst = registry.get_instance(sender)
         if not inst or inst.get("state") != "active":
             return (f"Error: multiple {sender} instances are registered. "
                     f"Call chat_claim(sender='{sender}') to get your unique identity, then use the confirmed_name as sender.")
     # Block unregistered agent names (stale identity from resumed session)
-    if registry and registry.is_agent_family(sender) and not registry.is_registered(sender):
+    if coordinator is None and registry and registry.is_agent_family(sender) and not registry.is_registered(sender):
         return f"Error: sender '{sender}' is not registered. Call chat_claim(sender=your_base_name) to get your identity."
     if not message.strip() and not image_path:
         return "Empty message, not sent."
 
     job_scope = None
     if job_uid or job_channel:
-        job = jobs.get(job_id) if jobs and job_id else None
-        lifecycle = job.get("lifecycle", {}) if job else {}
+        owner = orch_coordinator(job) if managed else str(job.get("assignee", "") if job else "")
         eligible = bool(job and (job.get("status") == "open" or (
-            lifecycle.get("core_id") == ACTIVE and lifecycle.get("managed_by") == "orch"
+            lifecycle.get("core_id") == ACTIVE and managed
         )))
         if (not job or not job_uid or not job_channel or job.get("uid") != job_uid
                 or job.get("channel") != job_channel or job.get("type") != "job"
-                or not eligible or str(job.get("assignee", "")).casefold() != sender.casefold()):
-            return "Error: the selected Job is no longer eligible and assigned to this sender."
-        job_scope = {key: job[key] for key in ("uid", "channel", "type", "status", "assignee")}
+                or not eligible or (owner and owner.casefold() != sender.casefold())
+                or (not managed and not owner)):
+            return "Error: the selected Job is outside this sender's scope."
+        keys = ("uid", "channel", "type", "status") if managed else ("uid", "channel", "type", "status", "assignee")
+        job_scope = {key: job[key] for key in keys}
 
     # Job-scoped send: post into a job conversation instead of main timeline
     if recipient or recipient_identity:
@@ -336,7 +376,8 @@ def chat_send(
         msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
                                attachments=attachments or None,
                                sender_identity=sender_identity,
-                               recipient_identity=recipient_identity or None, expected_scope=job_scope)
+                               recipient_identity=recipient_identity or None, expected_scope=job_scope,
+                               coordinator=coordinator)
         if msg is None:
             if attachment_path is not None:
                 attachment_path.unlink(missing_ok=True)
@@ -348,7 +389,8 @@ def chat_send(
             job = jobs.get(job_id)
             if job:
                 job_channel = job.get("channel", "general")
-                raw_targets = router.get_targets(text, job_channel, sender_is_agent=authenticated is not None)
+                raw_targets = router.get_targets(text, job_channel,
+                                                 sender_is_agent=authenticated is not None or coordinator is not None)
                 targets = []
                 for t in raw_targets:
                     if registry:

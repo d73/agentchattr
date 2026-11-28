@@ -34,7 +34,7 @@ class OrchGateApprovalTests(unittest.TestCase):
         self.broadcast = stack.enter_context(patch.object(app, "_broadcast"))
         app._install_security_middleware("fixture-session", self.config)
         self.client = stack.enter_context(TestClient(api, client=("127.0.0.1", 50000)))
-        self.job = self.jobs.create("Gate fixture", "job", "source-channel", "fixture")
+        self.job = self.jobs.create("Gate fixture", "job", "source-channel", "fixture", assignee="orch")
         self.transition("attach")
         self.transition("submit_brief")
 
@@ -99,7 +99,7 @@ class OrchGateApprovalTests(unittest.TestCase):
         self.assertIsNone(self.publish(1))
         self.assertIsNone(self.publish(3, coordinator="other"))
         first_job = self.job
-        self.job = self.jobs.create("Second fixture", "job", "other-channel", "fixture")
+        self.job = self.jobs.create("Second fixture", "job", "other-channel", "fixture", assignee="orch")
         self.transition("attach")
         self.transition("submit_brief")
         other_card = self.publish(2)

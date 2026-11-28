@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import app
@@ -172,12 +173,19 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertEqual(sum(msg["type"] == "job_created" for msg in messages.get_recent()), 1)
 
     def test_legacy_job_mcp_scope_accepts_an_active_managed_job(self):
-        job = self.create(assignee="fixture")
+        job = self.create(assignee="verified-orch")
         for event in ("attach", "submit_brief", "approve_brief", "plan_ready", "start"):
             job = self.emit(job, event)
-        with patch.multiple(mcp_bridge, jobs=self.jobs, registry=None, agents=None):
-            result = mcp_bridge.chat_send("fixture", "Active update", job_id=job["id"],
-                                          job_uid=job["uid"], job_channel="general")
+        credential = "fixture-active-coordinator-token-0001"
+        credentials_path = self.root / "orch-fixture.env"
+        credentials_path.write_text(f"ORCH_CLOSEOUT_TOKEN={credential}\n", encoding="utf-8")
+        ctx = SimpleNamespace(request_context=SimpleNamespace(request=SimpleNamespace(
+            headers={"x-orch-job-token": credential}, client=SimpleNamespace(host="127.0.0.1")
+        )))
+        with patch.multiple(mcp_bridge, jobs=self.jobs, registry=None, agents=None,
+                            orch_job_auth=("verified-orch", credentials_path)):
+            result = mcp_bridge.chat_send("verified-orch", "Active update", job_id=job["id"],
+                                          job_uid=job["uid"], job_channel="general", ctx=ctx)
         self.assertTrue(result.startswith("Sent"), result)
         with patch.multiple(mcp_bridge, jobs=self.jobs, registry=None, agents=None):
             header = json.loads(mcp_bridge.chat_read(sender="fixture", job_id=job["id"]))[0]
@@ -188,7 +196,7 @@ class JobLifecycleTests(unittest.TestCase):
         source = source_messages.add("writer", "Proposal", "job_proposal", sender_kind="agent",
                                      sender_identity="writer-id")
         job = self.create(anchor_msg_id=source["id"], from_proposal=True, proposal_author="writer",
-                          proposal_author_identity="writer-id")
+                          proposal_author_identity="writer-id", assignee="verified-orch")
         job = self.emit(job, "attach")
         job = self.emit(job, "cancel")
         blob = archive.build_export(source_messages, self.jobs, None, None)

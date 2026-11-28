@@ -23,6 +23,17 @@ _ORCH_GATE_STAGE = {
 _ORCH_GATE_FIELDS = ("job_uid", "decision_id", "gate", "revision", "choices", "choice", "actor", "decided_at")
 
 
+def orch_coordinator(job):
+    """Read the persisted coordinator, including bindings made before this field existed."""
+    if job.get("orch_coordinator"):
+        return job["orch_coordinator"]
+    for event in reversed(job.get("lifecycle_events", [])):
+        if event["event"] == "attach":
+            return event["actor"]
+    gates = job.get("_orch_gates") or []
+    return gates[0]["coordinator"] if gates else None
+
+
 class JobStore:
     def __init__(self, path: str, *, history_next_id: Callable[[], int] | None = None):
         self._path = Path(path)
@@ -149,6 +160,9 @@ class JobStore:
     def _snapshot(job):
         public = dict(job)
         public.pop("_orch_gates", None)
+        coordinator = orch_coordinator(job)
+        if coordinator is not None:
+            public["orch_coordinator"] = coordinator
         public["lifecycle"] = deepcopy(job["lifecycle"])
         if "lifecycle_events" in job:
             public["lifecycle_events"] = deepcopy(job["lifecycle_events"])
@@ -265,9 +279,8 @@ class JobStore:
             if job is None:
                 return None
             records = job.get("_orch_gates", [])
-            attachment = next((event for event in reversed(job.get("lifecycle_events", []))
-                               if event["event"] == "attach"), None)
-            if (attachment and attachment["actor"] != coordinator
+            bound = orch_coordinator(job)
+            if (bound and bound.casefold() != coordinator.casefold()
                     or records and (records[-1]["coordinator"] != coordinator or records[-1]["revision"] > revision)):
                 return None
             current = self._current_gate(records, gate)
@@ -463,7 +476,16 @@ class JobStore:
             job = next((item for item in self._jobs if item["id"] == job_id), None)
             if job is None or job.get("uid") != expected_uid:
                 return None
-            if expected_scope and any(job.get(key) != value for key, value in expected_scope.items()):
+            managed = job["lifecycle"]["managed_by"] == "orch"
+            if actor_kind == "orch":
+                assigned = orch_coordinator(job) if managed else job.get("assignee")
+                if ((assigned and assigned.casefold() != actor.casefold())
+                        or (not managed and not assigned)):
+                    return None
+            if expected_scope and any(
+                job.get(key) != value for key, value in expected_scope.items()
+                if not (actor_kind == "orch" and managed and key == "assignee")
+            ):
                 return None
             seen = next((record for record in job.get("lifecycle_events", [])
                          if record["operation_id"] == operation_id), None)
@@ -507,6 +529,8 @@ class JobStore:
             if source:
                 record["source"] = source
             job["reopen_requests"] = reopen_requests
+        if actor_kind == "orch" and updated["managed_by"] == "orch" and not job.get("orch_coordinator"):
+            job["orch_coordinator"] = actor
         job.update(status=status, lifecycle=deepcopy(updated), updated_at=now,
                    lifecycle_events=[*job.get("lifecycle_events", []), record])
         try:
@@ -637,6 +661,7 @@ class JobStore:
                     sender_identity: str | None = None,
                     recipient_identity: str | None = None,
                     expected_scope: dict | None = None, *,
+                    coordinator: str | None = None,
                     archived_resolution: str | None = None) -> dict | None:
         """Add a message to a job's conversation. Returns the message."""
         with self._lock:
@@ -644,6 +669,17 @@ class JobStore:
                 if a["id"] == job_id:
                     if expected_scope and any(a.get(key) != value for key, value in expected_scope.items()):
                         return None
+                    state = a["lifecycle"]
+                    if expected_scope and state["managed_by"] == "orch" and coordinator is None:
+                        return None
+                    old_coordinator = a.get("orch_coordinator")
+                    if coordinator is not None:
+                        bound = orch_coordinator(a)
+                        if (state["managed_by"] != "orch" or state["core_id"] not in (TODO, ACTIVE)
+                                or (bound and bound.casefold() != coordinator.casefold())):
+                            return None
+                        if not old_coordinator:
+                            a["orch_coordinator"] = coordinator
                     msg_id = len(a["messages"])
                     ts = timestamp if timestamp is not None else time.time()
                     msg = {
@@ -671,6 +707,8 @@ class JobStore:
                     except OSError:
                         a["messages"].pop()
                         a["updated_at"] = old_updated_at
+                        if coordinator is not None and not old_coordinator:
+                            a.pop("orch_coordinator", None)
                         raise
                     result_msg = dict(msg)
                     result_msg["job_id"] = job_id
