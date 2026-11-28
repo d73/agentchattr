@@ -3559,7 +3559,9 @@ footer {
     flex-shrink: 0;
     user-select: none;
 }
-#agent-status [data-orch-pill] { cursor: grab; }
+#agent-status > [data-reorderable] { user-select: none; }
+#agent-status:not(.is-reordering) > [data-reorderable] { cursor: grab; }
+#agent-status > [data-reorderable]:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 /* Shared pointer feedback for horizontal reordering. */
 .is-reordering, .is-reordering [data-reorderable] { cursor: grabbing; }
 .is-reordering > [data-reorderable].reorder-origin {

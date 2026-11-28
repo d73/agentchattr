@@ -103,8 +103,8 @@ def wait_for_preview_grip(page, source_box, down, pointer):
     }""", arg=[source_box, down, pointer])
 
 
-def drag_before(page, source, target, screenshot=None, cancel=False):
-    pill = lambda agent: page.locator(f"#mention-toggles [data-agent='{agent}']")
+def drag_before(page, source, target, screenshot=None, cancel=False, row="#mention-toggles"):
+    pill = lambda agent: page.locator(f"{row} [data-agent='{agent}']")
     start = pill(source).bounding_box()
     end = pill(target).bounding_box()
     assert start and end
@@ -123,9 +123,12 @@ def drag_before(page, source, target, screenshot=None, cancel=False):
     expect(page.locator(".reorder-preview")).to_be_visible()
     expect(page.locator(".reorder-drop-indicator")).to_be_visible()
     if screenshot:
+        left = max(0, min(start["x"], end["x"]) - 105)
+        top = max(0, y - 60)
         page.screenshot(path=screenshot, clip={
-            "x": 0, "y": y - 60, "width": min(670, page.viewport_size["width"]),
-            "height": min(126, page.viewport_size["height"] - y + 60),
+            "x": left, "y": top,
+            "width": min(560, page.viewport_size["width"] - left),
+            "height": min(126, page.viewport_size["height"] - top),
         })
     if cancel:
         page.keyboard.press("Escape")
@@ -192,9 +195,21 @@ def check_browser(page, directory, screenshot):
         expect(page.locator("#mention-toggles .mention-toggle.active")).to_have_count(1)
         expect(pill("bravo")).to_have_class(re.compile("active"))
         top_bravo = page.locator("#status-bravo")
-        top_bravo.click()
+        top_bravo.press("Enter")
         expect(page.locator('.pill-popover[data-agent="bravo"]')).to_be_visible()
         top_bravo.click()
+
+        drag_before(page, "echo", "bravo", row="#agent-status", screenshot=screenshot)
+        check_order(page, ["alpha", "echo", "bravo", "charlie", "delta"])
+        expect(page.locator(".pill-popover")).to_have_count(0)
+        top_echo = page.locator("#status-echo")
+        top_echo.press("Alt+Shift+ArrowRight")
+        top_echo.press("Alt+Shift+ArrowRight")
+        top_echo.press("Alt+Shift+ArrowRight")
+        check_order(page, names)
+        expect(top_echo).to_be_focused()
+        expect(page.locator("#agent-pill-order-status")).to_contain_text("position 5 of 5")
+        poll("!pendingAppearanceSettings.has('agent_pill_order')")
 
         drag_before(page, "echo", "bravo", cancel=True)
         check_order(page, names)
@@ -202,7 +217,7 @@ def check_browser(page, directory, screenshot):
         expect(pill("echo")).not_to_have_class(re.compile("active"))
 
         delay_ack = True
-        drag_before(page, "echo", "bravo", screenshot)
+        drag_before(page, "echo", "bravo")
         check_order(page, ["alpha", "echo", "bravo", "charlie", "delta"])
         expect(page.locator("#mention-toggles .mention-toggle.active")).to_have_count(1)
         expect(pill("bravo")).to_have_class(re.compile("active"))
@@ -247,7 +262,7 @@ def check_browser(page, directory, screenshot):
 
         # Drop a local save before closing the socket to exercise retransmission.
         discard_save = True
-        pill("delta").press("Alt+Shift+ArrowLeft")
+        page.locator("#status-delta").press("Alt+Shift+ArrowLeft")
         order = ["alpha", "bravo", "zulu", "delta", "charlie", "new"]
         check_order(page, order)
         current_client, current_upstream = sockets[-1]
@@ -281,6 +296,9 @@ def check_browser(page, directory, screenshot):
         }""")
         page.mouse.up()
         order = ["bravo", "zulu", "delta", "charlie", "new", "alpha"]
+        check_order(page, order)
+        page.locator("#status-alpha").press("Alt+Shift+ArrowLeft")
+        order = ["bravo", "zulu", "delta", "charlie", "alpha", "new"]
         check_order(page, order)
         poll("!pendingAppearanceSettings.has('agent_pill_order')")
         assert json.loads(settings_path.read_text("utf-8"))["agent_pill_order"] == [
