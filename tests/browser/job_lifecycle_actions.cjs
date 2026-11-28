@@ -121,12 +121,14 @@ test('Orch brief messages expose readable fields and keep escaped JSON in a clos
     assert.equal(ctx.renderOrchEvent('See the orch-event payload'), null);
 });
 
-test('Auto and the mention card use the same single POST and open existing Jobs', async () => {
+test('Auto and the mention card use the same single POST and keep focus in main chat', async () => {
     const sent = [];
     const opened = [];
     const jobsData = [];
+    const focused = [];
     const ctx = vm.createContext({
         window: { SESSION_TOKEN: 'session', async requireOk() {} }, jobsData,
+        document: { getElementById: id => ({ focus() { focused.push(id); } }) },
         async openJobFromBreadcrumb(id) { opened.push(id); },
         async fetch(path, options) {
             sent.push([path, JSON.parse(options.body)]);
@@ -140,8 +142,32 @@ test('Auto and the mention card use the same single POST and open existing Jobs'
         ['/api/jobs/orch-intake', { source_msg_id: 42, proposal_writer: 'orch' }],
         ['/api/jobs/orch-intake', { source_msg_id: 42, proposal_writer: 'orch', card_msg_id: 90 }],
     ]);
-    assert.deepEqual(opened, [24, 24]);
+    assert.deepEqual(opened, []);
+    assert.deepEqual(focused, ['input', 'input']);
     assert.equal(jobsData.length, 1);
+});
+
+test('the read-only history mode requires persisted activation, even for an Orch-managed Job', () => {
+    const ctx = vm.createContext({});
+    vm.runInContext(between(jobs, 'function isOrchManagedJob', 'const jobHistoryJumpIcon'), ctx);
+    assert.equal(ctx.jobUsesOrchHistory({ lifecycle: { managed_by: 'manual' } }), false);
+    assert.equal(ctx.jobUsesOrchHistory({ lifecycle: { managed_by: 'orch' } }), false);
+    assert.equal(ctx.jobUsesOrchHistory({ lifecycle: { managed_by: 'orch' }, orch_workflow_active: true }), true);
+});
+
+test('a deleted history target does not switch channels or disturb the current focus', async () => {
+    const requests = [];
+    const ctx = vm.createContext({
+        SESSION_TOKEN: 'session',
+        fetch: async (url, options) => {
+            requests.push([url, options.headers['X-Session-Token']]);
+            return { status: 404 };
+        },
+        switchChannel: () => assert.fail('A missing exact message must not switch channels'),
+    });
+    vm.runInContext(between(chat, 'async function showOrchHistoryMessage', 'window.showOrchHistoryMessage'), ctx);
+    await assert.rejects(() => ctx.showOrchHistoryMessage('orch-uuid', 11542, 'old-channel'), /no longer available/);
+    assert.deepEqual(requests, [['/api/jobs/orch-uuid/orch-history/11542', 'session']]);
 });
 
 function decisionCard(status, result) {
