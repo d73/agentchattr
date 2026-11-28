@@ -244,6 +244,7 @@ def chat_send(
     if err:
         return err
     sender_identity = authenticated["identity_id"] if authenticated else None
+    sender_base = authenticated["base"] if authenticated else None
 
     # Fallback routing: if caller omitted both channel and job_id, use
     # whatever target this sender last read from. Prevents agents that
@@ -394,7 +395,7 @@ def chat_send(
                     reply_to=reply_id, channel=channel,
                     msg_type=msg_type, metadata=metadata,
                     sender_kind="agent" if authenticated else "human",
-                    sender_identity=sender_identity)
+                    sender_identity=sender_identity, sender_base=sender_base)
     _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
@@ -436,6 +437,7 @@ def chat_propose_job(
         metadata={"title": title, "body": body, "status": "pending"},
         sender_kind="agent" if authenticated else "human",
         sender_identity=authenticated["identity_id"] if authenticated else None,
+        sender_base=authenticated["base"] if authenticated else None,
     )
     _update_cursor(sender, [msg], channel)
     with _presence_lock:
@@ -934,6 +936,7 @@ def chat_rules(
                 metadata={"rule_id": result["id"], "text": result["text"], "status": "pending"},
                 sender_kind="agent" if authenticated else "human",
                 sender_identity=authenticated["identity_id"] if authenticated else None,
+                sender_base=authenticated["base"] if authenticated else None,
             )
         return f"Proposed rule #{result['id']}: '{result['text']}'. Human will review in the Rules panel."
 
@@ -1048,7 +1051,8 @@ def chat_summary(
         if store:
             store.add(sender, text.strip(), msg_type="summary", channel=channel,
                       sender_kind="agent" if authenticated else "human",
-                      sender_identity=authenticated["identity_id"] if authenticated else None)
+                      sender_identity=authenticated["identity_id"] if authenticated else None,
+                      sender_base=authenticated["base"] if authenticated else None)
         return f"Summary for #{channel} updated ({len(text.strip())} chars)."
 
     return f"Unknown action: {action}. Valid actions: read, write."

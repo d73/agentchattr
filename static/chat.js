@@ -1329,9 +1329,9 @@ function appendMessage(msg, options = {}) {
 
         const pinAction = todoAction(todoStatus);
         el.dataset.rawText = msg.text;
-        const senderRole = _agentRoles[msg.sender] || '';
+        const senderRole = _agentRoles[appearance.name] || '';
         const roleClass = senderRole ? 'bubble-role has-role' : 'bubble-role';
-        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this, '${escapeHtml(msg.sender)}')" title="${senderRole ? escapeHtml(senderRole) : 'Set role'}">${senderRole || 'choose a role'}</button>` : '';
+        const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this)" title="${senderRole ? escapeHtml(senderRole) : 'Set role'}">${senderRole || 'choose a role'}</button>` : '';
         // Inline decision choices (if present)
         let choicesHtml = '';
         const meta = msg.metadata || {};
@@ -1517,6 +1517,7 @@ function recolorMessages() {
     const msgs = document.querySelectorAll('.message[data-sender]');
     for (const el of msgs) {
         const { agent, name, color, avatar } = senderAppearance(renderedSender(el));
+        if (agent && el.dataset.senderIdentity) el.dataset.sender = name;
         const sender = el.querySelector('.msg-sender, .join-text strong, .summary-author, .proposal-author');
         if (!sender) continue;
         sender.textContent = name;
@@ -2089,7 +2090,11 @@ function showPillPopover(pillEl, opts) {
 
 // --- Bubble role picker ---
 
-function showBubbleRolePicker(btn, agentName) {
+function showBubbleRolePicker(btn) {
+    const msgEl = btn.closest('.message');
+    const sender = renderedSender(msgEl);
+    const { agent, name: agentName } = senderAppearance(sender);
+    if (sender.sender_identity && !agent) return;
     // Close any existing picker and reset z-index on its parent message
     document.querySelectorAll('.bubble-role-picker').forEach(p => {
         const msg = p.closest('.message');
@@ -2148,7 +2153,6 @@ function showBubbleRolePicker(btn, agentName) {
 
     // Place inside the chat-bubble, positioned below the clicked button
     const bubble = btn.closest('.chat-bubble');
-    const msgEl = btn.closest('.message');
     if (msgEl) msgEl.style.zIndex = '50';
     bubble.appendChild(picker);
 
@@ -3227,7 +3231,7 @@ function startReply(msgId, event) {
 
     // Auto-activate mention chip for the replied-to sender, deactivate others
     const resolved = senderAppearance(sender).agent;
-    if (resolved) {
+    if (resolved && agentConfig[resolved].state !== 'pending') {
         for (const btn of document.querySelectorAll('.mention-toggle')) {
             const agent = btn.dataset.agent;
             if (agent === resolved) {

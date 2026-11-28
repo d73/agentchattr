@@ -93,7 +93,8 @@ class MessageStore:
             time_str: str | None = None,
             _bulk: bool = False, *,
             sender_kind: str | None = None,
-            sender_identity: str | None = None) -> dict:
+            sender_identity: str | None = None,
+            sender_base: str | None = None) -> dict:
         persistence_error = None
         log_status_changed = False
         with self._lock:
@@ -116,6 +117,8 @@ class MessageStore:
                 msg["sender_kind"] = sender_kind
             if sender_identity is not None:
                 msg["sender_identity"] = sender_identity
+            if sender_base is not None:
+                msg["sender_base"] = sender_base
             if metadata:
                 msg["metadata"] = metadata
             self._next_id += 1
@@ -318,12 +321,14 @@ class MessageStore:
             if modified:
                 self._rewrite_jsonl()
 
-    def rename_sender(self, old_name: str, new_name: str) -> int:
-        """Rename sender on all messages from old_name to new_name. Returns count updated."""
+    def rename_sender(self, old_name: str, new_name: str, identity: str | None = None) -> int:
+        """Rename matching agent messages. Legacy history can match only the exact old ID."""
         with self._lock:
             count = 0
             for m in self._messages:
-                if m.get("sender") == old_name:
+                if m.get("sender") != old_name or m.get("sender_kind") == "human":
+                    continue
+                if not m.get("sender_identity") or m["sender_identity"] == identity:
                     m["sender"] = new_name
                     count += 1
             if count:

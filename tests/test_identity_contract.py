@@ -90,6 +90,18 @@ class McpBridgeAuthTests(unittest.TestCase):
         mcp_bridge._cursors.clear()
         mcp_bridge._renamed_from.clear()
 
+    def test_history_rename_keeps_messages_from_previous_owner_and_human(self):
+        previous = self.store.add("builder", "previous owner", sender_kind="agent",
+                                  sender_identity="previous")
+        current = self.store.add("builder", "current owner", sender_kind="agent",
+                                 sender_identity="current")
+        human = self.store.add("builder", "human", sender_kind="human")
+
+        self.assertEqual(self.store.rename_sender("builder", "new-builder", "current"), 1)
+        self.assertEqual(self.store.get_by_id(previous["id"])["sender"], "builder")
+        self.assertEqual(self.store.get_by_id(current["id"])["sender"], "new-builder")
+        self.assertEqual(self.store.get_by_id(human["id"])["sender"], "builder")
+
     def test_chat_send_stamps_authenticated_sender(self):
         self.registry.register("codex")
         second = self.registry.register("codex")
@@ -105,6 +117,7 @@ class McpBridgeAuthTests(unittest.TestCase):
         self.assertEqual(recent[0]["sender"], second["name"])
         self.assertEqual(recent[0]["sender_kind"], "agent")
         self.assertEqual(recent[0]["sender_identity"], second["identity_id"])
+        self.assertEqual(recent[0]["sender_base"], "codex")
 
     def test_chat_send_rejects_unauthenticated_agent_sender(self):
         self.registry.register("codex")
@@ -165,6 +178,7 @@ class AppAuthEndpointTests(unittest.TestCase):
         message = self.store.get_recent(1)[0]
         self.assertEqual(message["sender_kind"], "agent")
         self.assertEqual(message["sender_identity"], inst["identity_id"])
+        self.assertEqual(message["sender_base"], inst["base"])
 
     def test_routing_keeps_agent_role_and_skips_own_identity_after_rename(self):
         sender = self.registry.register("claude", requested_name="old-name")
