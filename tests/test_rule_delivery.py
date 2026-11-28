@@ -18,13 +18,15 @@ class RuleDeliveryTests(unittest.TestCase):
                 wake = '{"channel":"ops"}\n'
                 queue.write_text(wake, encoding="utf-8")
                 inject = Mock(side_effect=[failure, True, True])
+                remaining_wakes = iter((wake, wake))
 
                 def next_wake(seconds):
                     if seconds != 1:
                         return
-                    if inject.call_count >= 3:
+                    pending_wake = next(remaining_wakes, None)
+                    if pending_wake is None:
                         raise StopWatcher()
-                    queue.write_text(wake, encoding="utf-8")
+                    queue.write_text(pending_wake, encoding="utf-8")
 
                 with (
                     patch.object(wrapper, "_fetch_role", return_value=""),
