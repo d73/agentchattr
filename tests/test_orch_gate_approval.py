@@ -118,11 +118,15 @@ class OrchGateApprovalTests(unittest.TestCase):
                                                 decision_id=old["decision_id"]))
         self.broadcast.assert_awaited_once()
 
-    def test_unconfigured_operator_fails_closed(self):
+    def test_unconfigured_operator_uses_room_username_after_authentication(self):
         card = self.publish()
-        with patch.dict(self.config, operator={}):
-            self.assertEqual(self.resolve(card).status_code, 403)
-        self.broadcast.assert_not_called()
+        with patch.dict(self.config, operator={}), patch.dict(app.room_settings, username="room-owner"):
+            self.assertEqual(self.resolve(card, headers={}).status_code, 403)
+            response = self.resolve(card, actor="request-supplied-name")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["actor"], "room-owner")
+        self.assertEqual(response.json()["actor_source"], "local-browser")
+        self.broadcast.assert_awaited_once()
 
     def test_ipv6_loopback_and_mapped_loopback_allow_retries(self):
         card = self.publish()

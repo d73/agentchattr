@@ -52,7 +52,7 @@
 # label = "MiniMax"
 # api_key_env = "MINIMAX_API_KEY"
 # temperature = 1.0
-# Name recorded for Orch approval and Job reopen decisions made in the local browser.
+# Optional audit name for local browser approvals. Defaults to the room username.
 # [operator]
 # identity = "derek"
 
