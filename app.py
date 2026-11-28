@@ -2060,7 +2060,10 @@ async def create_schedule(request: Request):
             return JSONResponse(
                 {"error": "send_at must be an epoch timestamp"}, status_code=400
             )
-    interval_sec, daily_at = parse_schedule_spec(spec)
+    try:
+        interval_sec, daily_at = parse_schedule_spec(spec)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     if interval_sec is None and explicit_send_at is None:
         return JSONResponse({"error": f"Invalid schedule spec: {spec}"}, status_code=400)
     # For one-shot, compute exact send_at timestamp from date + daily_at time

@@ -49,8 +49,9 @@ def parse_schedule_spec(spec: str) -> tuple[int | None, str | None]:
 
     dm = _DAILY_RE.search(spec)
     if dm:
-        hour = int(dm.group(1)) % 24
-        minute = int(dm.group(2)) % 60
+        hour, minute = map(int, dm.groups())
+        if hour > 23 or minute > 59:
+            raise ValueError("Daily time must be between 00:00 and 23:59")
         # Store as "HH:MM" for daily; we compute next_run from current time
         return (86400, f"{hour:02d}:{minute:02d}")  # interval=1 day, time hint
 

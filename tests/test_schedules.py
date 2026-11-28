@@ -253,6 +253,15 @@ class RelativeSendAtTests(unittest.TestCase):
         payload.update(body)
         return asyncio.run(self.app.create_schedule(_FakeRequest(payload)))
 
+    def test_invalid_daily_clock_is_rejected_without_saving(self):
+        for clock in ("24:00", "12:60", "24:60"):
+            for extra in ({}, {"one_shot": True, "send_at": time.time() + 3600}):
+                with self.subTest(clock=clock, extra=extra):
+                    response = self._post(spec=f"daily at {clock}", **extra)
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn("00:00 and 23:59", json.loads(response.body)["error"])
+        self.assertEqual(self.app.schedules.list_all(), [])
+
     def test_an_explicit_send_at_epoch_is_honoured(self):
         target = time.time() + 9000
 
