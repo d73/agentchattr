@@ -44,6 +44,7 @@ class MessageStore:
         self._log_repair_required = False
         self._log_callbacks: list = []
         self._callbacks: list = []  # called on each new message
+        self._committed_callbacks: list = []
         self._todo_callbacks: list = []  # called on todo changes
         self._delete_callbacks: list = []  # called on message deletion
         self.upload_dir = self._path.parent.parent / "uploads"  # Default fallback
@@ -91,9 +92,10 @@ class MessageStore:
         self._db.commit()
         self._next_id = max_id + 1
 
-    def on_message(self, callback):
+    def on_message(self, callback, *, committed_only=False):
         """Register a callback(msg) called whenever a message is added."""
-        self._callbacks.append(callback)
+        callbacks = self._committed_callbacks if committed_only else self._callbacks
+        callbacks.append(callback)
 
     def on_log_status(self, callback):
         self._log_callbacks.append(callback)
@@ -191,6 +193,12 @@ class MessageStore:
                     cb(msg)
                 except Exception:
                     pass
+            if not persistence_error:
+                for cb in self._committed_callbacks:
+                    try:
+                        cb(msg)
+                    except Exception:
+                        log.exception("Committed message callback failed")
 
         if persistence_error:
             return {**msg, "persistence_error": persistence_error}

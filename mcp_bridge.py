@@ -37,6 +37,7 @@ config = None         # set by run.py — full config.toml dict
 router = None         # set by run.py — Router instance
 agents = None         # set by run.py — AgentManager instance
 orch_job_auth = None  # (coordinator identity, credential file) for the active local Orch plugin
+orch_presence_changed = None
 _presence: dict[str, float] = {}
 _activity: dict[str, bool] = {}   # True = screen changed on last poll
 _activity_known: dict[str, bool] = {}  # absent means legacy wrapper behavior
@@ -178,10 +179,16 @@ def _authenticated_instance(ctx: Context | None) -> dict | None:
 def _authenticated_orch_coordinator(ctx):
     headers = _request_headers(ctx)
     given = headers.get("x-orch-job-token", "") if headers else ""
-    if not orch_job_auth or not given or not given.isascii() or len(given) > 512:
+    if not given:
         return None
     request = ctx.request_context.request
     if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+        return None
+    return orch_coordinator_for_token(given)
+
+
+def orch_coordinator_for_token(given):
+    if not orch_job_auth or not given or not given.isascii() or len(given) > 512:
         return None
     identity, credentials = orch_job_auth
     try:
@@ -914,8 +921,12 @@ def chat_who() -> str:
 
 def _touch_presence(name: str):
     """Update presence timestamp — called on any MCP tool use."""
+    now = time.monotonic()
     with _presence_lock:
-        _presence[name] = time.monotonic()
+        was_online = name in _presence and now - _presence[name] < PRESENCE_TIMEOUT
+        _presence[name] = now
+    if not was_online and orch_presence_changed is not None:
+        orch_presence_changed(name)
 
 
 def _get_online() -> list[str]:
