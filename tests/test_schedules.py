@@ -20,6 +20,39 @@ def _store():
     return ScheduleStore(str(Path(tmp) / "schedules.json"))
 
 
+class ScheduleDispatchTests(unittest.TestCase):
+    def test_dispatch_skips_tasks_deleted_or_paused_after_poll(self):
+        import app
+
+        with tempfile.TemporaryDirectory() as folder:
+            schedules = ScheduleStore(str(Path(folder) / "schedules.json"))
+            with patch("schedules.time.time", return_value=100):
+                ready = schedules.create("ready", ["codex"], one_shot=True, send_at=200)
+                deleted = schedules.create("deleted", ["codex"], one_shot=True, send_at=200)
+                paused = schedules.create("paused", ["codex"], one_shot=True, send_at=200)
+
+            poll = schedules.run_due
+
+            def cancel_after_poll():
+                due = poll()
+                self.assertEqual(len(due), 3)
+                self.assertIsNotNone(schedules.delete(deleted["id"]))
+                self.assertFalse(schedules.toggle(paused["id"])["active"])
+                return due
+
+            with (
+                patch("schedules.time.time", return_value=200),
+                patch.object(schedules, "run_due", side_effect=cancel_after_poll),
+                patch.object(app, "schedules", schedules),
+                patch.object(app, "_post_scheduled_message") as post,
+            ):
+                app._dispatch_due_schedules()
+
+            post.assert_called_once_with(ready, "user", "@codex ready", "general")
+            self.assertIsNone(schedules.get(ready["id"]))
+            self.assertFalse(schedules.get(paused["id"])["active"])
+
+
 class OneShotDeliveryTests(unittest.TestCase):
     def setUp(self):
         import app

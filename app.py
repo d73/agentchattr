@@ -700,26 +700,7 @@ def configure(cfg: dict, session_token: str = ""):
         while True:
             _time.sleep(30)
             try:
-                if not schedules:
-                    continue
-                due = schedules.run_due()
-                for s in due:
-                    prompt = s.get("prompt", "")
-                    targets = s.get("targets", [])
-                    channel = s.get("channel", "general")
-                    if not prompt or not targets:
-                        schedules.mark_run(s["id"])
-                        continue
-                    sender = s.get("created_by", "user")
-                    mention_str = " ".join(f"@{t}" for t in targets)
-                    full_text = f"{mention_str} {prompt}" if mention_str else prompt
-                    # store.add triggers _handle_new_message via callback,
-                    # which routes @mentions to agents — no manual trigger needed.
-                    _post_scheduled_message(s, sender, full_text, channel)
-                    if s.get("one_shot"):
-                        schedules.delete(s["id"])
-                    else:
-                        schedules.mark_run(s["id"])
+                _dispatch_due_schedules()
             except Exception:
                 log.exception("schedule runner error")
 
@@ -798,6 +779,26 @@ def _on_log_status():
 
 async def _broadcast_log_status():
     await _broadcast(json.dumps({"type": "log_status", "data": store.log_status()}))
+
+
+def _dispatch_due_schedules() -> None:
+    if schedules is None:
+        return
+    for candidate in schedules.run_due():
+        with schedules.dispatch_due(candidate["id"]) as schedule:
+            if schedule is None:
+                continue
+            prompt = schedule.get("prompt", "")
+            targets = schedule.get("targets", [])
+            if prompt and targets:
+                sender = schedule.get("created_by", "user")
+                mentions = " ".join(f"@{target}" for target in targets)
+                channel = schedule.get("channel", "general")
+                _post_scheduled_message(schedule, sender, f"{mentions} {prompt}", channel)
+        if prompt and targets and schedule.get("one_shot"):
+            schedules.delete(schedule["id"])
+        else:
+            schedules.mark_run(schedule["id"])
 
 
 def _post_scheduled_message(schedule: dict, sender: str, text: str, channel: str) -> None:
