@@ -207,6 +207,7 @@ class SessionStore:
                 return None
             session["current_turn"] += 1
             session["state"] = "active"
+            session.pop("wake_pending", None)
             session["updated_at"] = time.time()
             if message_id is not None:
                 session["last_message_id"] = message_id
@@ -224,6 +225,7 @@ class SessionStore:
             session["current_phase"] += 1
             session["current_turn"] = 0
             session["state"] = "active"
+            session.pop("wake_pending", None)
             session["updated_at"] = time.time()
             if message_id is not None:
                 session["last_message_id"] = message_id
@@ -232,19 +234,30 @@ class SessionStore:
         self._fire("update", result)
         return result
 
-    def set_waiting(self, session_id: int, agent: str) -> dict | None:
-        """Mark session as waiting on a specific agent."""
+    def set_waiting(self, session_id: int, agent: str, *, wake_pending: bool = False) -> dict | None:
+        """Persist the participant and whether a wake still needs to be queued."""
         with self._lock:
             session = self._find(session_id)
-            if not session:
+            if not session or session["state"] not in ("active", "waiting"):
                 return None
             session["state"] = "waiting"
             session["waiting_on"] = agent
+            if wake_pending:
+                session["wake_pending"] = True
+            else:
+                session.pop("wake_pending", None)
             session["updated_at"] = time.time()
             self._save()
             result = dict(session)
         self._fire("update", result)
         return result
+
+    def mark_wake_dispatched(self, session_id: int):
+        """Record a successful wake without changing the turn or notifying clients."""
+        with self._lock:
+            session = self._find(session_id)
+            if session and session.pop("wake_pending", False):
+                self._save()
 
     def set_choice(self, session_id: int, message_id: int | None) -> dict | None:
         """Keep the current turn while its participant asks the human a question."""
