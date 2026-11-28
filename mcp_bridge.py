@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
+from atomic_io import atomic_write_text
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ PRESENCE_TIMEOUT = 10  # ~2 missed heartbeats (5s interval) = offline
 
 # Roles — per-instance, persisted to roles.json
 _roles: dict[str, str] = {}  # agent_name → role string
+_roles_lock = threading.Lock()
 _ROLES_FILE: Path | None = None
 
 # Cursor persistence — set by run.py to enable saving cursors across restarts
@@ -396,7 +398,6 @@ def chat_send(
                     msg_type=msg_type, metadata=metadata,
                     sender_kind="agent" if authenticated else "human",
                     sender_identity=sender_identity, sender_base=sender_base)
-    _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
     result = f"Sent (id={msg['id']})"
@@ -439,7 +440,6 @@ def chat_propose_job(
         sender_identity=authenticated["identity_id"] if authenticated else None,
         sender_base=authenticated["base"] if authenticated else None,
     )
-    _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
     return f"Proposed job (msg_id={msg['id']}): {title}"
@@ -537,26 +537,24 @@ def _load_roles():
         log.warning("Failed to load roles from %s", _ROLES_FILE)
 
 
-def _save_roles():
-    """Persist roles to disk atomically."""
-    if _ROLES_FILE is None:
-        return
-    try:
+def _commit_roles(roles: dict[str, str]):
+    """Persist the proposed roles before publishing them. Caller holds the roles lock."""
+    global _roles
+    if _ROLES_FILE is not None:
         _ROLES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _ROLES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_roles), "utf-8")
-        os.replace(tmp, _ROLES_FILE)
-    except Exception:
-        log.warning("Failed to save roles to %s", _ROLES_FILE)
+        atomic_write_text(_ROLES_FILE, json.dumps(roles))
+    _roles = roles
 
 
 def set_role(name: str, role: str):
     """Set or clear an agent's role. Empty string clears."""
-    if role:
-        _roles[name] = role
-    else:
-        _roles.pop(name, None)
-    _save_roles()
+    with _roles_lock:
+        roles = dict(_roles)
+        if role:
+            roles[name] = role
+        else:
+            roles.pop(name, None)
+        _commit_roles(roles)
 
 
 def get_role(name: str) -> str:
@@ -591,9 +589,14 @@ def migrate_identity(old_name: str, new_name: str):
             _last_read_channel[new_name] = _last_read_channel.pop(old_name)
         if old_name in _last_read_job_id:
             _last_read_job_id[new_name] = _last_read_job_id.pop(old_name)
-    if old_name in _roles:
-        _roles[new_name] = _roles.pop(old_name)
-        _save_roles()
+    with _roles_lock:
+        if old_name in _roles:
+            roles = dict(_roles)
+            roles[new_name] = roles.pop(old_name)
+            try:
+                _commit_roles(roles)
+            except OSError:
+                log.exception("Failed to persist role migration from %s to %s", old_name, new_name)
     _save_cursors()
 
 
@@ -610,9 +613,14 @@ def purge_identity(name: str):
     with _last_read_lock:
         _last_read_channel.pop(name, None)
         _last_read_job_id.pop(name, None)
-    if name in _roles:
-        del _roles[name]
-        _save_roles()
+    try:
+        with _roles_lock:
+            if name in _roles:
+                roles = dict(_roles)
+                del roles[name]
+                _commit_roles(roles)
+    except OSError:
+        log.exception("Failed to persist role removal for %s", name)
     _save_cursors()
 
 
@@ -646,7 +654,8 @@ def _update_cursor(sender: str, msgs: list[dict], channel: str | None):
         ch_key = channel if channel else "__all__"
         with _cursors_lock:
             agent_cursors = _cursors.setdefault(sender, {})
-            agent_cursors[ch_key] = msgs[-1]["id"]
+            last_id = msgs[-1]["id"]
+            agent_cursors[ch_key] = max(last_id, agent_cursors.get(ch_key, last_id))
         _save_cursors()
 
 
@@ -662,8 +671,8 @@ def chat_read(
 
     Smart defaults:
     - First call with sender: returns last `limit` messages (full context).
-    - Subsequent calls with same sender: returns only NEW messages since last read.
-    - Pass since_id to override and read from a specific point.
+    - Subsequent calls with same sender: returns up to `limit` unread messages, oldest first.
+    - Pass a nonzero since_id to page from a specific point without changing the saved cursor.
     - Omit sender to always get the last `limit` messages (no cursor).
     - Pass channel to filter by channel name (default: all channels).
     - Pass job_id to read a specific job. Job reads return a header entry first,
@@ -732,23 +741,20 @@ def chat_read(
         with _last_read_lock:
             _last_read_channel[sender] = ch
             _last_read_job_id.pop(sender, None)
-    if since_id:
-        msgs = store.get_since(since_id, channel=ch)
-    elif sender:
-        ch_key = ch if ch else "__all__"
+    if limit < 1:
+        return "Error: limit must be positive."
+    cursor = since_id or None
+    if cursor is None and sender:
         with _cursors_lock:
-            agent_cursors = _cursors.get(sender, {})
-            cursor = agent_cursors.get(ch_key, 0)
-        if cursor:
-            msgs = store.get_since(cursor, channel=ch)
-        else:
-            msgs = store.get_recent(limit, channel=ch)
-    else:
+            cursor = _cursors.get(sender, {}).get(ch or "__all__")
+    if cursor is None:
         msgs = store.get_recent(limit, channel=ch)
+    else:
+        msgs = store.get_since(cursor, channel=ch)[:limit]
 
-    msgs = msgs[-limit:]
-    _update_cursor(sender, msgs, ch)
     serialized = _serialize_messages(msgs)
+    if not since_id:
+        _update_cursor(sender, msgs, ch)
 
     # Escalating empty-read hints to discourage polling loops
     if not serialized and sender:

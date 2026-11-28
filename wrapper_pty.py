@@ -2,8 +2,10 @@
 import os
 import subprocess
 import threading
+import time
 
 from pty_bridge import BridgeClient, receive_frame, send_frame
+from restart_policy import RestartPolicy
 
 
 def stop_provider(process):
@@ -45,8 +47,10 @@ def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, star
     child_env.pop('TERMGRID_BRIDGE_TOKEN', None)
     child_env.pop('TERMGRID_BRIDGE_PORT', None)
     start_watcher(client.inject)
+    restart = RestartPolicy()
     try:
         while not stopping.is_set():
+            started_at = time.monotonic()
             process = subprocess.Popen([command] + extra_args, cwd=cwd, env=child_env)
             if pid_holder is not None:
                 pid_holder[0] = process.pid
@@ -58,7 +62,9 @@ def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, star
                 pid_holder[0] = None
             if no_restart or stopping.is_set():
                 break
-            stopping.wait(3)
+            restart.wait_before_restart(
+                started_at, f"{agent.capitalize()} exited (code {process.returncode}).", stopping.wait,
+            )
     finally:
         if set_activity_checker is not None:
             set_activity_checker(None)

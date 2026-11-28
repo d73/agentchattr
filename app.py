@@ -54,6 +54,7 @@ session_store: SessionStore | None = None
 session_engine: SessionEngine | None = None
 config: dict = {}
 ws_clients: set[WebSocket] = set()
+_routing_refresh_lock = threading.Lock()
 
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
@@ -607,38 +608,14 @@ def configure(cfg: dict, session_token: str = ""):
                             else:
                                 mcp_bridge._activity[name] = False  # auto-expire
 
-                # Crash timeout: if a wrapper hasn't heartbeated for 60s,
-                # it's dead — deregister it to free the slot.
-                _CRASH_TIMEOUT = registry.HEARTBEAT_TIMEOUT
-                registered = set(registry.get_all_names())
-                for name in registered:
-                    with mcp_bridge._presence_lock:
-                        last_seen = mcp_bridge._presence.get(name, 0)
-                    if last_seen > 0 and now - last_seen > _CRASH_TIMEOUT:
-                        log.info(f"Crash timeout: deregistering {name} (no heartbeat for {_CRASH_TIMEOUT}s)")
-                        # Sleep / crash path: keep the token reclaimable so the
-                        # wrapper transparently recovers its identity on wake.
-                        # (A deliberate /api/deregister below stays non-reclaimable.)
-                        result = registry.deregister(name, reclaimable=True)
-                        if result:
-                            mcp_bridge.purge_identity(name)
-                            registry.clean_renames_for(name)
-                            renamed = result.get("_renamed_back")
-                            if renamed:
-                                mcp_bridge.migrate_identity(renamed["old"], renamed["new"])
-                                store.rename_sender(renamed["old"], renamed["new"])
-                                _migrate_agent_last_channel(renamed["old"], renamed["new"])
-                                if _event_loop:
-                                    rename_event = json.dumps({
-                                        "type": "agent_renamed",
-                                        "old_name": renamed["old"],
-                                        "new_name": renamed["new"],
-                                    })
-                                    asyncio.run_coroutine_threadsafe(_broadcast(rename_event), _event_loop)
-                            store.add(name, f"{name} disconnected (timeout)", msg_type="leave", channel=_agent_last_channel.get(name, _last_active_channel))
-                            _posted_leave.add(name)
-
-                # Re-fetch registered names (may have changed from crash timeout above)
+                _posted_leave.update(_expire_crashed_agents(now))
+                # A heartbeat may have refreshed both registration and presence
+                # while the earlier snapshot was being checked for timeouts.
+                with mcp_bridge._presence_lock:
+                    currently_online = {
+                        name for name, ts in mcp_bridge._presence.items()
+                        if now - ts < mcp_bridge.PRESENCE_TIMEOUT
+                    }
                 registered = set(registry.get_all_names())
 
                 # Detect registered instances going offline (leave message only)
@@ -724,35 +701,37 @@ def configure(cfg: dict, session_token: str = ""):
         while True:
             _time.sleep(30)
             try:
-                if not schedules:
-                    continue
-                due = schedules.run_due()
-                for s in due:
-                    prompt = s.get("prompt", "")
-                    targets = s.get("targets", [])
-                    channel = s.get("channel", "general")
-                    if not prompt or not targets:
-                        schedules.mark_run(s["id"])
-                        continue
-                    sender = s.get("created_by", "user")
-                    mention_str = " ".join(f"@{t}" for t in targets)
-                    full_text = f"{mention_str} {prompt}" if mention_str else prompt
-                    # store.add triggers _handle_new_message via callback,
-                    # which routes @mentions to agents — no manual trigger needed.
-                    store.add(
-                        sender,
-                        full_text,
-                        channel=channel,
-                        sender_kind="human",
-                    )
-                    if s.get("one_shot"):
-                        schedules.delete(s["id"])
-                    else:
-                        schedules.mark_run(s["id"])
+                _dispatch_due_schedules()
             except Exception:
                 log.exception("schedule runner error")
 
     threading.Thread(target=_schedule_runner, daemon=True).start()
+
+
+def _expire_crashed_agents(now: float) -> set[str]:
+    """Remove crashed registrations only if their identity and lease are still stale."""
+    import mcp_bridge
+
+    expired = set()
+    cutoff = now - registry.HEARTBEAT_TIMEOUT
+    for name, instance in registry.get_all().items():
+        with mcp_bridge._presence_lock:
+            last_presence = mcp_bridge._presence.get(name, 0)
+        if not 0 < last_presence < cutoff:
+            continue
+        if not registry.deregister(name, reclaimable=True, identity_id=instance["identity_id"],
+                                   last_seen_before=cutoff):
+            continue
+        if registry.is_registered(name):
+            continue
+        log.info("Crash timeout: deregistering %s (no heartbeat for %ss)",
+                 name, registry.HEARTBEAT_TIMEOUT)
+        mcp_bridge.purge_identity(name)
+        registry.clean_renames_for(name)
+        store.add(name, f"{name} disconnected (timeout)", msg_type="leave",
+                  channel=_agent_last_channel.get(name, _last_active_channel))
+        expired.add(name)
+    return expired
 
 
 # --- Store → WebSocket bridge ---
@@ -801,6 +780,37 @@ def _on_log_status():
 
 async def _broadcast_log_status():
     await _broadcast(json.dumps({"type": "log_status", "data": store.log_status()}))
+
+
+def _dispatch_due_schedules() -> None:
+    if schedules is None:
+        return
+    for candidate in schedules.run_due():
+        with schedules.dispatch_due(candidate["id"]) as schedule:
+            if schedule is None:
+                continue
+            prompt = schedule.get("prompt", "")
+            targets = schedule.get("targets", [])
+            if prompt and targets:
+                sender = schedule.get("created_by", "user")
+                mentions = " ".join(f"@{target}" for target in targets)
+                channel = schedule.get("channel", "general")
+                _post_scheduled_message(schedule, sender, f"{mentions} {prompt}", channel)
+        if prompt and targets and schedule.get("one_shot"):
+            schedules.delete(schedule["id"])
+        else:
+            schedules.mark_run(schedule["id"])
+
+
+def _post_scheduled_message(schedule: dict, sender: str, text: str, channel: str) -> None:
+    if schedule.get("one_shot"):
+        delivery_uid = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentchattr:one-shot:{schedule['id']}:{schedule.get('created_at')}",
+        ))
+        store.add(sender, text, channel=channel, sender_kind="human", uid=delivery_uid, once=True)
+    else:
+        store.add(sender, text, channel=channel, sender_kind="human")
 
 
 def _log_message_dispatch_result(future):
@@ -1393,12 +1403,12 @@ async def broadcast_agents():
 def _on_registry_change():
     """Called from registry (any thread) when instances register/deregister/claim/rename."""
     # Update router with current agent names (base names + registered instances)
-    if router and registry:
-        base_names = list(registry.get_bases().keys())
-        # Only include active instances in routing (pending ones are inert)
-        instance_names = registry.get_active_names()
-        all_names = list(set(base_names + instance_names))
-        router.update_agents(all_names)
+    with _routing_refresh_lock:
+        if router and registry:
+            base_names = list(registry.get_bases())
+            # Only include active instances in routing (pending ones are inert).
+            instance_names = registry.get_active_names()
+            router.update_agents(base_names + instance_names)
     # Broadcast to WebSocket clients
     if _event_loop:
         asyncio.run_coroutine_threadsafe(broadcast_agents(), _event_loop)
@@ -2027,6 +2037,14 @@ async def get_status():
     return status
 
 
+@app.get("/api/launcher/registrations")
+async def get_launcher_registrations():
+    """Return configured agent types with active registrations on this server."""
+    return {"registered_bases": sorted({
+        inst["base"] for inst in registry.get_all().values() if inst["state"] == "active"
+    })}
+
+
 @app.get("/api/browser-clients")
 async def get_browser_clients():
     """Number of open chat pages (WebSocket clients); lets launchers avoid opening a duplicate tab."""
@@ -2540,7 +2558,13 @@ async def set_agent_role(agent_name: str, request: Request):
     except Exception:
         return JSONResponse({"error": "invalid json"}, status_code=400)
     role = body.get("role", "").strip()
-    mcp_bridge.set_role(agent_name, role)
+    try:
+        mcp_bridge.set_role(agent_name, role)
+    except OSError:
+        log.exception("Failed to save role for %s", agent_name)
+        # The browser updates the role optimistically; restore the saved value.
+        await broadcast_status()
+        return JSONResponse({"error": "Could not save agent role"}, status_code=500)
     await broadcast_status()
     return JSONResponse({"ok": True, "role": role})
 
@@ -2764,6 +2788,8 @@ async def heartbeat(agent_name: str, request: Request):
     # Immediately broadcast on activity state change (don't wait for background checker)
     if _activity_changed:
         await broadcast_status()
+    if auth_inst and session_engine:
+        session_engine.retry_pending_wakes(current_name)
     # Return canonical name so wrapper can track renames
     resp = {"ok": True, "name": current_name}
     if auth_inst:
