@@ -6,13 +6,12 @@ import re
 class Router:
     def __init__(self, agent_names: list[str], default_mention: str = "both",
                  max_hops: int = 4, online_checker=None):
-        self.agent_names = set(n.lower() for n in agent_names)
         self.default_mention = default_mention
         self.max_hops = max_hops
         self._online_checker = online_checker  # callable() -> set of online agent names
         # Per-channel state: { channel: { hop_count, paused, guard_emitted } }
         self._channels: dict[str, dict] = {}
-        self._build_pattern()
+        self.update_agents(agent_names)
 
     def _get_ch(self, channel: str) -> dict:
         if channel not in self._channels:
@@ -23,27 +22,23 @@ class Router:
             }
         return self._channels[channel]
 
-    def _build_pattern(self):
-        # Sort longest-first so "gemini-2" is tried before "gemini"
-        names = [re.escape(n) for n in sorted(self.agent_names, key=len, reverse=True)]
-        alternatives = "|".join(names + ["both", "all"])
-        self._mention_re = re.compile(
-            rf"@({alternatives})(?![\w-])", re.IGNORECASE
-        )
-
     def parse_mentions(self, text: str) -> list[str]:
+        return self._parse_mentions(text, self._mention_roster)
+
+    def _parse_mentions(self, text, roster):
+        agent_names, mention_pattern = roster
         mentions = set()
         # Mentions shown as code are examples or references, not recipients.
         text = re.sub(r"(`+)([\s\S]*?)\1", "", text)
-        for match in self._mention_re.finditer(text):
+        for match in mention_pattern.finditer(text):
             name = match.group(1).lower()
             if name in ("both", "all"):
                 # Only tag online agents when using @all
                 if self._online_checker:
                     online = self._online_checker()
-                    mentions.update(n for n in self.agent_names if n in online)
+                    mentions.update(agent_names.intersection(online))
                 else:
-                    mentions.update(self.agent_names)
+                    mentions.update(agent_names)
             else:
                 mentions.add(name)
         return list(mentions)
@@ -52,7 +47,8 @@ class Router:
                     sender_is_agent: bool) -> list[str]:
         """Apply the loop guard before callers resolve mentions to identities."""
         ch = self._get_ch(channel)
-        mentions = self.parse_mentions(text)
+        roster = self._mention_roster
+        mentions = self._parse_mentions(text, roster)
 
         if not sender_is_agent:
             # Human message resets hop counter and unpauses
@@ -63,7 +59,7 @@ class Router:
                 return mentions
             if not mentions:
                 if self.default_mention in ("both", "all"):
-                    return list(self.agent_names)
+                    return list(roster[0])
                 elif self.default_mention == "none":
                     return []
                 return [self.default_mention]
@@ -98,6 +94,9 @@ class Router:
         self._get_ch(channel)["guard_emitted"] = True
 
     def update_agents(self, names: list[str]):
-        """Replace the agent name set and rebuild the mention regex."""
-        self.agent_names = set(n.lower() for n in names)
-        self._build_pattern()
+        """Publish the matching pattern and its agent names together."""
+        agent_names = frozenset(n.lower() for n in names)
+        escaped = [re.escape(n) for n in sorted(agent_names, key=len, reverse=True)]
+        alternatives = "|".join(escaped + ["both", "all"])
+        pattern = re.compile(rf"@({alternatives})(?![\w-])", re.IGNORECASE)
+        self._mention_roster = (agent_names, pattern)

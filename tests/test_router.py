@@ -56,6 +56,15 @@ class RoutingRefreshTests(unittest.TestCase):
 
 
 class RouterMentionTests(unittest.TestCase):
+    def test_one_message_uses_the_same_roster_for_explicit_and_all_mentions(self):
+        def online_agents():
+            router.update_agents(["new"])
+            return {"old", "new"}
+
+        router = Router(["old"], online_checker=online_agents)
+        self.assertEqual(router.parse_mentions("@old @all"), ["old"])
+        self.assertEqual(router.parse_mentions("@new @all"), ["new"])
+
     def test_summary_requires_explicit_target_even_when_default_is_all(self):
         router = Router(["codex", "claude", "agy"], default_mention="all",
                         online_checker=lambda: {"codex", "agy"})
