@@ -608,6 +608,7 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
                     # Smart rules injection: first trigger, epoch change, or periodic refresh
                     _token = get_token_fn() if get_token_fn else ""
                     rules_data = _fetch_active_rules(server_port, _token)
+                    rules_epoch = None
                     trigger_count += 1
                     if rules_data:
                         # Use server-side refresh_interval (live from settings UI)
@@ -621,8 +622,7 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
                             if rules_data["rules"]:
                                 rules_text = "; ".join(rules_data["rules"])
                                 prompt += f"\n\nRULES:\n{rules_text}"
-                            last_rules_epoch = rules_data["epoch"]
-                            _report_rule_sync(server_port, current_name, rules_data["epoch"], _token)
+                            rules_epoch = rules_data["epoch"]
 
                     if first_mention and is_multi_instance:
                         prompt += _IDENTITY_HINT
@@ -631,11 +631,16 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
                     # detection in CLIs (Claude Code shows "[Pasted text +N]")
                     # which can break injection of long session prompts
                     try:
-                        inject_fn(prompt.replace("\n", " "))
+                        delivered = inject_fn(prompt.replace("\n", " "))
                     except Exception:
                         # Do not log prompt contents or claim non-delivery: a
                         # lost acknowledgement can follow a successful paste.
                         print("  [wrapper] Prompt delivery was not confirmed; check the agent before resending.", flush=True)
+                    else:
+                        # tmux reports unconfirmed delivery with False instead of raising.
+                        if delivered is not False and rules_epoch is not None:
+                            last_rules_epoch = rules_epoch
+                            _report_rule_sync(server_port, current_name, rules_epoch, _token)
         except Exception:
             pass
 
