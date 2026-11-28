@@ -35,12 +35,16 @@ class SessionEngine:
     def start_session(self, template_id: str, channel: str, cast: dict,
                       started_by: str, goal: str = "") -> dict | None:
         """Start a new session. Returns the session dict or None on failure."""
+        roster = self._registry.get_all() if self._registry else {}
+        identities = {role: roster[name]["identity_id"] for role, name in cast.items()
+                      if name in roster and roster[name].get("identity_id")}
         session = self._store.create(
             template_id=template_id,
             channel=channel,
             cast=cast,
             started_by=started_by,
             goal=goal,
+            cast_identities=identities,
         )
         if not session:
             return None
@@ -91,13 +95,18 @@ class SessionEngine:
             return None
         return self._enrich(session)
 
-    def get_allowed_agent(self, channel: str) -> str | None:
-        """If a session is active on this channel, return the agent whose turn it is.
-        Returns None if no session is active (meaning all agents are allowed)."""
+    def get_allowed_wake_target(self, channel: str) -> tuple[str, str | None] | None:
+        """Return the current agent's name and identity, or None for unrestricted routing."""
         session = self._store.get_active(channel)
         if not session or session.get("state") not in ("active", "waiting"):
             return None
-        return self._get_expected_agent(session)
+        role = self._get_expected_role(session)
+        if "cast_identities" not in session:
+            name = session["cast"].get(role)
+            return (name, None) if name else None
+        identity_id = session["cast_identities"].get(role)
+        instance = self._active_instance(identity_id)
+        return (instance["name"] if instance else "", identity_id)
 
     def list_active(self) -> list[dict]:
         """List all active/waiting/paused sessions, enriched for the frontend."""
@@ -115,13 +124,19 @@ class SessionEngine:
                         or (session["state"] == "waiting" and session.get("wake_pending"))):
                     self._trigger_current(session)
 
-    def retry_pending_wakes(self, agent: str):
+    def retry_pending_wakes(self, agent: str, identity_id: str | None = None):
         """Retry unsent wakes when an authenticated wrapper reports it is ready."""
         with self._lock:
             for session in self._store.list_all():
-                if (session["state"] == "waiting" and session.get("wake_pending")
-                        and session.get("waiting_on") == agent
-                        and session.get("choice_message_id") is None):
+                if (session["state"] != "waiting" or not session.get("wake_pending")
+                        or session.get("choice_message_id") is not None):
+                    continue
+                if "cast_identities" in session:
+                    role = self._get_expected_role(session)
+                    matches = identity_id and session["cast_identities"].get(role) == identity_id
+                else:
+                    matches = session.get("waiting_on") == agent
+                if matches:
                     self._trigger_current(session)
 
     def _is_agent(self, name: str) -> bool:
@@ -129,6 +144,11 @@ class SessionEngine:
         if self._registry:
             return self._registry.is_registered(name)
         return False
+
+    def _active_instance(self, identity_id: str | None) -> dict | None:
+        if identity_id and self._registry:
+            return self._registry.get_active_instance_by_identity(identity_id)
+        return None
 
     # --- Message callback ---
 
@@ -150,18 +170,22 @@ class SessionEngine:
         if not session:
             return
 
-        expected_agent = self._get_expected_agent(session)
+        role = self._get_expected_role(session)
+        expected_agent = session["cast"].get(role)
         if not expected_agent:
             return
 
-        cast_agents = set(session.get("cast", {}).values())
         sender_is_agent = msg["sender_kind"] == "agent"
-        expected_is_agent = self._is_agent(expected_agent)
-        is_expected_sender = sender == expected_agent and sender_is_agent == expected_is_agent
-
-        # Agent not in this session's cast — ignore
-        if sender_is_agent and sender not in cast_agents:
-            return
+        identity_id = None
+        if "cast_identities" in session:
+            identity_id = session["cast_identities"].get(role)
+            expected_is_agent = bool(identity_id)
+            matches = msg.get("sender_identity") == identity_id if identity_id else sender == expected_agent
+        else:
+            # Older sessions contain only the chat IDs selected at creation.
+            expected_is_agent = self._is_agent(expected_agent)
+            matches = sender == expected_agent
+        is_expected_sender = matches and sender_is_agent == expected_is_agent
 
         # A choice card asks for input; it is not the participant's completed turn.
         if msg.get("type") == "decision":
@@ -176,6 +200,8 @@ class SessionEngine:
                     and (choice.get("metadata") or {}).get("resolved")):
                 if msg["reply_to"] == choice_id:
                     self._store.set_choice(session["id"], None)
+                    if identity_id and not self._active_instance(identity_id):
+                        self._store.set_waiting(session["id"], expected_agent, wake_pending=True)
                 # Normal @mention routing wakes the participant with the answer.
                 # An older card must not release the current question.
                 return
@@ -293,13 +319,22 @@ class SessionEngine:
 
         if session.get("choice_message_id") is not None:
             return
-        if not self._is_agent(agent):
-            # An undispatched agent wake stays pending until its wrapper returns.
+        identities = session.get("cast_identities")
+        identity_id = identities.get(role) if identities is not None else None
+        if identity_id:
+            instance = self._active_instance(identity_id)
+            if instance is None:
+                if not session.get("wake_pending"):
+                    self._store.set_waiting(session["id"], agent, wake_pending=True)
+                return
+            agent = instance["name"]
+        elif identities is not None or not self._is_agent(agent):
+            # Legacy pending wakes and human turns both remain waiting.
             if not session.get("wake_pending"):
                 self._store.set_waiting(session["id"], agent)
             return
 
-        if not session.get("wake_pending"):
+        if not session.get("wake_pending") or session.get("waiting_on") != agent:
             if not self._store.set_waiting(session["id"], agent, wake_pending=True):
                 return
 
@@ -308,7 +343,7 @@ class SessionEngine:
         log.info("Session %d: triggering %s (%s) for phase '%s'",
                  session["id"], agent, role, phase["name"])
         try:
-            self._trigger.trigger_sync(agent, channel=channel, prompt=prompt)
+            self._trigger.trigger_sync(agent, channel=channel, prompt=prompt, identity_id=identity_id)
         except OSError:
             log.exception("Session %d: wake for %s is pending after a queue write failure",
                           session["id"], agent)
@@ -350,8 +385,8 @@ class SessionEngine:
         # Use double newlines to ensure separation in TUIs that might collapse single newlines
         return "\n\n".join(lines)
 
-    def _get_expected_agent(self, session: dict) -> str | None:
-        """Get the agent name expected to respond next."""
+    def _get_expected_role(self, session: dict) -> str | None:
+        """Get the cast role whose turn it is."""
         tmpl = self._store.get_template(session["template_id"])
         if not tmpl:
             return None
@@ -369,9 +404,7 @@ class SessionEngine:
         if turn_idx >= len(participants):
             return None
 
-        role = participants[turn_idx]
-        cast = session.get("cast", {})
-        return cast.get(role)
+        return participants[turn_idx]
 
     def _enrich(self, session: dict) -> dict:
         """Add computed fields to a session dict for the frontend."""
@@ -388,5 +421,7 @@ class SessionEngine:
                 if turn_idx < len(participants):
                     role = participants[turn_idx]
                     session["current_role"] = role
-                    session["current_agent"] = session.get("cast", {}).get(role)
+                    identity_id = session.get("cast_identities", {}).get(role)
+                    instance = self._active_instance(identity_id)
+                    session["current_agent"] = instance["name"] if instance else session["cast"].get(role)
         return session

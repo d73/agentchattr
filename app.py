@@ -1180,6 +1180,10 @@ async def _handle_new_message(msg: dict):
         else:
             targets.append(t)
     targets = list(dict.fromkeys(targets))  # dedupe, preserve order
+    decision_author_id = (msg.get("metadata") or {}).get("decision_author_identity")
+    if decision_author_id and registry:
+        author = registry.get_active_instance_by_identity(decision_author_id)
+        targets = [author["name"]] if author else []
 
     if _re.match(r"^\s*/ping(?:\s|$)", text, _re.IGNORECASE) and not sender_is_agent:
         if not targets:
@@ -1211,7 +1215,8 @@ async def _handle_new_message(msg: dict):
     # Session turn guard: if a session is active on this channel and the sender
     # is an agent, only allow triggering the agent whose turn it is.
     # Human @mentions are always allowed (the session engine handles pausing).
-    allowed_agent = session_engine.get_allowed_agent(channel) if session_engine and sender_is_agent else None
+    allowed = session_engine.get_allowed_wake_target(channel) if session_engine and sender_is_agent else None
+    target_identity = decision_author_id or (allowed[1] if allowed else None)
 
     import mcp_bridge
     for target in targets:
@@ -1222,13 +1227,16 @@ async def _handle_new_message(msg: dict):
                 continue
             if inst and inst["identity_id"] == sender_identity:
                 continue
+            if target_identity and (not inst or inst["identity_id"] != target_identity):
+                continue
         # Session guard: suppress out-of-turn agent triggers
-        if allowed_agent and target != allowed_agent:
+        if allowed is not None and target != allowed[0]:
             continue
         if not agents.is_available(target):
             continue
         try:
-            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt)
+            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt,
+                                 **({"identity_id": target_identity} if target_identity else {}))
         except OSError:
             log.exception("Failed to queue wake for %s in #%s", target, channel)
             store.add("system", f"Could not queue a wake for @{target}.",
@@ -2228,6 +2236,7 @@ async def resolve_decision(msg_id: int, request: Request):
     error = None
     channel = "general"
     sender = ""
+    sender_identity = None
     with store._lock:
         position, msg = store._message_row(msg_id)
         if not msg:
@@ -2250,6 +2259,8 @@ async def resolve_decision(msg_id: int, request: Request):
                     msg["metadata"] = meta
                     channel = msg.get("channel", "general")
                     sender = msg.get("sender", "")
+                    if msg.get("sender_kind") == "agent":
+                        sender_identity = msg.get("sender_identity")
                     try:
                         store._save_message(position, msg)
                         store._rewrite()
@@ -2260,9 +2271,14 @@ async def resolve_decision(msg_id: int, request: Request):
         return JSONResponse({"error": error[0]}, status_code=error[1])
     # Post the chosen answer as a regular chat message tagged @sender
     username = room_settings.get("username", "user")
+    metadata = None
+    if sender_identity and registry:
+        instance = registry.get_active_instance_by_identity(sender_identity)
+        sender = instance["name"] if instance else ""
+        metadata = {"decision_author_identity": sender_identity}
     reply_text = f"@{sender} {chosen}" if sender else chosen
     try:
-        store.add(username, reply_text, reply_to=msg_id, channel=channel, sender_kind="human")
+        store.add(username, reply_text, reply_to=msg_id, channel=channel, sender_kind="human", metadata=metadata)
     except Exception:
         import traceback; traceback.print_exc()
     # Broadcast updated decision card so the UI swaps buttons to resolved state
@@ -2788,7 +2804,7 @@ async def heartbeat(agent_name: str, request: Request):
     if _activity_changed:
         await broadcast_status()
     if auth_inst and session_engine:
-        session_engine.retry_pending_wakes(current_name)
+        session_engine.retry_pending_wakes(current_name, auth_inst.get("identity_id"))
     # Return canonical name so wrapper can track renames
     resp = {"ok": True, "name": current_name}
     if auth_inst:
