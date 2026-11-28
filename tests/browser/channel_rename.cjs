@@ -27,7 +27,7 @@ function passiveTab(historyLoading) {
             setChannelPrefs(prefs) { tab.channelPrefs = prefs; },
         },
         Store: { set() {} }, Hub: { emit() {} }, localStorage: { setItem() {} },
-        _seededUiPrefs: true, _seededColors: true, pendingChatTypography: new Map(),
+        _seededUiPrefs: true, _seededColors: true, pendingAppearanceSettings: new Map(),
         applyAgentColorSettings() {},
         resetEarlierHistory() {}, filterMessagesByChannel() {}, renderChannelTabs() {},
         updateEarlierHistoryControl() {},
