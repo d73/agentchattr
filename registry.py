@@ -570,6 +570,13 @@ class RuntimeRegistry:
             return any(i.identity_id == identity_id and i.state == "active"
                        for i in self._instances.values())
 
+    def get_active_instance_by_identity(self, identity_id: str) -> dict | None:
+        with self._lock:
+            for instance in self._instances.values():
+                if instance.identity_id == identity_id and instance.state == "active":
+                    return _inst_dict(instance)
+        return None
+
     def is_pending(self, name: str) -> bool:
         with self._lock:
             i = self._instances.get(name)

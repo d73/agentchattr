@@ -32,7 +32,8 @@ def setup_session(tmp_path, stack):
     stack.enter_context(patch.object(app, 'store', messages))
     stack.enter_context(patch.object(app, 'room_settings', {'username': 'Ben'}))
     stack.enter_context(patch.object(app, 'ws_clients', set()))
-    engine.start_session('test', 'general', {'asker': 'claude', 'finisher': 'codex'}, 'Ben')
+    sessions.create('test', 'general', {'asker': 'claude', 'finisher': 'codex'}, 'Ben')
+    engine.resume_active_sessions()
     return sessions, messages, engine, trigger, timers
 
 

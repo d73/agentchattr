@@ -136,11 +136,13 @@ class AgentTrigger:
         self.trigger_sync(agent_name, message, channel, job_id, **kwargs)
 
     def trigger_sync(self, agent_name: str, message: str = "", channel: str = "general",
-                     job_id: int | None = None, **kwargs):
+                     job_id: int | None = None, *, identity_id: str | None = None, **kwargs):
         """Publish a complete wake for the addressed registration."""
-        instance = self._registry.get_instance(agent_name) if self._registry else None
-        if instance and instance.get("identity_id"):
-            queue = self._data_dir / "identity_triggers" / instance["identity_id"]
+        if identity_id is None and self._registry:
+            instance = self._registry.get_instance(agent_name)
+            identity_id = instance.get("identity_id") if instance else None
+        if identity_id:
+            queue = self._data_dir / "identity_triggers" / identity_id
         else:
             queue = self._data_dir / f"{agent_name}_queue.d"
         entry = {
