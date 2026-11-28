@@ -36,7 +36,7 @@
 }
 
 .session-info .session-template {
-    color: var(--accent);
+    color: var(--accent-ink);
     font-weight: var(--fw-semibold);
     white-space: nowrap;
 }
@@ -55,7 +55,7 @@
 .session-jump-btn {
     background: none;
     border: 1px solid rgba(124, 156, 255, 0.25);
-    color: #a8b7ff;
+    color: var(--accent-ink);
     font-size: var(--fs-md);
     font-weight: var(--fw-semibold);
     padding: 3px var(--space-md);
@@ -66,8 +66,8 @@
 }
 
 .session-jump-btn:hover {
-    background: rgba(124, 156, 255, 0.12);
-    border-color: #7c9cff;
+    background: var(--accent-soft);
+    border-color: var(--accent);
 }
 
 .session-end-btn {
@@ -279,7 +279,7 @@
     border-radius: var(--radius-full);
     border: 1px solid rgba(248, 113, 113, 0.35);
     background: rgba(248, 113, 113, 0.08);
-    color: #fca5a5;
+    color: var(--error-color);
     cursor: pointer;
 }
 
@@ -302,7 +302,7 @@
     padding: 1px 6px;
     border-radius: var(--radius-sm);
     background: var(--accent-soft);
-    color: var(--accent);
+    color: var(--accent-ink);
     border: 1px solid rgba(124, 58, 237, 0.25);
 }
 
@@ -372,7 +372,7 @@
 }
 
 .session-cast-phase-num {
-    color: var(--accent);
+    color: var(--accent-ink);
     font-weight: var(--fw-bold);
 }
 
@@ -396,7 +396,7 @@
 
 .session-cast-role {
     font-size: var(--fs-md);
-    color: var(--accent);
+    color: var(--accent-ink);
     font-weight: var(--fw-semibold);
     min-width: 100px;
 }
@@ -421,7 +421,7 @@
     width: calc(100% - 32px);
     margin: 14px var(--space-lg) var(--space-lg);
     padding: var(--space-sm);
-    background: var(--accent);
+    background: var(--accent-action);
     color: var(--text-on-accent);
     border: none;
     border-radius: var(--radius-md);
@@ -443,7 +443,7 @@
 /* Output highlighting */
 .session-output {
     border-left: 3px solid var(--accent);
-    background: rgba(124, 58, 237, 0.03);
+    background: color-mix(in srgb, var(--accent) 3%, transparent);
 }
 
 .session-output-flash {
@@ -452,12 +452,12 @@
 
 @keyframes session-output-pulse {
     0% { background: var(--accent-hover); }
-    100% { background: rgba(124, 58, 237, 0.03); }
+    100% { background: color-mix(in srgb, var(--accent) 3%, transparent); }
 }
 
 .session-output-link {
     font-size: var(--fs-sm);
-    color: var(--accent);
+    color: var(--accent-ink);
     cursor: pointer;
     margin-left: var(--space-sm);
     text-decoration: underline;
@@ -532,7 +532,7 @@
 }
 
 .session-draft-btn.run {
-    background: var(--accent);
+    background: var(--accent-action);
     color: var(--text-on-accent);
     border-color: var(--accent);
 }
@@ -546,9 +546,9 @@
 }
 
 .session-draft-btn-save.saved {
-    background: rgba(124, 58, 237, 0.14);
-    color: var(--accent);
-    border-color: rgba(124, 58, 237, 0.35);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent-ink);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
     cursor: default;
 }
 
@@ -571,7 +571,7 @@
     flex: 0 0 22px;
     font-size: var(--fs-xs);
     font-weight: var(--fw-bold);
-    color: var(--accent);
+    color: var(--accent-ink);
     line-height: 1.8;
 }
 

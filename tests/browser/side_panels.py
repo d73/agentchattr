@@ -22,18 +22,22 @@ PANELS = {
 }
 
 
-def check_panels(page, url, screenshots):
-    errors = []
-    sockets = []
-    page.on("pageerror", lambda error: errors.append(str(error)))
+def mock_chat_routes(page, connect):
     page.route(
         "https://cdn.jsdelivr.net/**",
         lambda route: route.fulfill(body="window.marked = {setOptions() {}, parse: text => text};"),
     )
-    page.route_web_socket(re.compile(r"/ws\?"), lambda socket: sockets.append(socket))
+    page.route_web_socket(re.compile(r"/ws\?"), connect)
     page.route("**/api/**", lambda route: route.fulfill(
         json=[] if route.request.url.endswith(("/messages", "/roles")) else {},
     ))
+
+
+def check_panels(page, url, screenshots):
+    errors = []
+    sockets = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    mock_chat_routes(page, lambda socket: sockets.append(socket))
     page.goto(url)
     page.evaluate("""() => {
         agentConfig = {codex: {label: 'Codex', color: '#60a5fa'}};
@@ -243,6 +247,174 @@ def check_panels(page, url, screenshots):
     assert not errors, errors
 
 
+def assert_theme_contrast(page):
+    ratios = page.evaluate("""() => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        function luminance(color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(0, 0, 1, 1);
+            const rgb = Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3);
+            const [r, g, b] = rgb.map(value => {
+                const s = value / 255;
+                return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+            });
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        }
+        return Object.fromEntries(['body', '#input', '#send', '.settings-section[open] summary',
+                                   '.theme-palette-card'].map(selector => {
+            const style = getComputedStyle(document.querySelector(selector));
+            const values = [luminance(style.color), luminance(style.backgroundColor)];
+            return [selector, (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05)];
+        }));
+    }""")
+    assert all(ratio >= 4.5 for ratio in ratios.values()), ratios
+
+
+def check_themes(page, url, screenshots):
+    errors = []
+    sockets = []
+    updates = []
+    saved = {"font": "mono", "font_size": 18, "channels": ["general"]}
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def connect(socket):
+        sockets.append(socket)
+
+        def capture(frame):
+            update = json.loads(frame)
+            if update.get("typography_request_id"):
+                updates.append(update)
+
+        socket.on_message(capture)
+        socket.send(json.dumps({"type": "settings", "data": saved}))
+        socket.send(json.dumps({"type": "history_complete", "has_more": False}))
+
+    def acknowledge(update):
+        saved.update(update["data"])
+        sockets[-1].send(json.dumps({
+            "type": "settings", "data": saved,
+            "typography_request_id": update["typography_request_id"],
+        }))
+
+    mock_chat_routes(page, connect)
+    page.emulate_media(color_scheme="light")
+    page.goto(url)
+    settings = page.locator("#settings-bar")
+    appearance = settings.locator('[data-section="appearance"]')
+    mode = appearance.get_by_role("radiogroup", name="Mode")
+    palette = appearance.get_by_role("radiogroup", name="Palette")
+    root = page.locator("html")
+    body = page.locator("body")
+    page.locator("#settings-toggle").click()
+    appearance.locator("summary").click()
+    expect(mode.get_by_role("radio", name="Dark")).to_be_checked()
+    expect(palette.get_by_role("radio", name="Midnight")).to_be_checked()
+    expect(body).to_have_css("background-color", "rgb(16, 16, 24)")
+    expect(page.locator("body.font-mono")).to_have_count(1)
+    expect(page.locator("#input")).to_have_css("font-size", "18px")
+    page.locator("#input").fill("Draft to verify the active Send button")
+
+    for label in ("Dark", "Light", "Auto"):
+        control = mode.get_by_role("radio", name=label, exact=True)
+        assert control.locator("..").get_attribute("title")
+        assert control.locator("..").locator("svg").count() == 1
+
+    mode.get_by_role("radio", name="Dark").press("ArrowRight")
+    light = mode.get_by_role("radio", name="Light")
+    expect(light).to_be_focused()
+    expect(light).to_be_checked()
+    expect(light.locator("..").locator("span")).to_have_css("outline-style", "solid")
+    palette.get_by_role("radio", name="Paper").press("ArrowRight")
+    sage = palette.get_by_role("radio", name="Sage")
+    expect(sage).to_be_focused()
+    expect(sage).to_be_checked()
+    expect(sage.locator("..").locator(".theme-palette-card")).to_have_css("outline-style", "solid")
+    assert [update["data"] for update in updates] == [{"theme_mode": "light"}, {"theme_palette": "green"}]
+
+    palettes = {
+        "Dark": (
+            ("indigo", "Midnight", "rgb(16, 16, 24)", "rgb(28, 30, 50)", "rgb(124, 138, 255)"),
+            ("green", "Obsidian", "rgb(17, 17, 19)", "rgb(30, 30, 34)", "rgb(16, 185, 129)"),
+            ("blue", "Nordic", "rgb(19, 25, 34)", "rgb(30, 41, 59)", "rgb(56, 189, 248)"),
+            ("amber", "Ember", "rgb(23, 19, 18)", "rgb(38, 31, 29)", "rgb(245, 158, 11)"),
+        ),
+        "Light": (
+            ("indigo", "Paper", "rgb(248, 249, 252)", "rgb(255, 255, 255)", "rgb(79, 70, 229)"),
+            ("green", "Sage", "rgb(241, 246, 242)", "rgb(250, 253, 250)", "rgb(21, 128, 61)"),
+            ("blue", "Frost", "rgb(240, 245, 250)", "rgb(255, 255, 255)", "rgb(2, 132, 199)"),
+            ("amber", "Sand", "rgb(246, 241, 231)", "rgb(253, 251, 247)", "rgb(217, 119, 6)"),
+        ),
+    }
+    for mode_name, choices in palettes.items():
+        mode.get_by_role("radio", name=mode_name).locator("..").click()
+        assert palette.locator('input:checked').input_value() == ("green" if mode_name == "Dark" else "amber")
+        for family, label, bg, surface, accent in choices:
+            choice = palette.get_by_role("radio", name=label)
+            choice.locator("..").click()
+            expect(choice).to_be_checked()
+            expect(root).to_have_attribute("data-palette", family)
+            expect(body).to_have_css("background-color", bg)
+            expect(appearance.locator("summary")).to_have_css("background-color", surface)
+            expect(appearance.locator("summary")).to_have_css("border-inline-start-color", accent)
+            assert_theme_contrast(page)
+        if screenshots:
+            settings.screenshot(path=screenshots / f"theme-{mode_name.lower()}.png", animations="disabled")
+
+    contrast = appearance.get_by_label("Contrast", exact=True)
+    contrast.select_option("high")
+    expect(body).to_have_class(re.compile("high-contrast"))
+    assert_theme_contrast(page)
+
+    mode.get_by_role("radio", name="Auto").locator("..").click()
+    expect(root).to_have_attribute("data-theme", "light")
+    assert updates[-1]["data"] == {"theme_mode": "auto"}
+    update_count = len(updates)
+    page.emulate_media(color_scheme="dark")
+    expect(palette.get_by_role("radio", name="Ember")).to_be_checked()
+    expect(root).to_have_attribute("data-theme", "dark")
+    page.emulate_media(color_scheme="light")
+    expect(palette.get_by_role("radio", name="Sand")).to_be_checked()
+    assert len(updates) == update_count
+
+    page.evaluate("""() => {
+        ws.addEventListener('message', event => {
+            const data = JSON.parse(event.data);
+            if (data.typography_request_id) window.receivedAppearanceId = data.typography_request_id;
+        });
+    }""")
+    first, last = [update for update in updates if "theme_palette" in update["data"]][-2:]
+    acknowledge(first)
+    page.wait_for_function("id => window.receivedAppearanceId === id", arg=first["typography_request_id"])
+    expect(palette.get_by_role("radio", name="Sand")).to_be_checked()
+    acknowledge(last)
+    page.wait_for_function("id => window.receivedAppearanceId === id", arg=last["typography_request_id"])
+    acknowledge(updates[-1])
+    assert saved["theme_mode"] == "auto" and saved["theme_palette"] == "amber"
+
+    sockets[-1].close(code=1011)
+    page.wait_for_function("ws.readyState === WebSocket.CLOSED")
+    palette.get_by_role("radio", name="Sage").locator("..").click()
+    expect(root).to_have_attribute("data-palette", "green")
+    assert len(updates) == update_count
+    with page.expect_console_message(predicate=lambda m: m.text == "WebSocket connected"):
+        page.wait_for_function("ws.readyState === WebSocket.OPEN")
+    expect(root).to_have_attribute("data-palette", "green")
+    assert updates[-1]["data"] == {"theme_palette": "green"}
+    acknowledge(updates[-1])
+    page.wait_for_function("pendingAppearanceSettings.size === 0")
+
+    page.reload()
+    expect(root).to_have_attribute("data-theme", "light")
+    expect(root).to_have_attribute("data-palette", "green")
+    page.locator("#settings-toggle").click()
+    appearance.locator("summary").click()
+    expect(mode.get_by_role("radio", name="Auto")).to_be_checked()
+    expect(palette.get_by_role("radio", name="Sage")).to_be_checked()
+    expect(page.locator("#input")).to_have_css("font-size", "18px")
+    assert not errors, errors
+
+
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -263,9 +435,11 @@ def main():
                 headless=True, executable_path=os.environ.get("AGENTCHATTR_TEST_BROWSER"),
             )
             page = browser.new_page(viewport={"width": 1280, "height": 1250})
-            check_panels(page, f"http://127.0.0.1:{server.server_port}/static/index.html", args.screenshots)
+            url = f"http://127.0.0.1:{server.server_port}/static/index.html"
+            check_panels(page, url, args.screenshots)
+            check_themes(browser.new_page(viewport={"width": 1280, "height": 900}), url, args.screenshots)
             browser.close()
-        print("PASS: five panel shells, resizing, reduced motion, and Settings behavior")
+        print("PASS: five panel shells, Settings behavior, and all eight palettes with Auto and reconnect")
     finally:
         server.shutdown()
         server.server_close()

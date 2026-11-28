@@ -67,6 +67,10 @@ _routing_refresh_lock = threading.Lock()
 session_token: str = ""
 
 DEFAULT_CHAT_FONT_SIZE = 14
+DEFAULT_THEME_MODE = "dark"
+DEFAULT_THEME_PALETTE = "indigo"
+THEME_MODES = (DEFAULT_THEME_MODE, "light", "auto")
+THEME_PALETTES = (DEFAULT_THEME_PALETTE, "green", "blue", "amber")
 
 # Room settings (persisted to data/settings.json)
 room_settings: dict = {
@@ -77,6 +81,8 @@ room_settings: dict = {
     "username": "user",
     "font": "sans",
     "font_size": DEFAULT_CHAT_FONT_SIZE,
+    "theme_mode": DEFAULT_THEME_MODE,
+    "theme_palette": DEFAULT_THEME_PALETTE,
     "channels": ["general"],
     # Manually archived channels (hidden in a collapsed "Archived" group) and the
     # idle threshold, in hours, after which a channel moves to "Inactive" (0 = off).
@@ -300,6 +306,10 @@ def _load_settings():
     room_settings["subtitle"] = normalize_room_subtitle(room_settings.get("subtitle")) or ""
     if not _valid_chat_font_size(room_settings.get("font_size")):
         room_settings["font_size"] = DEFAULT_CHAT_FONT_SIZE
+    if room_settings.get("theme_mode") not in THEME_MODES:
+        room_settings["theme_mode"] = DEFAULT_THEME_MODE
+    if room_settings.get("theme_palette") not in THEME_PALETTES:
+        room_settings["theme_palette"] = DEFAULT_THEME_PALETTE
     # Ensure "general" always exists and is first
     if "channels" not in room_settings or not room_settings["channels"]:
         room_settings["channels"] = ["general"]
@@ -1769,6 +1779,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     room_settings["font"] = new["font"]
                 if _valid_chat_font_size(new.get("font_size")):
                     room_settings["font_size"] = new["font_size"]
+                if new.get("theme_mode") in THEME_MODES:
+                    room_settings["theme_mode"] = new["theme_mode"]
+                if new.get("theme_palette") in THEME_PALETTES:
+                    room_settings["theme_palette"] = new["theme_palette"]
                 if "max_agent_hops" in new:
                     try:
                         hops = int(new["max_agent_hops"])

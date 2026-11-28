@@ -116,6 +116,20 @@ class SettingsLoadTests(unittest.TestCase):
                 app._save_agent_color_changes({"codex": "#444444"}, None)
         self.assertIs(app.room_settings["agent_colors"], previous)
 
+    def test_theme_is_restored_or_defaults(self):
+        for stored, expected in (
+            ({}, ("dark", "indigo")),
+            ({"theme_mode": "auto", "theme_palette": "green"}, ("auto", "green")),
+            ({"theme_mode": ["light"], "theme_palette": "unknown"}, ("dark", "indigo")),
+        ):
+            with self.subTest(stored=stored):
+                room = app.room_settings
+                room.pop("theme_mode", None)
+                room.pop("theme_palette", None)
+                self.path.write_text(json.dumps(stored), "utf-8")
+                app._load_settings()
+                self.assertEqual((room["theme_mode"], room["theme_palette"]), expected)
+
     def exchange_settings_frames(self, events):
         frames = []
         incoming = iter(events)
@@ -179,6 +193,20 @@ class SettingsLoadTests(unittest.TestCase):
         self.assertEqual(responses[2]["data"]["font_size"], 20)
         saved = json.loads(self.path.read_text("utf-8"))
         self.assertEqual((saved["font"], saved["font_size"]), ("mono", 20))
+
+    def test_theme_edits_save_independently_and_reject_invalid_values(self):
+        frames = self.exchange_settings_frames([
+            {"type": "update_settings", "data": {"theme_mode": "light"}, "typography_request_id": "2-1"},
+            {"type": "update_settings", "data": {"theme_palette": "amber"}, "typography_request_id": "2-2"},
+            {"type": "update_settings", "data": {"theme_mode": "bad", "theme_palette": []}},
+        ])
+
+        responses = [frame for frame in frames if "typography_request_id" in frame]
+        self.assertEqual([frame["typography_request_id"] for frame in responses], ["2-1", "2-2"])
+        self.assertEqual(responses[0]["data"]["theme_mode"], "light")
+        self.assertEqual(responses[1]["data"]["theme_palette"], "amber")
+        saved = json.loads(self.path.read_text("utf-8"))
+        self.assertEqual((saved["theme_mode"], saved["theme_palette"]), ("light", "amber"))
 
 
 if __name__ == "__main__":
