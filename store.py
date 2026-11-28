@@ -241,6 +241,23 @@ class MessageStore:
         rows = self._db.execute("SELECT payload FROM messages ORDER BY position")
         atomic_write_text(self._path, (payload + "\n" for (payload,) in rows))
 
+    def next_job_id_from_history(self) -> int:
+        """Reserve IDs referenced by breadcrumbs written before Job ID persistence."""
+        highest_id = 0
+        before_id = self.last_id + 1
+        while True:
+            messages, has_more = self.get_before(before_id, count=512)
+            for message in messages:
+                if message.get("type") != "job_created":
+                    continue
+                metadata = message.get("metadata")
+                job_id = metadata.get("job_id") if isinstance(metadata, dict) else None
+                if type(job_id) is int and highest_id < job_id < 2**53 - 1:
+                    highest_id = job_id
+            if not has_more:
+                return highest_id + 1
+            before_id = messages[0]["id"]
+
     def get_by_id(self, msg_id: int) -> dict | None:
         with self._lock:
             return self._message_row(msg_id)[1]

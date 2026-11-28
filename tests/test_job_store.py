@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from jobs import JobStore
+from store import MessageStore
 
 
 class JobStoreTests(unittest.TestCase):
@@ -120,6 +122,27 @@ class JobStoreTests(unittest.TestCase):
         self.assertIsNotNone(fetched)
         self.assertEqual(fetched["title"], "Persist me")
         self.assertEqual(next_job["id"], created["id"] + 1)
+
+    def test_permanent_delete_does_not_reuse_highest_id_after_restart(self):
+        created = self.store.create("Old", "job", "general", "ben")
+        self.store.delete(created["id"])
+
+        reloaded = JobStore(str(self.path))
+        replacement = reloaded.create("New", "job", "general", "ben")
+
+        self.assertIsNone(reloaded.get(created["id"]))
+        self.assertGreater(replacement["id"], created["id"])
+
+    def test_legacy_list_preserves_ids_referenced_by_old_breadcrumbs(self):
+        self.path.write_text(json.dumps([{"id": 2, "sort_order": 1}]), encoding="utf-8")
+        history = MessageStore(str(self.path.with_name("messages.jsonl")))
+        history.add("system", "Old job", "job_created", metadata={"job_id": 5})
+        for _ in range(512):
+            history.add("ben", "Newer message", _bulk=True)
+        migrated = JobStore(str(self.path), history_next_id=history.next_job_id_from_history)
+
+        self.assertIsNotNone(migrated.get(2))
+        self.assertEqual(JobStore(str(self.path)).create("New", "job", "general", "ben")["id"], 6)
 
 
 if __name__ == "__main__":
