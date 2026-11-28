@@ -14,6 +14,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from attachment_storage import copy_image_attachment
+
 log = logging.getLogger(__name__)
 
 # Shared state — set by run.py before starting
@@ -292,35 +294,41 @@ def chat_send(
                 or target["identity_id"] != recipient_identity or target["state"] != "active"
                 or not is_online(recipient)):
             return "Error: the bound recipient is no longer present."
-    if job_id and jobs:
+    job_send = bool(job_id and jobs)
+    reply_id = None
+    if job_send:
+        if jobs.get(job_id) is None:
+            return f"Error: job #{job_id} not found."
+    elif reply_to >= 0:
+        if store.get_by_id(reply_to) is None:
+            return f"Message #{reply_to} not found."
+        reply_id = reply_to
+
+    attachments = []
+    attachment_path = None
+    if image_path:
+        try:
+            attachment, attachment_path = copy_image_attachment(image_path, config or {})
+        except ValueError as exc:
+            return str(exc)
+        except OSError:
+            return "Could not read or store the image attachment."
+        attachments.append(attachment)
+
+    if job_send:
         # Detect suggestion type from [suggestion] prefix
         text = message.strip()
         msg_type = "chat"
         if text.lower().startswith("[suggestion]"):
             msg_type = "suggestion"
             text = text[len("[suggestion]"):].strip()
-        # Handle image attachment for job messages
-        job_attachments = None
-        if image_path:
-            import shutil, uuid
-            src = Path(image_path)
-            if not src.exists():
-                return f"Image not found: {image_path}"
-            if src.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'):
-                return f"Unsupported image type: {src.suffix}"
-            raw_dir = "./uploads"
-            if config and "images" in config:
-                raw_dir = config["images"].get("upload_dir", raw_dir)
-            upload_dir = Path(raw_dir)
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
-            shutil.copy2(str(src), str(upload_dir / filename))
-            job_attachments = [{"name": src.name, "url": f"/uploads/{filename}"}]
         msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
-                               attachments=job_attachments,
+                               attachments=attachments or None,
                                sender_identity=sender_identity,
                                recipient_identity=recipient_identity or None, expected_scope=job_scope)
         if msg is None:
+            if attachment_path is not None:
+                attachment_path.unlink(missing_ok=True)
             return f"Error: job #{job_id} not found."
         with _presence_lock:
             _presence[sender] = time.time()
@@ -356,32 +364,6 @@ def chat_send(
 
         return f"Sent to job #{job_id} (msg_id={msg['id']})" + (
             " [suggestion]" if msg_type == "suggestion" else "")
-
-    attachments = []
-    if image_path:
-        import shutil
-        import uuid
-        from pathlib import Path
-        src = Path(image_path)
-        if not src.exists():
-            return f"Image not found: {image_path}"
-        if src.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'):
-            return f"Unsupported image type: {src.suffix}"
-        
-        # Get upload dir from config (fall back to ./uploads)
-        raw_dir = "./uploads"
-        if config and "images" in config:
-            raw_dir = config["images"].get("upload_dir", raw_dir)
-        upload_dir = Path(raw_dir)
-        
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
-        shutil.copy2(str(src), str(upload_dir / filename))
-        attachments.append({"name": src.name, "url": f"/uploads/{filename}"})
-
-    reply_id = reply_to if reply_to >= 0 else None
-    if reply_id is not None and store.get_by_id(reply_id) is None:
-        return f"Message #{reply_to} not found."
 
     # Determine message type and metadata based on choices
     msg_type = "chat"

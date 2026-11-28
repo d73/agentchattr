@@ -18,6 +18,7 @@ from fastapi.requests import Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from attachment_storage import DEFAULT_IMAGE_LIMIT_MB, IMAGE_UPLOAD_EXTS, image_upload_limit
 from store import MessageStore
 from rules import RuleStore
 from summaries import SummaryStore
@@ -1860,9 +1861,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # --- REST endpoints ---
 
-IMAGE_UPLOAD_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'}
 ALLOWED_UPLOAD_EXTS = IMAGE_UPLOAD_EXTS  # backwards-compatible image policy
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB default
+MAX_UPLOAD_BYTES = DEFAULT_IMAGE_LIMIT_MB * 1024 * 1024
 
 
 @app.post("/api/upload")
@@ -1879,9 +1879,11 @@ async def upload_image(file: UploadFile = File(...), display_name: str | None = 
     if not is_image and "*" not in allowed_files and ext not in allowed_files:
         return JSONResponse({"error": f"unsupported file type: {ext or '(no extension)'}"}, status_code=400)
 
-    policy = config.get("images", {}) if is_image else file_cfg
-    max_mb = policy.get("max_size_mb", 10 if is_image else 25)
-    max_bytes = int(max_mb * 1024 * 1024)
+    if is_image:
+        max_mb, max_bytes = image_upload_limit(config)
+    else:
+        max_mb = file_cfg.get("max_size_mb", 25)
+        max_bytes = int(max_mb * 1024 * 1024)
     # Keep storage URLs simple even for names with unusual suffixes (e.g. .c++).
     storage_ext = ext if not ext or _re.fullmatch(r"\.[a-z0-9_-]{1,32}", ext) else ".bin"
     filename = f"{uuid.uuid4().hex}{storage_ext}"
