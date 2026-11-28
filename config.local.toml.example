@@ -52,3 +52,10 @@
 # label = "MiniMax"
 # api_key_env = "MINIMAX_API_KEY"
 # temperature = 1.0
+# Optional operator identity for restricted browser actions. A browser session
+# alone does not grant operator access. The server creates the verifier stub in
+# its data directory as .orch-operator.env. Set ORCH_OPERATOR_PROOF_SHA256 to
+# the SHA-256 digest of the operator's privately provisioned 64-character
+# lowercase hex proof. Keep the proof with the operator and out of this file.
+# [operator]
+# identity = "derek"

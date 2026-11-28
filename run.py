@@ -2,17 +2,40 @@
 
 import argparse
 import asyncio
+import json
 import re
 import secrets
 import sys
 import threading
 import time
 import logging
+from functools import partial
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 # Ensure the project directory is on the import path
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
+
+
+def _publish_orch_gate(jobs, store, job_uid, *, coordinator, gate, revision, choices, text, operation_id):
+    def add_card(channel, binding):
+        # Reuse the card if persisting the separate Job record needs a retry.
+        key = json.dumps([job_uid, coordinator, gate, revision, operation_id])
+        card_uid = str(uuid5(NAMESPACE_URL, "agentchattr:orch-gate:" + key))
+        metadata = {"orch_gate": binding, "choices": choices, "resolved": False}
+        card = store.add(coordinator, text, msg_type="decision", channel=channel,
+                         metadata=metadata, uid=card_uid, sender_kind="agent", once=True)
+        recorded = card.get("metadata") or {}
+        if (card.get("type"), card.get("channel"), card.get("sender"), card.get("text"),
+            recorded.get("orch_gate"), recorded.get("choices"), recorded.get("resolved")) != (
+            "decision", channel, coordinator, text, binding, choices, False
+        ):
+            raise ValueError("Orch gate card binding does not match")
+        return card["id"]
+
+    return jobs.publish_orch_gate(job_uid, coordinator=coordinator, gate=gate, revision=revision,
+                                  choices=choices, text=text, operation_id=operation_id, add_card=add_card)
 
 
 def _parse_args():
@@ -143,6 +166,8 @@ def main():
             online_agents=mcp_bridge._get_online,
             get_message=lambda message_id: deepcopy(store.get_by_id(message_id)),
             transition_job=transition_plugin_job,
+            publish_orch_gate=partial(_publish_orch_gate, jobs, store),
+            read_orch_gate=jobs.read_orch_gate,
         )
         plugins.load(config["plugins"], services, core_routes=app.router.routes,
                      core_tools=(tool.__name__ for tool in mcp_bridge._ALL_TOOLS))

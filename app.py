@@ -31,6 +31,7 @@ from registry import RuntimeRegistry
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from plugin_host import ASSET_PREFIX
+from operator_auth import configured_operator, prepare_operator_verifier, verify_operator
 
 log = logging.getLogger(__name__)
 
@@ -522,6 +523,11 @@ def configure(cfg: dict, session_token: str = ""):
         log_path = legacy_log_path
 
     store = MessageStore(str(log_path))
+    if configured_operator(cfg):
+        try:
+            prepare_operator_verifier(Path(data_dir))
+        except OSError:
+            log.warning("Could not prepare the local operator verifier file")
     # Initialize store upload dir from config
     raw_upload_dir = cfg.get("images", {}).get("upload_dir", "./uploads")
     store.upload_dir = Path(raw_upload_dir)
@@ -2242,7 +2248,9 @@ async def resolve_decision(msg_id: int, request: Request):
             error = ("not a decision message", 400)
         else:
             meta = msg.get("metadata") or {}
-            if meta.get("resolved"):
+            if "orch_gate" in meta:
+                error = ("Orch gate decisions require operator approval", 403)
+            elif meta.get("resolved"):
                 error = ("already resolved", 400)
             else:
                 valid_choices = meta.get("choices", [])
@@ -2276,6 +2284,38 @@ async def resolve_decision(msg_id: int, request: Request):
     if updated:
         await _broadcast(json.dumps({"type": "message_update", "message": updated}))
     return {"ok": True, "chosen": chosen}
+
+
+@app.post("/api/jobs/{job_uid}/orch-gates/{decision_id}/resolve")
+async def resolve_orch_gate(job_uid: str, decision_id: int, request: Request):
+    """Record an independently verified operator's choice for the exact current gate."""
+    actor = verify_operator(request, config, session_token)
+    if actor is None:
+        return JSONResponse({"error": "verified operator required"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid gate decision"}, status_code=400)
+    gate, revision, choice = (body.get(key) for key in ("gate", "revision", "choice"))
+    if (not isinstance(gate, str) or not gate or type(revision) is not int or revision < 1
+            or not isinstance(choice, str) or not choice or decision_id < 0):
+        return JSONResponse({"error": "invalid gate decision"}, status_code=400)
+
+    decision = jobs.resolve_orch_gate(job_uid, decision_id=decision_id, gate=gate,
+                                     revision=revision, choice=choice, actor=actor)
+    if decision is None:
+        return JSONResponse({"error": "gate decision is stale, conflicting, or out of scope"}, status_code=409)
+    try:
+        updated = store.project_orch_gate_decision(decision)
+    except OSError:
+        # The Job record is authoritative. A retry can repair the display without reapplying the choice.
+        log.exception("Could not update the Orch gate card %s", decision_id)
+    else:
+        if updated:
+            await _broadcast(json.dumps({"type": "message_update", "message": updated}))
+    return decision
 
 
 @app.post("/api/messages/{msg_id}/resolve_rule_proposal")
