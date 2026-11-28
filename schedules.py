@@ -93,6 +93,10 @@ def compute_next_run(
     return last_run + interval_seconds
 
 
+def _is_dispatchable(schedule: dict) -> bool:
+    return bool(schedule.get("active") and schedule.get("prompt") and any(schedule.get("targets") or ()))
+
+
 class ScheduleStore:
     def __init__(self, path: str):
         self._path = Path(path)
@@ -140,7 +144,7 @@ class ScheduleStore:
 
     def has_active(self) -> bool:
         with self._lock:
-            return any(s.get("active") for s in self._schedules)
+            return any(_is_dispatchable(s) for s in self._schedules)
 
     def get(self, schedule_id: str) -> dict | None:
         with self._lock:
@@ -164,6 +168,16 @@ class ScheduleStore:
         If one_shot=True, the schedule auto-deletes after firing once.
         If send_at is provided (epoch), use it as next_run directly.
         """
+        if not isinstance(prompt, str) or not isinstance(targets, list) or not all(
+            isinstance(target, str) for target in targets
+        ):
+            raise ValueError("A schedule requires a prompt and at least one named target")
+        prompt = prompt.strip()[:500]
+        targets = [target.strip().lstrip("@") for target in targets]
+        targets = [target for target in targets if target]
+        if not prompt or not targets:
+            raise ValueError("A schedule requires a prompt and at least one named target")
+
         schedule_id = str(uuid.uuid4())[:8]
         now = time.time()
         last_run = None
@@ -198,8 +212,8 @@ class ScheduleStore:
         with self._lock:
             s = {
                 "id": schedule_id,
-                "prompt": prompt.strip()[:500],
-                "targets": [t.strip().lstrip("@") for t in targets if t.strip()],
+                "prompt": prompt,
+                "targets": targets,
                 "channel": channel or "general",
                 "interval_seconds": interval_seconds or 86400,
                 "daily_at": daily_at,
@@ -219,7 +233,7 @@ class ScheduleStore:
         """Return list of schedules that are due (next_run <= now). Does not update."""
         now = time.time()
         with self._lock:
-            due = [s for s in self._schedules if s.get("active") and s.get("next_run", 0) <= now]
+            due = [s for s in self._schedules if _is_dispatchable(s) and s.get("next_run", 0) <= now]
         return [dict(s) for s in due]
 
     @contextmanager
@@ -228,7 +242,7 @@ class ScheduleStore:
         with self._lock:
             now = time.time()
             item = next((s for s in self._schedules if s["id"] == schedule_id), None)
-            if item and item.get("active") and item.get("next_run", 0) <= now:
+            if item and _is_dispatchable(item) and item.get("next_run", 0) <= now:
                 yield dict(item)
             else:
                 yield None
