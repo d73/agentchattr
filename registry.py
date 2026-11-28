@@ -239,16 +239,19 @@ class RuntimeRegistry:
                 if error := self._conflicts_with_other_family(requested_name, base):
                     raise ValueError(error)
 
-            # Find next free slot
+            # An unqualified registration must not generate a live canonical name.
             taken = {i.slot for i in live.values() if i.base == base}
             slot = 1
-            while slot in taken:
+            while slot in taken or (slot == 1 and base in live):
                 slot += 1
 
             if requested_name is not None:
                 requested_base, requested_slot = self._parse_name(requested_name)
                 if requested_base == base:
-                    if requested_slot < 1 or requested_slot in taken:
+                    if requested_name == base and requested_slot in taken:
+                        # Preserve the exact canonical name when a custom alias holds slot 1.
+                        requested_slot = slot
+                    elif requested_slot < 1 or requested_slot in taken:
                         raise ValueError(f'Slot {requested_slot} already occupied or invalid')
                     slot = requested_slot
 
