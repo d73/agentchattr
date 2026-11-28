@@ -7,6 +7,7 @@ import re
 import time
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -220,6 +221,17 @@ class ScheduleStore:
         with self._lock:
             due = [s for s in self._schedules if s.get("active") and s.get("next_run", 0) <= now]
         return [dict(s) for s in due]
+
+    @contextmanager
+    def dispatch_due(self, schedule_id: str):
+        """Keep deletion and pause ordered with dispatch of a still-due schedule."""
+        with self._lock:
+            now = time.time()
+            item = next((s for s in self._schedules if s["id"] == schedule_id), None)
+            if item and item.get("active") and item.get("next_run", 0) <= now:
+                yield dict(item)
+            else:
+                yield None
 
     def mark_run(self, schedule_id: str) -> dict | None:
         """Mark schedule as run, advance next_run. Returns updated schedule."""

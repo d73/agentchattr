@@ -13,6 +13,12 @@ SCHEMA_VERSION = 1
 MAX_IMPORT_SIZE = 50 * 1024 * 1024  # 50MB uncompressed
 
 _import_lock = threading.Lock()
+_CLOCK_TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]")
+
+
+def _archive_time(record: dict) -> str | None:
+    value = record.get("time")
+    return value if isinstance(value, str) and _CLOCK_TIME.fullmatch(value) else None
 
 
 def _fingerprint(record: dict) -> str:
@@ -253,7 +259,7 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                 metadata=msg.get("metadata"),
                 uid=msg_uid,
                 timestamp=msg.get("timestamp"),
-                time_str=msg.get("time"),
+                time_str=_archive_time(msg),
                 _bulk=True,
                 sender_kind=msg.get("sender_kind"),
                 sender_identity=msg.get("sender_identity"),
@@ -326,7 +332,7 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                     msg_type=jm.get("type", "chat"),
                     uid=jm_uid,
                     timestamp=jm.get("timestamp"),
-                    time_str=jm.get("time"),
+                    time_str=_archive_time(jm),
                 )
                 job_report["messages_created"] += 1
             # Restore original updated_at (add_message bumps it to now)

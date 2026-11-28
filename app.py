@@ -54,6 +54,7 @@ session_store: SessionStore | None = None
 session_engine: SessionEngine | None = None
 config: dict = {}
 ws_clients: set[WebSocket] = set()
+_routing_refresh_lock = threading.Lock()
 
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
@@ -406,7 +407,8 @@ def _install_security_middleware(token: str, cfg: dict):
             # the browser session token, like the rest of the API.
             public_image = path.startswith("/uploads/") and Path(path).suffix.lower() in IMAGE_UPLOAD_EXTS
             client_ip = request.client.host if request.client else ""
-            if path == "/" or path.startswith(("/static/", "/api/roles")) or public_image:
+            public_roles = request.method == "GET" and path == "/api/roles"
+            if path == "/" or path.startswith("/static/") or public_roles or public_image:
                 return await call_next(request)
 
             # Devices on the LAN never get API access, even with a token.
@@ -700,26 +702,7 @@ def configure(cfg: dict, session_token: str = ""):
         while True:
             _time.sleep(30)
             try:
-                if not schedules:
-                    continue
-                due = schedules.run_due()
-                for s in due:
-                    prompt = s.get("prompt", "")
-                    targets = s.get("targets", [])
-                    channel = s.get("channel", "general")
-                    if not prompt or not targets:
-                        schedules.mark_run(s["id"])
-                        continue
-                    sender = s.get("created_by", "user")
-                    mention_str = " ".join(f"@{t}" for t in targets)
-                    full_text = f"{mention_str} {prompt}" if mention_str else prompt
-                    # store.add triggers _handle_new_message via callback,
-                    # which routes @mentions to agents — no manual trigger needed.
-                    _post_scheduled_message(s, sender, full_text, channel)
-                    if s.get("one_shot"):
-                        schedules.delete(s["id"])
-                    else:
-                        schedules.mark_run(s["id"])
+                _dispatch_due_schedules()
             except Exception:
                 log.exception("schedule runner error")
 
@@ -798,6 +781,26 @@ def _on_log_status():
 
 async def _broadcast_log_status():
     await _broadcast(json.dumps({"type": "log_status", "data": store.log_status()}))
+
+
+def _dispatch_due_schedules() -> None:
+    if schedules is None:
+        return
+    for candidate in schedules.run_due():
+        with schedules.dispatch_due(candidate["id"]) as schedule:
+            if schedule is None:
+                continue
+            prompt = schedule.get("prompt", "")
+            targets = schedule.get("targets", [])
+            if prompt and targets:
+                sender = schedule.get("created_by", "user")
+                mentions = " ".join(f"@{target}" for target in targets)
+                channel = schedule.get("channel", "general")
+                _post_scheduled_message(schedule, sender, f"{mentions} {prompt}", channel)
+        if prompt and targets and schedule.get("one_shot"):
+            schedules.delete(schedule["id"])
+        else:
+            schedules.mark_run(schedule["id"])
 
 
 def _post_scheduled_message(schedule: dict, sender: str, text: str, channel: str) -> None:
@@ -1383,12 +1386,12 @@ async def broadcast_agents():
 def _on_registry_change():
     """Called from registry (any thread) when instances register/deregister/claim/rename."""
     # Update router with current agent names (base names + registered instances)
-    if router and registry:
-        base_names = list(registry.get_bases().keys())
-        # Only include active instances in routing (pending ones are inert)
-        instance_names = registry.get_active_names()
-        all_names = list(set(base_names + instance_names))
-        router.update_agents(all_names)
+    with _routing_refresh_lock:
+        if router and registry:
+            base_names = list(registry.get_bases())
+            # Only include active instances in routing (pending ones are inert).
+            instance_names = registry.get_active_names()
+            router.update_agents(base_names + instance_names)
     # Broadcast to WebSocket clients
     if _event_loop:
         asyncio.run_coroutine_threadsafe(broadcast_agents(), _event_loop)
@@ -1397,20 +1400,7 @@ def _on_registry_change():
 
 # --- WebSocket ---
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    # --- Security: validate session token on WebSocket connect ---
-    token = websocket.query_params.get("token", "")
-    if token != session_token or not is_local_client(websocket.client.host if websocket.client else ""):
-        # Must accept before closing so the browser receives the close frame.
-        # Code 4003 triggers an auto-reload in the client to pick up the new token.
-        await websocket.accept()
-        await websocket.close(code=4003, reason="forbidden: invalid session token")
-        return
-
-    await websocket.accept()
-    ws_clients.add(websocket)
-
+async def _initialize_websocket(websocket: WebSocket):
     await websocket.send_text(json.dumps({"type": "log_status", "data": store.log_status()}))
 
     # Send settings
@@ -1485,7 +1475,22 @@ async def websocket_endpoint(websocket: WebSocket):
     # Send status
     await broadcast_status()
 
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    # --- Security: validate session token on WebSocket connect ---
+    token = websocket.query_params.get("token", "")
+    if token != session_token or not is_local_client(websocket.client.host if websocket.client else ""):
+        # Must accept before closing so the browser receives the close frame.
+        # Code 4003 triggers an auto-reload in the client to pick up the new token.
+        await websocket.accept()
+        await websocket.close(code=4003, reason="forbidden: invalid session token")
+        return
+
+    await websocket.accept()
+    ws_clients.add(websocket)
     try:
+        await _initialize_websocket(websocket)
         while True:
             raw = await websocket.receive_text()
             event = json.loads(raw)
@@ -1854,10 +1859,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await broadcast_settings()
 
     except WebSocketDisconnect:
-        ws_clients.discard(websocket)
+        pass
     except Exception:
-        ws_clients.discard(websocket)
         log.exception("WebSocket error")
+    finally:
+        ws_clients.discard(websocket)
 
 
 # --- REST endpoints ---
@@ -2538,7 +2544,13 @@ async def set_agent_role(agent_name: str, request: Request):
     except Exception:
         return JSONResponse({"error": "invalid json"}, status_code=400)
     role = body.get("role", "").strip()
-    mcp_bridge.set_role(agent_name, role)
+    try:
+        mcp_bridge.set_role(agent_name, role)
+    except OSError:
+        log.exception("Failed to save role for %s", agent_name)
+        # The browser updates the role optimistically; restore the saved value.
+        await broadcast_status()
+        return JSONResponse({"error": "Could not save agent role"}, status_code=500)
     await broadcast_status()
     return JSONResponse({"ok": True, "role": role})
 
@@ -3157,7 +3169,14 @@ async def serve_upload(filename: str):
     if not filepath.is_relative_to(upload_dir.resolve()):
         return JSONResponse({"error": "invalid path"}, status_code=400)
     if filepath.is_file():
-        if filepath.suffix.lower() in IMAGE_UPLOAD_EXTS:
+        extension = filepath.suffix.lower()
+        if extension == ".svg":
+            # A direct navigation opens SVG as a document rather than an image.
+            return FileResponse(filepath, media_type="image/svg+xml", headers={
+                "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+                "X-Content-Type-Options": "nosniff",
+            })
+        if extension in IMAGE_UPLOAD_EXTS:
             return FileResponse(filepath)
         # Documents are downloads, never executable same-origin pages.
         return FileResponse(filepath, media_type="application/octet-stream",

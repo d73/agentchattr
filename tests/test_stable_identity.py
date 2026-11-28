@@ -65,6 +65,34 @@ class StableIdentityTests(unittest.TestCase):
         data = json.loads((Path(self.tmp.name) / "registry.json").read_text())
         self.assertEqual(set(data["profiles"]["codex"]["1"]), {"name", "label", "color"})
 
+    def test_explicit_relaunch_preserves_matching_saved_display_profile(self):
+        first = self.reg.register("codex", requested_name="builder")
+        self.reg.set_label("builder", "Team Builder")
+        self.reg.deregister("builder")
+        self.config["codex"]["color"] = "#abcdef"
+        restarted = self.restart()
+        restored = restarted.register("codex", requested_name="builder")
+        self.assertEqual(restored["slot"], first["slot"])
+        self.assertEqual(restored["label"], "Team Builder")
+        self.assertEqual(restored["color"], first["color"])
+        restarted.deregister("builder")
+        overridden = restarted.register("codex", "Explicit Label", requested_name="builder")
+        self.assertEqual(overridden["label"], "Explicit Label")
+
+    def test_explicit_relaunch_preserves_profile_when_expiring_previous_instance(self):
+        first = self.reg.register("codex", requested_name="builder")
+        self.reg.set_label("builder", "Team Builder")
+        with patch("registry.time.time", return_value=first["registered_at"] + 16):
+            restored = self.reg.register("codex", requested_name="builder")
+        self.assertEqual(restored["label"], "Team Builder")
+        self.assertEqual(restored["_expired"], ["builder"])
+
+    def test_new_explicit_id_does_not_inherit_matching_slots_profile(self):
+        self.reg.register("codex", requested_name="builder")
+        self.reg.set_label("builder", "Team Builder")
+        self.reg.deregister("builder")
+        self.assertEqual(self.reg.register("codex", requested_name="reviewer")["label"], "reviewer")
+
     def test_stale_heartbeat_reuses_slot_before_background_sweep(self):
         first = self.reg.register("codex")
         since = self.reg._instances[first["name"]].last_seen
