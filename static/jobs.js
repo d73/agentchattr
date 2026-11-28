@@ -40,13 +40,24 @@ let _pendingJobReflowTimer = null;
 const _expandedGroups = new Set(['open']); // track which collapsible groups are open across re-renders
 const jobPresentations = new Map();
 let jobGroupFilter = null;
+const proposalWriterOptions = [
+    ['orch', 'Orch (Auto)'],
+    ['antigravity', 'Agy (Manual Default)'],
+    ['claude', 'Claude'],
+    ['codex', 'Codex'],
+];
 
 function registerJobPresentation(id, stages) {
     const presentation = { stages: new Map(Object.entries(stages)), rows: new Map() };
     jobPresentations.set(id, presentation);
     document.getElementById('jobs-panel')?.classList.add('has-job-presentation');
     renderJobsList();
-    return rows => {
+    return (rows, status) => {
+        if (status?.coordinator === 'orch') {
+            presentation.orchOnline = status.online === true;
+            const picker = document.querySelector('#convert-job-modal .convert-job-agent');
+            if (picker) updateOrchWriterAvailability(picker);
+        }
         const next = new Map(rows.map(row => [row.id, row]));
         if (next.size === presentation.rows.size && [...next].every(([id, row]) => {
             const prior = presentation.rows.get(id);
@@ -1504,11 +1515,20 @@ function handleJobEvent(action, data) {
 // Convert-to-Job Lightbox
 // ---------------------------------------------------------------------------
 
+function updateOrchWriterAvailability(select) {
+    const online = [...jobPresentations.values()].some(presentation => presentation.orchOnline);
+    const auto = select.options[0];
+    auto.disabled = !online;
+    auto.title = online ? '' : 'Orch is offline';
+    select.title = auto.title;
+    if (!online && select.value === 'orch') select.value = 'antigravity';
+    return online;
+}
+
 function showConvertToJobModal(msgId) {
     const msgEl = document.querySelector(`.message[data-id="${msgId}"]`);
     if (!msgEl) return;
     const rawText = msgEl.dataset.rawText || '';
-    const msgSender = msgEl.querySelector('.msg-sender')?.textContent || window.username;
 
     let modal = document.getElementById('convert-job-modal');
     if (!modal) {
@@ -1518,13 +1538,12 @@ function showConvertToJobModal(msgId) {
         modal.innerHTML = `
             <div class="convert-job-dialog">
                 <h3 class="convert-job-title">Convert to Job</h3>
-                <p class="convert-job-subtitle">An agent will write a job proposal for you to accept</p>
                 <div class="convert-job-preview"></div>
-                <label class="convert-job-label">Ask agent to write proposal</label>
-                <select class="convert-job-agent"></select>
+                <label class="convert-job-label" for="convert-job-writer">Proposal Writer</label>
+                <select id="convert-job-writer" class="convert-job-agent"></select>
                 <div class="convert-job-actions">
                     <button class="convert-job-cancel">Cancel</button>
-                    <button class="convert-job-confirm">Convert</button>
+                    <button class="convert-job-confirm">Create Job</button>
                 </div>
             </div>`;
         modal.addEventListener('click', (e) => {
@@ -1533,27 +1552,21 @@ function showConvertToJobModal(msgId) {
         document.body.appendChild(modal);
     }
 
-    // Store raw text on modal for the confirm handler
-    modal.dataset.rawText = rawText;
     modal.dataset.sourceMsgId = String(msgId);
 
     // Populate message preview
     const previewEl = modal.querySelector('.convert-job-preview');
     previewEl.innerHTML = window.renderMarkdown(rawText.substring(0, 500));
 
-    // Populate agent picker — only agents, not humans
     const selectEl = modal.querySelector('.convert-job-agent');
     selectEl.innerHTML = '';
-    const agents = Object.keys(window.agentConfig);
-    const defaultAgent = agents.includes(msgSender) ? msgSender : agents[0];
-    for (const name of agents) {
+    for (const [name, label] of proposalWriterOptions) {
         const opt = document.createElement('option');
         opt.value = name;
-        const cfg = window.agentConfig[name];
-        opt.textContent = cfg?.label || name;
-        if (name === defaultAgent) opt.selected = true;
+        opt.textContent = label;
         selectEl.appendChild(opt);
     }
+    selectEl.value = updateOrchWriterAvailability(selectEl) ? 'orch' : 'antigravity';
 
     // Wire buttons (clone to remove old listeners)
     const cancelBtn = modal.querySelector('.convert-job-cancel');
@@ -1573,41 +1586,59 @@ function showConvertToJobModal(msgId) {
 async function _doConvertToJob() {
     const modal = document.getElementById('convert-job-modal');
     if (!modal) return;
-    const agent = modal.querySelector('.convert-job-agent').value;
-    const rawText = modal.dataset.rawText || '';
-    const sourceMsgId = parseInt(modal.dataset.sourceMsgId || '0', 10) || 0;
-    if (!agent) return;
+    const writer = modal.querySelector('.convert-job-agent').value;
+    const sourceMsgId = Number(modal.dataset.sourceMsgId);
+    const button = modal.querySelector('.convert-job-confirm');
+    if (button.disabled || !proposalWriterOptions.some(([value]) => value === writer)
+        || !Number.isSafeInteger(sourceMsgId)) return;
 
-    closeConvertJobModal();
-
-    // Show status message while agent drafts the job card
-    const statusMsg = {
-        id: Date.now(),
-        sender: 'system',
-        type: 'system',
-        text: `Asking @${agent} to create a job card\u2026`,
-        channel: window.activeChannel,
-        time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    };
-    if (window.appendMessage) window.appendMessage(statusMsg);
-
-    const instruction = `${window.username}: Please read the following message and use chat_propose_job to propose it as a job. Write a concise title (max 80 chars) and a clear body (max 500 chars) summarizing the task:\n\n---\n${rawText.substring(0, 800)}\n---`;
-
+    button.disabled = true;
     try {
-        await fetch('/api/trigger-agent', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Session-Token': window.SESSION_TOKEN },
-            body: JSON.stringify({
-                agent,
-                message: instruction,
-                channel: window.activeChannel,
-                source_msg_id: sourceMsgId,
-            }),
-        });
+        if (writer === 'orch') {
+            await createOrchJob(sourceMsgId);
+        } else {
+            const result = await postJobAction('/api/jobs/proposal-requests', {
+                writer_base: writer, source_msg_id: sourceMsgId,
+            });
+            window.showToast?.(result.status === 'queued' ? 'Proposal request queued.' : 'Proposal requested.');
+        }
+        closeConvertJobModal();
     } catch (e) {
-        console.error('Failed to trigger agent for job conversion:', e);
+        window.showActionError('Could not create Job. Please try again.', e);
+    } finally {
+        button.disabled = false;
     }
 }
+
+async function postJobAction(path, body) {
+    const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Session-Token': window.SESSION_TOKEN },
+        body: JSON.stringify(body),
+    });
+    await window.requireOk(response);
+    return response.json();
+}
+
+async function createOrchJob(sourceMsgId, cardMsgId) {
+    const body = { source_msg_id: sourceMsgId, proposal_writer: 'orch' };
+    if (cardMsgId !== undefined) body.card_msg_id = cardMsgId;
+    const { job } = await postJobAction('/api/jobs/orch-intake', body);
+    if (!jobsData.some(existing => existing.id === job.id)) jobsData.push(job);
+    await openJobFromBreadcrumb(job.id);
+}
+
+window.createOrchJobFromCard = async function(button, sourceMsgId, cardMsgId) {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+        await createOrchJob(sourceMsgId, cardMsgId);
+    } catch (e) {
+        window.showActionError('Could not create Job. Please try again.', e);
+    } finally {
+        button.disabled = false;
+    }
+};
 
 function closeConvertJobModal() {
     const modal = document.getElementById('convert-job-modal');
@@ -1684,19 +1715,19 @@ async function acceptProposal(msgId) {
     if (!title) return;
 
     try {
-        const resp = await fetch('/api/jobs', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Session-Token': window.SESSION_TOKEN },
-            body: JSON.stringify({
-                title,
-                body: body || '',
-                type: 'job',
-                channel: window.activeChannel,
-                created_by: proposalSender,
-                anchor_msg_id: msgId,
-            }),
+        const identity = msgEl.dataset.senderIdentity;
+        const currentWriter = identity && Object.keys(window.agentConfig).find(
+            name => window.agentConfig[name].identity_id === identity,
+        );
+        const job = await postJobAction('/api/jobs', {
+            title,
+            body: body || '',
+            type: 'job',
+            channel: msgEl.dataset.channel || window.activeChannel,
+            created_by: proposalSender,
+            assignee: currentWriter || proposalSender,
+            anchor_msg_id: msgId,
         });
-        const job = await resp.json();
         if (job && job.id) {
             // Update the proposal card to show "Accepted"
             const card = msgEl.querySelector('.proposal-card');
@@ -1705,21 +1736,11 @@ async function acceptProposal(msgId) {
                 const actions = card.querySelector('.proposal-actions');
                 if (actions) actions.innerHTML = '<div class="proposal-status-resolved">Accepted</div>';
             }
-            // Open the job (don't push to jobsData — WS 'create' event handles that)
-            const panel = document.getElementById('jobs-panel');
-            if (panel.classList.contains('hidden')) toggleJobsPanel();
-            // Small delay to let WS event populate jobsData
-            setTimeout(() => {
-                openJobConversation(job.id);
-                // Set reply target to the proposing agent
-                if (proposalSender) {
-                    jobReplyTargets[job.id] = proposalSender;
-                    updateJobReplyTargetUI();
-                }
-            }, 200);
+            if (!jobsData.some(existing => existing.id === job.id)) jobsData.push(job);
+            await openJobFromBreadcrumb(job.id);
         }
     } catch (e) {
-        console.error('Failed to accept proposal:', e);
+        window.showActionError('Could not accept the proposal. Please try again.', e);
     }
 }
 

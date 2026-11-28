@@ -1426,14 +1426,27 @@ function appendMessage(msg, options = {}) {
             if (meta.resolved) {
                 choicesHtml = `<div class="decision-choices"><div class="decision-resolved">You chose: <strong>${escapeHtml(meta.chosen || '')}</strong></div></div>`;
             } else {
-                choicesHtml = '<div class="decision-choices">' + choicesList.map(c =>
-                    `<button class="decision-choice" onclick="resolveDecision(${msg.id}, '${escapeHtml(c).replace(/'/g, "\\'")}')">${escapeHtml(c)}</button>`
+                choicesHtml = '<div class="decision-choices">' + choicesList.map((choice, index) =>
+                    `<button type="button" class="decision-choice" data-choice-index="${index}">${escapeHtml(meta.orch_intake ? 'Create Job' : choice)}</button>`
                 ).join('') + '</div>';
             }
         }
         el.innerHTML = `<div class="todo-strip"></div>${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(appearance.name)}</span>${rolePillHtml}<span class="msg-time">${escapeHtml(msg.time || '')}</span><span class="msg-num">#${msg.id}</span></div><div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}<button class="convert-job-pill" onclick="startJobFromMessage(${msg.id}); event.stopPropagation();" title="Convert to job">convert to job</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div><div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)" title="Reply" aria-label="Reply">${messageActionIcon('reply')}</button><button class="todo-hint" onclick="todoCycle(${msg.id}); event.stopPropagation();" title="${pinAction.label}" aria-label="${pinAction.label}">${messageActionIcon(pinAction.icon)}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete" aria-label="Delete">${messageActionIcon('delete')}</button></div>`;
         if (todoStatus) el.classList.add('msg-todo', `msg-todo-${todoStatus}`);
         if (msg.metadata?.session_output) el.classList.add('session-output');
+
+        el.querySelectorAll('[data-choice-index]').forEach(button => {
+            const choice = choicesList[Number(button.dataset.choiceIndex)];
+            button.addEventListener('click', () => {
+                if (meta.orch_intake) {
+                    window.createOrchJobFromCard(button, meta.orch_intake.source_msg_id, msg.id);
+                } else if (meta.orch_gate || meta.job_reopen) {
+                    resolveBoundJobDecision(msg, choice, button);
+                } else {
+                    resolveDecision(msg.id, choice);
+                }
+            });
+        });
 
         // Add copy buttons to code blocks
         addCodeCopyButtons(el);
@@ -4777,6 +4790,62 @@ document.addEventListener('click', (e) => {
 setInterval(refreshScheduleCountdowns, 10000);
 
 // --- Decision card resolve (with fade animation) ---
+function boundJobDecisionRequest(msg, choice) {
+    const gate = msg.metadata.orch_gate;
+    if (gate) {
+        return {
+            path: `/api/jobs/${encodeURIComponent(gate.job_uid)}/orch-gates/${msg.id}/resolve`,
+            body: { gate: gate.gate, revision: gate.revision, choice },
+        };
+    }
+    const reopen = msg.metadata.job_reopen;
+    const decision = new Map([['Approve', 'approve'], ['Decline', 'decline'], ['Needs clarification', 'clarify']]).get(choice);
+    if (!decision) throw new Error('Unknown reopen choice.');
+    return {
+        path: `/api/jobs/${reopen.job_id}/reopen-requests/${encodeURIComponent(reopen.request_id)}/decision`,
+        body: { job_uid: reopen.job_uid, expected_version: reopen.expected_version, decision },
+    };
+}
+
+async function resolveBoundJobDecision(msg, choice, button) {
+    if (button.disabled) return;
+    const container = button.closest('.decision-choices');
+    const buttons = [...container.querySelectorAll('.decision-choice')];
+    buttons.forEach(item => { item.disabled = true; });
+    container.querySelector('.decision-feedback')?.remove();
+    let stale = false;
+    try {
+        const { path, body } = boundJobDecisionRequest(msg, choice);
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
+            body: JSON.stringify(body),
+        });
+        stale = response.status === 409;
+        await window.requireOk(response);
+        const result = await response.json();
+        const label = result.choice || choice;
+        const recorded = document.createElement('div');
+        recorded.className = 'decision-resolved';
+        recorded.setAttribute('role', 'status');
+        recorded.textContent = `You chose: ${label}`;
+        if (msg.metadata.job_reopen && result.request?.status === 'pending') {
+            recorded.classList.add('decision-feedback');
+            container.appendChild(recorded);
+            buttons.forEach(item => { item.disabled = false; });
+        } else {
+            container.replaceChildren(recorded);
+        }
+    } catch (error) {
+        const feedback = document.createElement('div');
+        feedback.className = 'decision-feedback';
+        feedback.setAttribute('role', 'status');
+        feedback.textContent = stale ? 'This decision is stale. Open the current card.' : error.message;
+        container.appendChild(feedback);
+        if (!stale) buttons.forEach(item => { item.disabled = false; });
+    }
+}
+
 async function resolveDecision(msgId, choice) {
     // Fade out buttons immediately
     const msgEl = document.querySelector(`.message[data-id="${msgId}"]`);
