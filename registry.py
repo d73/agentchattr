@@ -511,6 +511,11 @@ class RuntimeRegistry:
         with self._lock:
             return name in self._instances
 
+    def is_active_identity(self, identity_id: str) -> bool:
+        with self._lock:
+            return any(i.identity_id == identity_id and i.state == "active"
+                       for i in self._instances.values())
+
     def is_pending(self, name: str) -> bool:
         with self._lock:
             i = self._instances.get(name)

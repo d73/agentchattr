@@ -2467,14 +2467,9 @@ async def resolve_job_message(job_id: int, msg_index: int, request: Request):
     msg["resolved"] = resolution
     jobs._save()
 
-    # If accepted, trigger the suggesting agent with context
-    if resolution == "accepted" and msg.get("sender"):
-        agent_name = msg["sender"]
-        channel = job.get("channel", "general")
-        if agents.is_available(agent_name):
-            await agents.trigger(agent_name,
-                                 message=f"Your suggestion was accepted: {msg.get('text', '')}",
-                                 channel=channel, job_id=job_id)
+    author_identity = msg.get("sender_identity")
+    if resolution == "accepted" and author_identity:
+        agents.notify_suggestion_accepted(author_identity, job.get("channel", "general"), job_id)
 
     return {"ok": True, "resolution": resolution}
 

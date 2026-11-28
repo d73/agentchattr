@@ -3,8 +3,26 @@
 import json
 import logging
 from pathlib import Path
+import uuid
+
+from atomic_io import atomic_write_text
 
 log = logging.getLogger(__name__)
+
+
+def take_identity_trigger(data_dir: Path, identity_id: str) -> str | None:
+    """Read one complete trigger addressed to this registration."""
+    if not identity_id:
+        return None
+    queue = data_dir / "identity_triggers" / identity_id
+    for path in sorted(queue.glob("*.json")):
+        try:
+            payload = path.read_text(encoding="utf-8")
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        return payload
+    return None
 
 
 class AgentTrigger:
@@ -14,6 +32,15 @@ class AgentTrigger:
 
     def is_available(self, name: str) -> bool:
         return self._registry.is_registered(name)
+
+    def notify_suggestion_accepted(self, identity_id: str, channel: str, job_id: int):
+        """Queue a Job wake that survives renames and cannot follow a reused ID."""
+        if not self._registry.is_active_identity(identity_id):
+            return
+        queue = self._data_dir / "identity_triggers" / identity_id
+        queue.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(queue / f"{uuid.uuid4().hex}.json",
+                          json.dumps({"channel": channel, "job_id": job_id}))
 
     def get_status(self) -> dict:
         from mcp_bridge import is_online, is_active, is_needs_input, is_activity_known, get_role
