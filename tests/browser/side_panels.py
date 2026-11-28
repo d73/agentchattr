@@ -411,6 +411,69 @@ def check_font_scale(page, url, screenshots):
     assert not errors, errors
 
 
+def check_message_toolbar(page, url, screenshots):
+    def connect(socket):
+        socket.send(json.dumps({"type": "history", "messages": [
+            {"id": 701, "sender": "Codex", "sender_kind": "agent", "type": "chat", "channel": "general",
+             "time": "04:53", "text": "This is an agent message."},
+            {"id": 702, "sender": "user", "sender_kind": "human", "type": "chat", "channel": "general",
+             "time": "04:54", "text": "This is my message."},
+        ]}))
+        socket.send(json.dumps({"type": "history_complete", "has_more": {}}))
+
+    mock_chat_routes(page, connect)
+    page.route(re.compile(r"/api/sessions/active(?:\?|$)"),
+               lambda route: route.fulfill(body="null", content_type="application/json"))
+    page.route("**/api/version_check", lambda route: route.fulfill(json={"state": "current"}))
+    page.goto(url)
+
+    for message_id, side in [(701, "other"), (702, "self")]:
+        row = page.locator(f"#message-{message_id}")
+        expect(row).to_have_class(re.compile(rf"\b{side}\b"))
+        page.evaluate("document.fonts.ready")
+        bubble = row.locator(".chat-bubble")
+        toolbar = bubble.get_by_role("group", name="Message actions")
+        reply = toolbar.get_by_role("button", name="Reply")
+        bounds, row_bounds = bubble.bounding_box(), row.bounding_box()
+        off_bubble = (row_bounds["x"] + row_bounds["width"] - 20 if side == "other"
+                      else row_bounds["x"] + 20)
+        same_y = bounds["y"] + bounds["height"] * 0.75
+        assert not bounds["x"] <= off_bubble <= bounds["x"] + bounds["width"]
+        page.mouse.move(off_bubble, same_y)
+        expect(toolbar).to_have_css("opacity", "0")
+        expect(toolbar).to_have_css("pointer-events", "none")
+        assert row.evaluate("el => el.matches(':hover')")
+
+        button = reply.bounding_box()
+        button_x = button["x"] + button["width"] / 2
+        above_bubble = (button["y"] + bounds["y"]) / 2
+        assert button["y"] < above_bubble < bounds["y"]
+        page.mouse.move(button_x, above_bubble)
+        expect(toolbar).to_have_css("opacity", "0")
+        page.mouse.move(button_x, same_y)
+        expect(toolbar).to_have_css("opacity", "1")
+        page.mouse.move(button_x, above_bubble, steps=5)
+        expect(toolbar).to_have_css("opacity", "1")
+        expect(toolbar).to_have_css("pointer-events", "auto")
+        assert toolbar.evaluate("(el, [x, y]) => el.contains(document.elementFromPoint(x, y))",
+                                [button_x, above_bubble])
+        if screenshots and side == "other":
+            page.screenshot(path=screenshots / "message-toolbar-bubble-hover.png", animations="disabled")
+
+        reply.click()
+        expect(page.locator("#reply-preview")).to_be_visible()
+        page.locator("#reply-preview button").click()
+        page.mouse.move(off_bubble, same_y)
+        expect(toolbar).to_have_css("opacity", "0")
+
+        # Keyboard focus keeps the floating actions visible and usable off-pointer.
+        reply.focus()
+        page.keyboard.press("Tab")
+        expect(toolbar.get_by_role("button", name="Convert to Job")).to_be_focused()
+        expect(toolbar).to_have_css("opacity", "1")
+        page.evaluate("document.activeElement.blur()")
+
+
 def check_themes(page, url, screenshots):
     errors = []
     sockets = []
@@ -612,8 +675,9 @@ def main():
             check_panels(page, url, args.screenshots)
             check_themes(browser.new_page(viewport={"width": 1280, "height": 900}), url, args.screenshots)
             check_font_scale(browser.new_page(viewport={"width": 1280, "height": 900}), url, args.screenshots)
+            check_message_toolbar(browser.new_page(viewport={"width": 1000, "height": 600}), url, args.screenshots)
             browser.close()
-        print("PASS: Settings, panels, eight palettes, reconnect and relative font scaling in Dark and Light")
+        print("PASS: Settings, panels, themes, relative font scaling, and message-toolbar hover and focus")
     finally:
         server.shutdown()
         server.server_close()
