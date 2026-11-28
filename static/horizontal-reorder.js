@@ -27,12 +27,14 @@ function setupHorizontalReorder(row, { move, status, label, canDrag = () => true
     }
 
     function startDrag() {
-        const { pill, id } = drag;
+        const { pill, id, origin } = drag;
         row.setPointerCapture(id);
         row.classList.add('is-reordering');
         pill.classList.add('reorder-origin');
         drag.preview = document.createElement('div');
         drag.preview.className = 'reorder-preview';
+        drag.preview.style.width = `${origin.width}px`;
+        drag.preview.style.height = `${origin.height}px`;
         const icon = pill.querySelector(':scope > svg');
         if (icon) drag.preview.append(icon.cloneNode(true));
         if (previewLabel) drag.preview.append(label(pill));
@@ -61,9 +63,8 @@ function setupHorizontalReorder(row, { move, status, label, canDrag = () => true
             if (row.scrollLeft !== previous) frame = requestAnimationFrame(updateDrag);
         }
 
-        preview.classList.toggle('reorder-preview-below', y < 48);
-        preview.style.left = `${Math.min(x, window.innerWidth - preview.offsetWidth - 12)}px`;
-        preview.style.top = `${y}px`;
+        preview.style.left = `${x - drag.grabX}px`;
+        preview.style.top = `${y - drag.grabY}px`;
         const target = inside ? targetAt(x, pill) : null;
         drag.target = target;
         indicator.hidden = !target?.pill;
@@ -104,7 +105,9 @@ function setupHorizontalReorder(row, { move, status, label, canDrag = () => true
         if (event.button !== 0 || !event.isPrimary || event.pointerType === 'touch') return;
         const pill = event.target.closest(selector);
         if (pill?.parentElement !== row || !canDrag(pill) || items().length < 2) return;
-        drag = { pill, id: event.pointerId, x: event.clientX, y: event.clientY };
+        const origin = pill.getBoundingClientRect();
+        const { clientX: x, clientY: y } = event;
+        drag = { pill, id: event.pointerId, x, y, origin, grabX: x - origin.left, grabY: y - origin.top };
     });
     window.addEventListener('pointermove', event => {
         if (drag?.id !== event.pointerId) return;
