@@ -22,6 +22,7 @@ class WorkerWakeTests(unittest.TestCase):
         sender = AgentTrigger(registry, str(self.data_dir))
         sender.trigger_sync("worker", channel="general", job_id=11)
         sender.trigger_sync("worker", channel="general", job_id=12)
+        sender.trigger_sync("worker", channel="general", job_id=11)
         prompts = []
 
         def inject(prompt):
@@ -46,8 +47,24 @@ class WorkerWakeTests(unittest.TestCase):
         self.assertIn("#other", prompts[2])
         self.assertIsNone(take_trigger(self.queue_file, "fixture-identity"))
 
+    def test_only_generic_wakes_with_matching_kind_and_scope_coalesce(self):
+        registry = Mock()
+        registry.get_instance.return_value = {"identity_id": "fixture-identity"}
+        registry.is_active_identity.return_value = True
+        sender = AgentTrigger(registry, str(self.data_dir))
+        for _ in range(2):
+            sender.trigger_sync("worker", channel="general", job_id=11)
+            sender.trigger_sync("worker", channel="general", job_id=11, prompt="Read the brief")
+            sender.notify_suggestion_accepted("fixture-identity", "general", 11)
+
+        wakes = [take_trigger(self.queue_file, "fixture-identity") for _ in range(4)]
+        self.assertEqual([("mention", None), ("mention", "Read the brief"),
+                          ("suggestion_accepted", None), ("mention", "Read the brief")],
+                         [(wake["kind"], wake.get("prompt")) for wake in wakes])
+        self.assertIsNone(take_trigger(self.queue_file, "fixture-identity"))
+
     def test_legacy_append_during_drain_is_preserved(self):
-        self.queue_file.write_text('{"job_id": 11}\n{"job_id": 12}\n', encoding="utf-8")
+        self.queue_file.write_text('{"job_id": 11}\n{"job_id": 12}\n{"job_id": 11}\n', encoding="utf-8")
         rename = type(self.queue_file).rename
 
         def append_after_snapshot(path, target):

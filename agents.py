@@ -11,13 +11,37 @@ from atomic_io import atomic_write_text
 log = logging.getLogger(__name__)
 
 
-def _take_spooled_trigger(queue: Path) -> str | None:
-    for path in sorted(queue.glob("*.json")):
+def _wake_key(payload: str, default_kind: str) -> tuple | None:
+    try:
+        entry = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    prompt = entry.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return None
+    return entry.get("channel", "general"), entry.get("job_id"), entry.get("kind", default_kind)
+
+
+def _take_spooled_trigger(queue: Path, default_kind: str | None = None) -> str | None:
+    paths = iter(sorted(queue.glob("*.json")))
+    for path in paths:
         try:
             payload = path.read_text(encoding="utf-8")
             path.unlink()
         except FileNotFoundError:
             continue
+        key = _wake_key(payload, default_kind) if default_kind is not None else None
+        if key is not None:
+            for other in paths:
+                try:
+                    if _wake_key(other.read_text(encoding="utf-8"), default_kind) == key:
+                        other.unlink()
+                except (OSError, UnicodeError):
+                    # The selected wake is already claimed. Let a later poll
+                    # handle records we could not inspect or remove this time.
+                    continue
         return payload
     return None
 
@@ -31,14 +55,15 @@ def take_identity_trigger(data_dir: Path, identity_id: str) -> str | None:
 
 def take_trigger(queue_file: Path, identity_id: str = "") -> dict | None:
     """Take one wake, preserving any other queued work for later polls."""
-    payload = take_identity_trigger(queue_file.parent, identity_id)
+    payload = (_take_spooled_trigger(queue_file.parent / "identity_triggers" / identity_id,
+                                     "suggestion_accepted") if identity_id else None)
     if payload is not None:
         entry = json.loads(payload)
         # Older identity spool records are suggestion acceptances.
         entry.setdefault("kind", "suggestion_accepted")
         return entry
 
-    payload = _take_spooled_trigger(queue_file.with_suffix(".d"))
+    payload = _take_spooled_trigger(queue_file.with_suffix(".d"), "mention")
     if payload is not None:
         return json.loads(payload)
 
@@ -57,8 +82,11 @@ def take_trigger(queue_file: Path, identity_id: str = "") -> dict | None:
         except json.JSONDecodeError:
             continue
         if isinstance(entry, dict):
-            if index + 1 < len(lines):
-                atomic_write_text(pending, "".join(lines[index + 1:]))
+            key = _wake_key(line, "mention")
+            remaining = [other for other in lines[index + 1:]
+                         if key is None or _wake_key(other, "mention") != key]
+            if remaining:
+                atomic_write_text(pending, "".join(remaining))
             else:
                 pending.unlink()
             return entry
