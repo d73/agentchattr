@@ -7,6 +7,7 @@ const SESSION_TOKEN = window.__SESSION_TOKEN__ || "";
 let ws = null;
 const pendingAppearanceSettings = new Map();
 let agentPillOrder = [];
+const workflowPillKeys = new Map();
 let systemTheme;
 let themeMode = document.documentElement.dataset.themeMode || 'dark';
 let themePalette = document.documentElement.dataset.palette || 'indigo';
@@ -511,7 +512,14 @@ function init() {
     setupThemeSettings();
     const mentionRow = document.getElementById('mention-toggles');
     enableDragScroll(mentionRow, '[data-reorderable]');
-    enableDragScroll(document.getElementById('agent-status'));
+    const statusRow = document.getElementById('agent-status');
+    enableDragScroll(statusRow, '[data-orch-pill]');
+    setupHorizontalReorder(statusRow, {
+        move: (item, anchor, after) => movePill(statusPillKey(item), statusPillKey(anchor), after),
+        status: document.getElementById('agent-pill-order-status'),
+        label: item => item.querySelector('.status-label').textContent,
+        canDrag: item => item.hasAttribute('data-orch-pill'),
+    });
     setupHorizontalReorder(mentionRow, {
         move: (item, anchor, after) => moveAgentPill(item.dataset.agent, anchor.dataset.agent, after),
         status: document.getElementById('agent-pill-order-status'),
@@ -1851,11 +1859,24 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+function pillKey(name) {
+    return workflowPillKeys.get(name) || agentConfig[name]?.identity_id;
+}
+
+function canonicalPillOrder() {
+    const aliases = new Map();
+    for (const [name, key] of workflowPillKeys) {
+        const identity = agentConfig[name]?.identity_id;
+        if (identity) aliases.set(identity, key);
+    }
+    return [...new Set(agentPillOrder.map(key => aliases.get(key) ?? key))];
+}
+
 function orderedAgentEntries() {
-    const positions = new Map(agentPillOrder.map((identity, index) => [identity, index]));
+    const positions = new Map(canonicalPillOrder().map((identity, index) => [identity, index]));
     return Object.entries(agentConfig).sort(([a, left], [b, right]) => {
-        const leftPosition = positions.get(left.identity_id) ?? agentPillOrder.length;
-        const rightPosition = positions.get(right.identity_id) ?? agentPillOrder.length;
+        const leftPosition = positions.get(pillKey(a)) ?? agentPillOrder.length;
+        const rightPosition = positions.get(pillKey(b)) ?? agentPillOrder.length;
         return leftPosition - rightPosition ||
             (left.label || a).localeCompare(right.label || b, undefined, { sensitivity: 'base' });
     });
@@ -1864,31 +1885,51 @@ function orderedAgentEntries() {
 function applyAgentPillOrder(order) {
     if (order.length === agentPillOrder.length && order.every((id, index) => id === agentPillOrder[index])) return;
     agentPillOrder = order;
+    syncPillRows();
+}
+
+function statusPillKey(pill) {
+    return pill.dataset.workflowOrderKey || pillKey(pill.dataset.agent);
+}
+
+function syncPillRows() {
     const entries = orderedAgentEntries();
     const focused = document.activeElement;
-    for (const id of ['mention-toggles', 'agent-status']) {
-        const row = document.getElementById(id);
-        const pills = new Map([...row.querySelectorAll('[data-agent]')].map(pill => [pill.dataset.agent, pill]));
-        const scroll = row.scrollLeft;
-        let next = row.firstElementChild;
-        if (next?.id === 'mention-all-toggle') next = next.nextElementSibling;
-        for (const [name] of entries) {
-            const pill = pills.get(name);
-            if (!pill) continue;
-            if (pill !== next) row.insertBefore(pill, next);
-            next = pill.nextElementSibling;
-        }
-        row.scrollLeft = scroll;
-    }
+    const mentions = document.getElementById('mention-toggles');
+    const mentionPills = new Map([...mentions.children].map(pill => [pill.dataset.agent, pill]));
+    reorderPillRow(mentions, entries.map(([name]) => mentionPills.get(name)).filter(Boolean),
+        mentions.firstElementChild?.id === 'mention-all-toggle' ? mentions.firstElementChild.nextElementSibling : mentions.firstElementChild);
+
+    const status = document.getElementById('agent-status');
+    const positions = new Map(canonicalPillOrder().map((key, index) => [key, index]));
+    const agents = new Map(entries.map(([name], index) => [name, index]));
+    const score = pill => positions.get(statusPillKey(pill)) ??
+        positions.size + (agents.get(pill.dataset.agent) ?? agents.size);
+    reorderPillRow(status, [...status.children].sort((a, b) => score(a) - score(b)), status.firstElementChild);
     if (focused && document.activeElement !== focused) focused.focus({ preventScroll: true });
 }
 
+function reorderPillRow(row, pills, next) {
+    const scroll = row.scrollLeft;
+    for (const pill of pills) {
+        if (pill !== next) row.insertBefore(pill, next);
+        next = pill.nextElementSibling;
+    }
+    row.scrollLeft = scroll;
+}
+
 function moveAgentPill(name, anchorName, after) {
-    const identity = agentConfig[name]?.identity_id;
-    const anchor = agentConfig[anchorName]?.identity_id;
+    return movePill(pillKey(name), pillKey(anchorName), after);
+}
+
+function movePill(identity, anchor, after) {
     if (!identity || !anchor || identity === anchor) return false;
     // Include saved identities that are currently absent, plus any new agents in label order.
-    const order = [...new Set([...agentPillOrder, ...orderedAgentEntries().map(([, cfg]) => cfg.identity_id).filter(Boolean)])];
+    const status = document.getElementById('agent-status');
+    const order = [...new Set([
+        ...canonicalPillOrder(), ...orderedAgentEntries().map(([name]) => pillKey(name)),
+        ...[...status.children].map(statusPillKey),
+    ].filter(Boolean))];
     order.splice(order.indexOf(identity), 1);
     order.splice(order.indexOf(anchor) + Number(after), 0, identity);
     applyAgentPillOrder(order);
@@ -1896,18 +1937,35 @@ function moveAgentPill(name, anchorName, after) {
     return true;
 }
 
+function createStatusPill(name, cfg = {}) {
+    const pill = document.createElement('div');
+    pill.className = 'status-pill';
+    pill.style.setProperty('--agent-color', colorOverrides[name] || cfg.color || '#4ade80');
+    pill.innerHTML = `<span class="status-dot"></span><span class="status-label">${escapeHtml(cfg.label || name)}</span>`;
+    return pill;
+}
+
+window.createWorkflowStatusPill = createStatusPill;
+window.registerWorkflowStatusPill = (pill, pluginId, identity) => {
+    const key = `orch:${pluginId}`;
+    workflowPillKeys.set(identity, key);
+    pill.dataset.workflowOrderKey = key;
+    pill.dataset.orchPill = '';
+    pill.dataset.reorderable = '';
+    pill.tabIndex = 0;
+    syncPillRows();
+};
+
 function buildStatusPills() {
     const container = document.getElementById('agent-status');
     container.innerHTML = '';
     for (const [name, cfg] of orderedAgentEntries()) {
-        const pill = document.createElement('div');
-        pill.className = 'status-pill';
+        const pill = createStatusPill(name, cfg);
         if (cfg.state === 'pending') pill.classList.add('pending');
         pill.id = `status-${name}`;
         pill.dataset.agent = name;
+        if (pillKey(name)) pill.dataset.reorderable = '';
         pill.title = `@${name}`;  // Tooltip: canonical name for manual @-typing
-        pill.style.setProperty('--agent-color', colorOverrides[name] || cfg.color || '#4ade80');
-        pill.innerHTML = `<span class="status-dot"></span><span class="status-label">${escapeHtml(cfg.label || name)}</span>`;
         const unknown = document.createElement('span');
         unknown.className = 'status-unknown';
         unknown.textContent = 'ⓘ';

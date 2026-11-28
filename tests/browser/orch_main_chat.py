@@ -16,6 +16,7 @@ def check(page, url, screenshots, plugin):
     sent = []
     reopened = []
     actions = []
+    presentation = {}
     channel = "orch-workflow"
     moved = "renamed-workflow"
     uid = "fca6bc6e-1b45-4dd8-8e3a-ed5b575a6149"
@@ -112,7 +113,11 @@ def check(page, url, screenshots, plugin):
                 "identity": "orch", "daemon": {"state": "online"}, "channel": channel,
                 "jobs": [{"id": 2, "uid": uid, "stage": "orch.drafting", "awaiting_local": True}],
                 "workflow_actions": actions,
+                "pill": presentation,
             })
+        if path == "/api/plugins/orch/pill":
+            presentation.update(route.request.post_data_json)
+            return route.fulfill(json=presentation)
         return route.fulfill(json=[] if path.endswith(("/messages", "/roles")) else {})
 
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -207,8 +212,41 @@ def check(page, url, screenshots, plugin):
 
     if plugin:
         pill = page.locator("#agent-status :is(.plugin-workflow-pill, #status-orch)")
-        expect(pill).to_have_attribute("aria-label", "Orch online · No actions waiting for you")
+        idle_hint = re.compile("Click to configure; drag to reorder")
+        expect(pill).to_have_attribute("aria-label", idle_hint)
         assert not pill.get_attribute("data-orch-attention") == "true"
+        pill.click()
+        settings = page.get_by_role("form", name="Orch pill settings")
+        expect(settings.get_by_role("textbox", name="Display name")).to_be_focused()
+        if screenshots:
+            page.screenshot(path=screenshots / "orch-pill-settings.png", animations="disabled")
+        settings.get_by_role("textbox", name="Display name").fill("Compass")
+        settings.get_by_role("button", name="Save display name").click()
+        expect(pill.locator(".status-label")).to_have_text("Compass")
+        pill.press("Enter")
+        settings.get_by_role("button", name="Set color #38bdf8").click()
+        expect(pill).to_have_css("--agent-color", "#38bdf8")
+        expect(settings).to_have_count(0)
+        expect(pill).to_be_focused()
+
+        page.evaluate("""() => {
+            agentConfig.agy.identity_id = 'a'.repeat(32);
+            buildStatusPills();
+        }""")
+        expect(pill).to_have_count(1)
+        expect(pill).to_have_attribute("id", "status-orch")
+        expect(pill.locator(".status-label")).to_have_text("Compass")
+        assert page.locator("#mention-toggles [data-workflow-order-key]").count() == 0
+        pill.press("Alt+Shift+ArrowLeft")
+        expect(page.locator("#agent-status > :first-child")).to_have_attribute("id", "status-orch")
+        expect(settings).to_have_count(0)
+        page.evaluate("""() => {
+            delete agentConfig.orch;
+            buildStatusPills();
+        }""")
+        expect(pill).to_have_count(1)
+        expect(pill).to_have_class(re.compile("plugin-workflow-pill"))
+        expect(page.locator("#agent-status > :first-child")).to_have_class(re.compile("plugin-workflow-pill"))
 
         def refresh():
             page.evaluate("uid => Hub.emit('message_update', {message: {metadata: {orch_gate: {job_uid: uid}}}})", uid)
@@ -217,10 +255,21 @@ def check(page, url, screenshots, plugin):
                        "message_id": 105, "kind": "brief", "label": "brief approval"}]
         refresh()
         expect(pill).to_have_attribute("aria-label", "Jump to Job #2 brief approval in #orch-workflow (#105)")
+        source = pill.bounding_box()
+        anchor = page.locator("#status-agy").bounding_box()
+        y = source["y"] + source["height"] / 2
+        page.mouse.move(source["x"] + source["width"] / 2, y)
+        page.mouse.down()
+        page.mouse.move(anchor["x"] + anchor["width"] - 2, y, steps=12)
+        expect(page.locator(".reorder-drop-indicator")).to_be_visible()
+        page.mouse.up()
+        expect(page.locator("#agent-status > :last-child")).to_have_class(re.compile("plugin-workflow-pill"))
+        expect(page.locator("#message-105 .chat-bubble")).not_to_be_focused()
+        expect(settings).to_have_count(0)
         pill.press("Enter")
         expect(page.locator("#message-105 .chat-bubble")).to_be_focused()
         page.get_by_role("button", name="Revise", exact=True).click()
-        expect(pill).to_have_attribute("aria-label", "Orch online · No actions waiting for you")
+        expect(pill).to_have_attribute("aria-label", idle_hint)
 
         actions[:] = [
             {"job_uid": uid, "job_id": 2, "title": active["title"], "channel": moved,

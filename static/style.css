@@ -3559,6 +3559,7 @@ footer {
     flex-shrink: 0;
     user-select: none;
 }
+#agent-status [data-orch-pill] { cursor: grab; }
 /* Shared pointer feedback for horizontal reordering. */
 .is-reordering, .is-reordering [data-reorderable] { cursor: grabbing; }
 .is-reordering > [data-reorderable].reorder-origin {
