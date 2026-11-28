@@ -1006,21 +1006,17 @@ main#timeline {
     padding: 4px;
 }
 
-.message-with-toolbar {
-    padding-top: 22px;
-}
-
 .bubble-actions {
     position: absolute;
-    top: -23px;
-    right: 6px;
+    top: -14px;
+    right: 10px;
     z-index: 1;
     gap: 2px;
     padding: 2px 4px;
     border: 1px solid var(--border-strong);
-    border-radius: var(--radius-full);
-    background: var(--bg-msg);
-    box-shadow: 0 2px 5px rgb(0 0 0 / 25%);
+    border-radius: 7px;
+    background: var(--bg-elevated);
+    box-shadow: 0 3px 8px rgb(0 0 0 / 45%);
     pointer-events: none;
     transition: opacity 0.15s ease;
 }
@@ -1031,18 +1027,19 @@ main#timeline {
 }
 
 .bubble-actions button {
+    width: 26px;
     padding: 0;
     border: 0;
-    border-radius: var(--radius-full);
+    border-radius: 5px;
     background: transparent;
-    color: var(--text-dim);
+    color: var(--text);
     cursor: pointer;
 }
 
 .bubble-actions button:hover,
 .bubble-actions button:focus-visible {
     background: var(--white-08);
-    color: var(--text);
+    color: var(--text-muted);
 }
 
 .bubble-actions .bubble-copy.copied,
@@ -1055,8 +1052,8 @@ main#timeline {
 }
 
 .bubble-actions svg {
-    width: 24px;
-    height: 24px;
+    width: 14px;
+    height: 14px;
     flex: none;
 }
 

@@ -1431,7 +1431,6 @@ function appendMessage(msg, options = {}) {
                 ).join('') + '</div>';
             }
         }
-        el.classList.add('message-with-toolbar');
         el.innerHTML = `
             <div class="todo-strip"></div>${isSelf ? '' : avatarHtml}
             <div class="chat-bubble" style="--bubble-color: ${senderColor}" tabindex="-1">
@@ -3544,7 +3543,7 @@ const MESSAGE_ACTION_ICONS = {
     delete: '<path d="M5 6h14M9 3h6M7 6l1 12h8l1-12M10 9v6M14 9v6"/>'
 };
 function messageActionIcon(name) {
-    return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MESSAGE_ACTION_ICONS[name]}</svg>`;
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MESSAGE_ACTION_ICONS[name]}</svg>`;
 }
 function todoAction(status) {
     if (!status) return { label: 'Pin message', icon: 'pin' };
