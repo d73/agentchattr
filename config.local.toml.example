@@ -59,3 +59,10 @@
 # lowercase hex proof. Keep the proof with the operator and out of this file.
 # [operator]
 # identity = "derek"
+
+# --- Optional delegates for Job reopen requests ---
+# Both exact registration identities are required. Update an identity only
+# after verifying the intended delegate's fresh registration.
+# [job_approvals]
+# claude_identity_id = ""
+# agy_identity_id = ""

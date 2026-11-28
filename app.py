@@ -24,6 +24,7 @@ from store import MessageStore
 from rules import RuleStore
 from summaries import SummaryStore
 from jobs import JobStore
+from job_reopen import ReopenConflict
 from schedules import ScheduleStore, parse_schedule_spec
 from router import Router
 from agents import AgentTrigger
@@ -2250,6 +2251,8 @@ async def resolve_decision(msg_id: int, request: Request):
             meta = msg.get("metadata") or {}
             if "orch_gate" in meta:
                 error = ("Orch gate decisions require operator approval", 403)
+            elif "job_reopen" in meta:
+                error = ("use the bound Job reopen decision endpoint", 409)
             elif meta.get("resolved"):
                 error = ("already resolved", 400)
             else:
@@ -2472,6 +2475,53 @@ async def update_job(job_id: int, request: Request):
     if result is None:
         return JSONResponse({"error": "not found or invalid"}, status_code=404)
     return result
+
+
+@app.post("/api/jobs/{job_id}/reopen-requests")
+async def create_job_reopen_request(job_id: int, request: Request):
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Expected JSON for the reopen request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a reopen request object"}, status_code=400)
+    try:
+        result = jobs.request_reopen(job_id, expected_uid=body.get("job_uid"),
+                                     expected_version=body.get("expected_version"),
+                                     requester="local-browser", reason=body.get("reason"))
+    except ReopenConflict as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    reopen = result["request"]
+    card = store.add(
+        "system", f"Job #{job_id} reopen request: {reopen['reason']}",
+        msg_type="decision", channel=result["job"]["channel"], sender_kind="system",
+        metadata={"choices": ["Approve", "Decline", "Needs clarification"],
+                  "job_reopen": {"job_id": job_id, "job_uid": reopen["job_uid"],
+                                 "expected_version": reopen["job_version"], "request_id": reopen["id"]}},
+        uid=f"job-reopen-{reopen['id']}", once=True,
+    )
+    return {**result, "card_msg_id": card["id"]}
+
+
+@app.post("/api/jobs/{job_id}/reopen-requests/{request_id}/decision")
+async def decide_job_reopen_request(job_id: int, request_id: str, request: Request):
+    actor = verify_operator(request, config, session_token)
+    if actor is None:
+        return JSONResponse({"error": "Verified Job operator required"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Expected JSON for the reopen decision"}, status_code=400)
+    if not isinstance(body, dict) or body.get("decision") not in ("approve", "decline", "clarify"):
+        return JSONResponse({"error": "Invalid reopen decision"}, status_code=400)
+    try:
+        return jobs.decide_reopen(job_id, request_id, expected_uid=body.get("job_uid"),
+                                  expected_version=body.get("expected_version"), actor=actor,
+                                  role="owner", decision=body["decision"])
+    except ReopenConflict as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
 
 
 @app.post("/api/jobs/reorder")

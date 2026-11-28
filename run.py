@@ -154,6 +154,8 @@ def main():
             if (actor_kind != "orch" or not isinstance(expected_scope, dict)
                     or not {"channel", "type", "assignee"}.issubset(expected_scope)):
                 raise ValueError("Job plugin transitions require a scoped Orch actor")
+            if event == "reopen":
+                raise ValueError("Job reopen requires a committed approval request")
             return jobs.transition_job(job_id, event, actor_kind=actor_kind,
                                        expected_scope=expected_scope, **details)
 

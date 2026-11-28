@@ -15,6 +15,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from atomic_io import atomic_write_text
 from job_lifecycle import ACTIVE
+from job_reopen import ReopenConflict, delegate_role
 
 from attachment_storage import copy_image_attachment
 
@@ -481,6 +482,9 @@ def _serialize_messages(msgs: list[dict]) -> str:
             entry["attachments"] = _resolve_attachments(m["attachments"])
         if m.get("reply_to") is not None:
             entry["reply_to"] = m["reply_to"]
+        metadata = m.get("metadata")
+        if m.get("type") == "decision" and isinstance(metadata, dict) and "job_reopen" in metadata:
+            entry["job_reopen"] = metadata["job_reopen"]
         out.append(entry)
     return json.dumps(out, ensure_ascii=False) if out else ""
 
@@ -705,6 +709,8 @@ def chat_read(
         }]
         authenticated = _authenticated_instance(ctx)
         caller_identity = authenticated["identity_id"] if authenticated else None
+        if job.get("reopen_requests"):
+            out[0]["reopen_requests"] = job["reopen_requests"]
         for m in msgs:
             if (m.get("recipient_identity") and m.get("recipient_identity") != caller_identity
                     and m.get("sender") != sender):
@@ -1052,9 +1058,28 @@ def chat_summary(
     return f"Unknown action: {action}. Valid actions: read, write."
 
 
+def chat_decide_job_reopen(job_id: int, job_uid: str, expected_version: int, request_id: str,
+                           decision: str, ctx: Context | None = None) -> str:
+    """Approve or decline a specific Job reopen as a configured delegate after its deadline."""
+    instance = _authenticated_instance(ctx)
+    role = delegate_role(config or {}, instance)
+    if not role or jobs is None:
+        return "Error: a verified Job reopen delegate is required."
+    if decision not in ("approve", "decline"):
+        return "Error: decision must be approve or decline."
+    try:
+        result = jobs.decide_reopen(job_id, request_id, expected_uid=job_uid,
+                                    expected_version=expected_version, actor=instance["identity_id"],
+                                    role=role, decision=decision)
+    except ReopenConflict as exc:
+        return f"Error: {exc}"
+    return json.dumps(result)
+
+
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
     chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
+    chat_decide_job_reopen,
 ]
 
 
