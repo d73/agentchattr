@@ -257,6 +257,30 @@ class AppAuthEndpointTests(unittest.TestCase):
         self.assertEqual(mcp_bridge._presence["claude"], now)
         self.assertEqual(self.store.get_recent(1), [])
 
+    def test_reclaimed_heartbeat_survives_timeout_runtime_cleanup(self):
+        instance = self.registry.register("claude")
+        initial = instance["registered_at"]
+        now = initial + self.registry.HEARTBEAT_TIMEOUT + 1
+        mcp_bridge._presence["claude"] = initial
+        purge = mcp_bridge.purge_identity
+
+        def heartbeat_then_purge(*args, **kwargs):
+            response = asyncio.run(app.heartbeat(
+                "claude", FakeRequest(headers={"authorization": f"Bearer {instance['token']}"}),
+            ))
+            self.assertEqual(response["name"], "claude")
+            return purge(*args, **kwargs)
+
+        with (
+            mock.patch("registry.time.time", return_value=now),
+            mock.patch.object(app, "session_engine", None),
+            mock.patch.object(mcp_bridge, "purge_identity", side_effect=heartbeat_then_purge),
+        ):
+            self.assertEqual(app._expire_crashed_agents(now), set())
+        self.assertEqual(self.registry.get_instance("claude")["identity_id"], instance["identity_id"])
+        self.assertEqual(mcp_bridge._presence["claude"], now)
+        self.assertEqual(self.store.get_recent(1), [])
+
     def test_timeout_removes_stale_instance_and_keeps_its_token_reclaimable(self):
         instance = self.registry.register("claude")
         initial = instance["registered_at"]
