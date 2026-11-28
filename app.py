@@ -707,7 +707,8 @@ def configure(cfg: dict, session_token: str = ""):
                 # Idle auto-shutdown: no browser tabs and no agents connected.
                 if _idle and _shutdown_hook:
                     agents_connected = len(set(registry.get_all_names()) | currently_online)
-                    if _idle.check(len(ws_clients), agents_connected, now):
+                    scheduled_work = schedules is not None and schedules.has_active()
+                    if _idle.check(len(ws_clients), agents_connected, now, scheduled_work=scheduled_work):
                         log.info("Idle auto-shutdown: no browser or agents connected for %ss",
                                  int(_idle.grace_seconds))
                         _shutdown_hook()
@@ -738,12 +739,7 @@ def configure(cfg: dict, session_token: str = ""):
                     full_text = f"{mention_str} {prompt}" if mention_str else prompt
                     # store.add triggers _handle_new_message via callback,
                     # which routes @mentions to agents — no manual trigger needed.
-                    store.add(
-                        sender,
-                        full_text,
-                        channel=channel,
-                        sender_kind="human",
-                    )
+                    _post_scheduled_message(s, sender, full_text, channel)
                     if s.get("one_shot"):
                         schedules.delete(s["id"])
                     else:
@@ -800,6 +796,17 @@ def _on_log_status():
 
 async def _broadcast_log_status():
     await _broadcast(json.dumps({"type": "log_status", "data": store.log_status()}))
+
+
+def _post_scheduled_message(schedule: dict, sender: str, text: str, channel: str) -> None:
+    if schedule.get("one_shot"):
+        delivery_uid = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentchattr:one-shot:{schedule['id']}:{schedule.get('created_at')}",
+        ))
+        store.add(sender, text, channel=channel, sender_kind="human", uid=delivery_uid, once=True)
+    else:
+        store.add(sender, text, channel=channel, sender_kind="human")
 
 
 def _on_store_message(msg: dict):
@@ -982,6 +989,7 @@ async def _handle_new_message(msg: dict):
     channel = msg.get("channel", "general")
     sender_kind = msg.get("sender_kind")
     sender_identity = msg.get("sender_identity")
+    sender_base = msg.get("sender_base")
     sender_is_agent = sender_kind == "agent"
     if sender_kind not in ("human", "agent"):
         await broadcast(msg)
@@ -1042,7 +1050,8 @@ async def _handle_new_message(msg: dict):
         agent_names = registry.get_all_names() if registry else list(config.get("agents", {}).keys())
         mentions = " ".join(f"@{a}" for a in agent_names)
         store.add(sender, f"{mentions} Time for a roast review! Inspect each other's work and constructively roast it.",
-                  channel=channel, sender_kind=sender_kind, sender_identity=sender_identity)
+                  channel=channel, sender_kind=sender_kind, sender_identity=sender_identity,
+                  sender_base=sender_base)
         return
 
     if stripped.startswith("/artchallenge"):
@@ -1058,6 +1067,7 @@ async def _handle_new_message(msg: dict):
             channel=channel,
             sender_kind=sender_kind,
             sender_identity=sender_identity,
+            sender_base=sender_base,
         )
         return
 
@@ -1081,6 +1091,7 @@ async def _handle_new_message(msg: dict):
             channel=channel,
             sender_kind=sender_kind,
             sender_identity=sender_identity,
+            sender_base=sender_base,
         )
         return
 
@@ -1097,7 +1108,7 @@ async def _handle_new_message(msg: dict):
             "sonnet": "Write a sonnet about the current state of this codebase.",
         }
         store.add(sender, f"{mentions} {prompts[form]}", channel=channel,
-                  sender_kind=sender_kind, sender_identity=sender_identity)
+                  sender_kind=sender_kind, sender_identity=sender_identity, sender_base=sender_base)
         return
 
     # Detect session draft blocks from agents only.
@@ -1717,7 +1728,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             import mcp_bridge
                             mcp_bridge.migrate_identity(agent_name, new_id)
                             # Update sender on all historical messages
-                            store.rename_sender(agent_name, new_id)
+                            store.rename_sender(agent_name, new_id, result["identity_id"])
                             _migrate_agent_last_channel(agent_name, new_id)
                             # Notify clients so they can update sender in DOM
                             rename_event = json.dumps({
@@ -1757,7 +1768,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 import mcp_bridge
                                 mcp_bridge.migrate_identity(agent_name, new_id)
                                 # Update sender on all historical messages
-                                store.rename_sender(agent_name, new_id)
+                                store.rename_sender(agent_name, new_id, result["identity_id"])
                                 _migrate_agent_last_channel(agent_name, new_id)
                                 rename_event = json.dumps({
                                     "type": "agent_renamed",
@@ -1993,7 +2004,7 @@ async def api_send(request: Request):
     channel = body.get("channel", "general")
 
     msg = store.add(sender, text, channel=channel, sender_kind="agent",
-                    sender_identity=inst["identity_id"])
+                    sender_identity=inst["identity_id"], sender_base=inst["base"])
     return JSONResponse(msg)
 
 
@@ -2055,7 +2066,10 @@ async def create_schedule(request: Request):
             return JSONResponse(
                 {"error": "send_at must be an epoch timestamp"}, status_code=400
             )
-    interval_sec, daily_at = parse_schedule_spec(spec)
+    try:
+        interval_sec, daily_at = parse_schedule_spec(spec)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     if interval_sec is None and explicit_send_at is None:
         return JSONResponse({"error": f"Invalid schedule spec: {spec}"}, status_code=400)
     # For one-shot, compute exact send_at timestamp from date + daily_at time
@@ -2691,7 +2705,7 @@ async def rename_agent_label(name: str, request: Request):
     import mcp_bridge
     mcp_bridge.migrate_identity(name, new_id)
     # Update sender on all historical messages
-    store.rename_sender(name, new_id)
+    store.rename_sender(name, new_id, result["identity_id"])
     _migrate_agent_last_channel(name, new_id)
     return JSONResponse({"ok": True, "new_name": new_id})
 
@@ -2738,6 +2752,8 @@ async def heartbeat(agent_name: str, request: Request):
     # Immediately broadcast on activity state change (don't wait for background checker)
     if _activity_changed:
         await broadcast_status()
+    if auth_inst and session_engine:
+        session_engine.retry_pending_wakes(current_name)
     # Return canonical name so wrapper can track renames
     resp = {"ok": True, "name": current_name}
     if auth_inst:

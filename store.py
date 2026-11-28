@@ -93,10 +93,19 @@ class MessageStore:
             time_str: str | None = None,
             _bulk: bool = False, *,
             sender_kind: str | None = None,
-            sender_identity: str | None = None) -> dict:
+            sender_identity: str | None = None,
+            sender_base: str | None = None,
+            once: bool = False) -> dict:
+        """Add a message. With once=True, persist its stable UID before delivery."""
+        if once and (not uid or _bulk):
+            raise ValueError("An idempotent message requires a UID and immediate persistence")
         persistence_error = None
         log_status_changed = False
         with self._lock:
+            if once:
+                for existing in self._messages:
+                    if existing.get("uid") == uid:
+                        return existing
             previous_error = self._log_error
             ts = timestamp if timestamp is not None else time.time()
             msg = {
@@ -116,6 +125,8 @@ class MessageStore:
                 msg["sender_kind"] = sender_kind
             if sender_identity is not None:
                 msg["sender_identity"] = sender_identity
+            if sender_base is not None:
+                msg["sender_base"] = sender_base
             if metadata:
                 msg["metadata"] = metadata
             self._next_id += 1
@@ -124,7 +135,7 @@ class MessageStore:
                 try:
                     if self._log_repair_required:
                         raise OSError(self._log_error)
-                    if self._log_dirty:
+                    if once or self._log_dirty:
                         self._rewrite()
                     else:
                         with open(self._path, "a", encoding="utf-8") as f:
@@ -134,6 +145,10 @@ class MessageStore:
                     self._log_dirty = False
                     self._log_error = None
                 except OSError as exc:
+                    if once:
+                        self._messages.pop()
+                        self._next_id -= 1
+                        raise
                     self._log_dirty = True
                     persistence_error = str(exc)
                     self._log_error = persistence_error
@@ -318,12 +333,14 @@ class MessageStore:
             if modified:
                 self._rewrite_jsonl()
 
-    def rename_sender(self, old_name: str, new_name: str) -> int:
-        """Rename sender on all messages from old_name to new_name. Returns count updated."""
+    def rename_sender(self, old_name: str, new_name: str, identity: str | None = None) -> int:
+        """Rename matching agent messages. Legacy history can match only the exact old ID."""
         with self._lock:
             count = 0
             for m in self._messages:
-                if m.get("sender") == old_name:
+                if m.get("sender") != old_name or m.get("sender_kind") == "human":
+                    continue
+                if not m.get("sender_identity") or m["sender_identity"] == identity:
                     m["sender"] = new_name
                     count += 1
             if count:

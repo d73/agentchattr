@@ -340,7 +340,7 @@ The wrapper sends a heartbeat ping every 5 seconds to keep the agent marked as "
 When someone @mentions an offline agent, the message is still queued for delivery — the agent will pick it up when the wrapper next polls. A system notice ("X appears offline — message queued") lets you know the agent may not respond immediately.
 
 ### Idle auto-shutdown
-The server stops itself once the chat tab is closed and no agents are connected (no registered wrappers and no recent MCP activity). It waits 30 seconds first, so a page refresh or brief reconnect doesn't trigger it. It only arms after a browser has connected, so a headless `start_team.bat` start stays up until you open the UI. Configure under `[server]` in `config.toml`: `auto_shutdown = false` disables it; `idle_shutdown_seconds` sets the wait.
+The server stops itself once the chat tab is closed and no agents are connected (no registered wrappers and no recent MCP activity). It waits 30 seconds first, so a page refresh or brief reconnect doesn't trigger it. Active scheduled tasks keep the server running, and the idle timer starts after the last task is completed, paused, or deleted. It only arms after a browser has connected, so a headless `start_team.bat` start stays up until you open the UI. Configure under `[server]` in `config.toml`: `auto_shutdown = false` disables it; `idle_shutdown_seconds` sets the wait.
 
 ### MCP tools
 

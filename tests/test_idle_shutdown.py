@@ -1,4 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from schedules import ScheduleStore
 
 import idle_shutdown
 from idle_shutdown import IdleShutdown
@@ -24,6 +29,23 @@ class IdleShutdownTests(unittest.TestCase):
         # Agent leaves later: grace starts from then.
         self.assertFalse(idle.check(browsers=0, agents=0, now=1_010))
         self.assertTrue(idle.check(browsers=0, agents=0, now=1_040))
+
+    def test_active_one_shot_holds_server_until_it_fires(self):
+        idle = IdleShutdown(30)
+        with tempfile.TemporaryDirectory() as folder:
+            schedules = ScheduleStore(str(Path(folder) / "schedules.json"))
+            with patch("schedules.time.time", return_value=100):
+                item = schedules.create("ping", ["codex"], one_shot=True, send_at=200)
+
+            idle.check(browsers=1, agents=0, now=100)
+            self.assertFalse(idle.check(0, 0, 110, scheduled_work=schedules.has_active()))
+            self.assertFalse(idle.check(0, 0, 141, scheduled_work=schedules.has_active()))
+            with patch("schedules.time.time", return_value=200):
+                self.assertEqual(schedules.run_due()[0]["id"], item["id"])
+                schedules.delete(item["id"])
+
+            self.assertFalse(idle.check(0, 0, 200, scheduled_work=schedules.has_active()))
+            self.assertTrue(idle.check(0, 0, 230, scheduled_work=schedules.has_active()))
 
     def test_refresh_within_grace_resets_timer(self):
         idle = IdleShutdown(30)

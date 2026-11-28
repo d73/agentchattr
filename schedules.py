@@ -49,8 +49,9 @@ def parse_schedule_spec(spec: str) -> tuple[int | None, str | None]:
 
     dm = _DAILY_RE.search(spec)
     if dm:
-        hour = int(dm.group(1)) % 24
-        minute = int(dm.group(2)) % 60
+        hour, minute = map(int, dm.groups())
+        if hour > 23 or minute > 59:
+            raise ValueError("Daily time must be between 00:00 and 23:59")
         # Store as "HH:MM" for daily; we compute next_run from current time
         return (86400, f"{hour:02d}:{minute:02d}")  # interval=1 day, time hint
 
@@ -135,6 +136,10 @@ class ScheduleStore:
         if active_only:
             result = [s for s in result if s.get("active", True)]
         return result
+
+    def has_active(self) -> bool:
+        with self._lock:
+            return any(s.get("active") for s in self._schedules)
 
     def get(self, schedule_id: str) -> dict | None:
         with self._lock:
@@ -242,7 +247,11 @@ class ScheduleStore:
             for i, s in enumerate(self._schedules):
                 if s.get("id") == schedule_id:
                     removed = self._schedules.pop(i)
-                    self._save()
+                    try:
+                        self._save()
+                    except OSError:
+                        self._schedules.insert(i, removed)
+                        raise
                     result = dict(removed)
                     break
             else:
