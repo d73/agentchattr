@@ -2734,27 +2734,8 @@ async def heartbeat(agent_name: str, request: Request):
         await broadcast_status()
     # Return canonical name so wrapper can track renames
     resp = {"ok": True, "name": current_name}
-    if registry:
-        # Follow rename chain (e.g. claude-2 was renamed to claude-music)
-        canonical = registry.resolve_name(current_name)
-        inst = registry.get_instance(canonical)
-        # If rename chain didn't help, try family-based lookup
-        # (handles case where _renames was cleared by server restart but
-        # the instance was claimed/renamed via MCP)
-        if not inst:
-            base = current_name.split("-")[0] if "-" in current_name else current_name
-            family_inst = registry.get_family_instance(base)
-            if family_inst:
-                inst = family_inst
-                canonical = inst["name"]
-        if inst:
-            resp["name"] = inst["name"]
-            resp["pending"] = inst.get("state") == "pending"
-            # Also update presence under the canonical name
-            if canonical != current_name:
-                now = __import__("time").time()
-                with mcp_bridge._presence_lock:
-                    mcp_bridge._presence[canonical] = now
+    if auth_inst:
+        resp["pending"] = auth_inst["state"] == "pending"
     return resp
 
 

@@ -110,7 +110,7 @@ def main():
 
     name = registration["name"]
     token = registration["token"]
-    print(f"  Registered as: {name} (slot {registration.get('slot', '?')})")
+    print(f"  Registered as: {name} (slot.{registration['base']}.{registration['slot']})")
 
     # Thread-safe identity state (can change via heartbeat rename)
     _lock = threading.Lock()

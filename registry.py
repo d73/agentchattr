@@ -8,11 +8,13 @@ Thread-safe: a single threading.Lock guards all mutations.
 
 import colorsys
 import json
+import re
 import secrets
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 
 
@@ -45,6 +47,7 @@ class RuntimeRegistry:
         self._on_change_cbs: list = []
         self._data_dir = Path(data_dir)
         self._profiles: dict[str, dict[str, dict]] = {}
+        self._legacy_slot_names = False
         self._load_renames()
         self._load_instances()
 
@@ -57,7 +60,7 @@ class RuntimeRegistry:
                 self._bases[name] = dict(cfg)
             # Migrate the old automatic slot-1 suffix, including sleeping wrappers.
             for old_name, inst in list(self._reclaimable.items()):
-                if inst.slot == 1 and old_name == f"{inst.base}-1":
+                if self._legacy_slot_names and inst.slot == 1 and old_name == f"{inst.base}-1":
                     if inst.base in self._reclaimable:
                         continue
                     del self._reclaimable[old_name]
@@ -69,6 +72,7 @@ class RuntimeRegistry:
                     self._renames.pop(inst.name, None)
                     self._renames[old_name] = inst.name
                 self._remember_profile_locked(inst)
+            self._legacy_slot_names = False
 
     def on_change(self, cb):
         """Register a callback fired after any registry mutation."""
@@ -143,6 +147,8 @@ class RuntimeRegistry:
             data = json.loads(p.read_text("utf-8"))
         except Exception:
             return
+        # Slot-based profiles were added when automatic slot 1 stopped using "-1".
+        self._legacy_slot_names = "profiles" not in data
         saved_profiles = data.get("profiles", {})
         if not isinstance(saved_profiles, dict):
             saved_profiles = {}
@@ -166,34 +172,6 @@ class RuntimeRegistry:
                     self._reclaimable[n] = _inst_from_dict(d)
                 except Exception:
                     pass
-
-    def _restore_reclaimable_locked(self, sender: str, target_name: str | None):
-        """Restore a reclaimable identity into the live set if its live copy is gone.
-
-        Lets chat_claim recover an identity deregistered by the crash-timeout during
-        sleep. Must be called while holding self._lock. A name freshly re-registered by
-        someone else is left untouched (fresh registration wins).
-        """
-        if sender in self._instances:
-            return
-        cand = None
-        if sender in self._reclaimable:                      # exact name (e.g. 'claude-2')
-            cand = sender
-        elif sender in self._bases:                          # family: first free reclaimable of base
-            for name, inst in self._reclaimable.items():
-                if inst.base == sender and name not in self._instances:
-                    cand = name
-                    break
-        if not cand or cand in self._instances:
-            return
-        inst = self._reclaimable[cand]
-        # Fresh-wins: never revive an identity whose (base, slot) is already live
-        # (e.g. its slot was reclaimed by a fresh launch or a rename-back).
-        if any(li.base == inst.base and li.slot == inst.slot for li in self._instances.values()):
-            return
-        self._reclaimable.pop(cand, None)
-        inst.last_seen = time.time()
-        self._instances[cand] = inst
 
     def _evict_reclaimable_collisions_locked(self):
         """Drop reclaimables that collide with any live instance, by name or (base, slot).
@@ -226,65 +204,59 @@ class RuntimeRegistry:
 
             now = time.time()
             expired = [old_name for old_name, old in self._instances.items()
-                       if old.base == base and now - old.last_seen > self.HEARTBEAT_TIMEOUT]
+                       if now - old.last_seen > self.HEARTBEAT_TIMEOUT]
             live = {n: i for n, i in self._instances.items() if n not in expired}
             if requested_name is not None:
-                import re
-                if not isinstance(requested_name, str) or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?', requested_name):
-                    raise ValueError('Name must be 1–40 lowercase letters, digits or internal hyphens')
-                if requested_name in ('system', 'user'):
-                    raise ValueError('That name is reserved')
-                if requested_name in live:
-                    raise ValueError(f'Name already in use: {requested_name}')
-                if error := self._conflicts_with_other_family(requested_name, base):
+                if error := self._chat_id_error_locked(requested_name, base, live):
                     raise ValueError(error)
 
-            # An unqualified registration must not generate a live canonical name.
             taken = {i.slot for i in live.values() if i.base == base}
-            slot = 1
-            while slot in taken or (slot == 1 and base in live):
-                slot += 1
+            base_cfg = self._bases[base]
+            profiles = self._profiles.get(base, {})
+            for slot in count(1):
+                if slot in taken:
+                    continue
+                if requested_name is not None:
+                    name = requested_name
+                    profile = None
+                    break
+                default_name = base if slot == 1 else f"{base}-{slot}"
+                default_available = default_name not in live and (
+                    default_name == base or default_name not in self._bases
+                )
+                profile = profiles.get(str(slot))
+                if profile:
+                    saved_name = profile["name"]
+                    if saved_name == default_name:
+                        saved_available = default_available
+                    else:
+                        saved_available = not self._chat_id_error_locked(saved_name, base, live)
+                    if saved_available:
+                        name = saved_name
+                        break
+                if default_available:
+                    name = default_name
+                    profile = None
+                    break
 
-            if requested_name is not None:
-                requested_base, requested_slot = self._parse_name(requested_name)
-                if requested_base == base:
-                    if requested_name == base and requested_slot in taken:
-                        # Preserve the exact canonical name when a custom alias holds slot 1.
-                        requested_slot = slot
-                    elif requested_slot < 1 or requested_slot in taken:
-                        raise ValueError(f'Slot {requested_slot} already occupied or invalid')
-                    slot = requested_slot
-
-            # No validation can fail after this point: expire stale sessions only
-            # once the requested name and slot are known to be available.
+            # Expire stale sessions only after selecting both a slot and a name.
             for old_name in expired:
                 old = self._instances.pop(old_name)
                 self._remember_profile_locked(old)
                 self._reclaimable[old_name] = old
 
-            name = base if slot == 1 else f"{base}-{slot}"
-            base_cfg = self._bases[base]
-            color = _derive_color(base_cfg.get("color", "#888"), slot)
-
-            if label:
-                lbl = label
-            elif slot == 1:
-                lbl = base_cfg.get("label", base.capitalize())
+            default_label = base_cfg.get("label", base.capitalize())
+            if profile:
+                lbl = label or profile["label"]
+                color = profile["color"]
             else:
-                lbl = f"{base_cfg.get('label', base.capitalize())} {slot}"
+                if requested_name is not None:
+                    default_label = requested_name
+                elif slot > 1:
+                    default_label = f"{default_label} {slot}"
+                lbl = label or default_label
+                color = _derive_color(base_cfg.get("color", "#888"), slot)
 
-            profile = self._profiles.get(base, {}).get(str(slot))
-            if profile and requested_name is None:
-                saved_name = profile["name"]
-                if saved_name == f"{base}-1" and slot == 1:
-                    saved_name = base
-                if saved_name not in self._instances and not self._conflicts_with_other_family(saved_name, base):
-                    name = saved_name
-                    lbl = label or profile["label"]
-                    color = profile["color"]
-            if requested_name is not None:
-                name = requested_name
-                lbl = label or requested_name
             self._renames.pop(name, None)
 
             # Fresh registrations are immediately authoritative. Identity
@@ -339,96 +311,37 @@ class RuntimeRegistry:
 
     # --- Identity Claim ---
 
-    def claim(self, sender: str, target_name: str | None = None) -> dict | str:
-        """Claim an identity. Returns instance dict on success, error string on failure.
-
-        Exact names take priority, including the primary base name. If there is
-        no exact instance, a base family can recover its first available instance.
-
-        - sender='claude', no target: confirm the primary claude instance
-        - sender='claude', target='claude-music': rename the primary instance
-        - sender='claude-2' (exact match): confirm that specific instance
-        """
-        error = None
-        result = None
+    def claim(self, sender: str, target_name: str | None = None, *,
+              identity_id: str | None = None) -> dict | str:
+        """Confirm or rename one exact registered identity without moving its slot."""
         with self._lock:
-            # Recover a reclaimable identity (e.g. deregistered by crash-timeout during sleep)
-            self._restore_reclaimable_locked(sender, target_name)
             inst = self._instances.get(sender)
+            reclaim = inst is None
+            if reclaim:
+                inst = self._reclaimable.get(sender)
 
-            # Authenticated tools pass the exact current name. Only use family
-            # fallback when no exact instance exists.
-            if inst is None and sender in self._bases:
-                # Find first unclaimed (pending) instance in this family
-                for candidate in self._instances.values():
-                    if candidate.base == sender and candidate.state == "pending":
-                        inst = candidate
-                        break
-                # If no pending, fall back to any instance in the family
-                if not inst:
-                    for candidate in self._instances.values():
-                        if candidate.base == sender:
-                            inst = candidate
-                            break
+            if inst is None or (identity_id is not None and inst.identity_id != identity_id):
+                return f"No matching {sender} instance. Use its exact registered chat ID."
+            if reclaim and any(
+                live.base == inst.base and live.slot == inst.slot for live in self._instances.values()
+            ):
+                return f"Slot {inst.slot} already occupied in {inst.base} family"
+            if target_name is not None and target_name != inst.name:
+                if error := self._chat_id_error_locked(target_name, inst.base, self._instances):
+                    return error
 
-            if not inst:
-                error = f"No available {sender} instance. Is a wrapper registered?"
-            elif target_name is None or target_name == inst.name:
-                # Accept current name — but don't auto-activate pending instances.
-                # Pending instances must be named by human (lightbox) or reclaimed
-                # with an explicit target name (breadcrumb resume).
-                if inst.state == "pending" and target_name is None:
-                    result = _inst_dict(inst)  # return info but stay pending
-                else:
-                    inst.state = "active"
-                    result = _inst_dict(inst)
-            else:
-                # Rename/reclaim — check collision and family guard
-                if target_name in self._instances and target_name != inst.name:
-                    error = f"Already claimed: {target_name}"
-                elif (family_err := self._conflicts_with_other_family(target_name, inst.base)):
-                    error = family_err
-                else:
-                    # Check slot collision within same family
-                    t_base, t_slot = self._parse_name(target_name)
-                    if t_base == inst.base:
-                        slot_taken = any(
-                            i.slot == t_slot and i.name != inst.name
-                            for i in self._instances.values() if i.base == inst.base
-                        )
-                        if slot_taken:
-                            error = f"Slot {t_slot} already occupied in {inst.base} family"
-                    if not error:
-                        # Swap identity to target name
-                        old_name = inst.name
-                        del self._instances[old_name]
-                        inst.name = target_name
-                        inst.state = "active"
-                        # Recalculate slot, color, and label from target name
-                        base_cfg = self._bases.get(inst.base, {})
-                        if t_base == inst.base:
-                            # Target parses as same family (e.g. 'claude' or 'claude-3')
-                            inst.slot = t_slot
-                            inst.color = _derive_color(base_cfg.get("color", "#888"), t_slot)
-                            if t_slot == 1:
-                                inst.label = base_cfg.get("label", inst.base.capitalize())
-                            else:
-                                inst.label = f"{base_cfg.get('label', inst.base.capitalize())} {t_slot}"
-                        else:
-                            # Custom name (e.g. 'claude-music') — keep slot color, use name as label
-                            inst.label = target_name
-                        self._instances[target_name] = inst
-                        # Track rename so wrapper can discover it via heartbeat
-                        self._renames[old_name] = target_name
-                        result = _inst_dict(inst)
+            if reclaim:
+                del self._reclaimable[sender]
+                inst.last_seen = time.time()
+                self._instances[sender] = inst
+            if target_name is not None:
+                if target_name != inst.name:
+                    self._rename_locked(inst, target_name, target_name)
+                inst.state = "active"
 
-            # If we activated/renamed a live instance into a (base, slot), drop any
-            # reclaimable now colliding with it (same invariant as register/deregister).
-            if not error:
-                self._evict_reclaimable_collisions_locked()
+            self._evict_reclaimable_collisions_locked()
+            result = _inst_dict(inst)
 
-        if error:
-            return error
         self._notify()
         self._save_renames()
         self._save_instances()
@@ -450,70 +363,35 @@ class RuntimeRegistry:
     # --- Rename / Label ---
 
     def rename(self, old_name: str, new_name: str, label: str | None = None) -> dict | str:
-        """Full identity rename (human-initiated). Returns instance dict or error string.
-
-        Changes the sender ID, label, and tracks the rename for wrapper sync.
-        If new_name == old_name, falls back to a label-only change.
-        """
+        """Change the chat ID and display label without moving the registry slot."""
         with self._lock:
             inst = self._instances.get(old_name)
             if not inst:
                 return f"Not found: {old_name}"
 
             if new_name == old_name:
-                # Same identity — just update label
                 if label:
                     inst.label = label
-                result = _inst_dict(inst)
-            elif new_name in self._instances:
-                return f"Already taken: {new_name}"
-            elif (family_err := self._conflicts_with_other_family(new_name, inst.base)):
-                return family_err
             else:
-                # Check slot collision within same family
-                t_base, t_slot = self._parse_name(new_name)
-                if t_base == inst.base:
-                    slot_taken = any(
-                        i.slot == t_slot and i.name != old_name
-                        for i in self._instances.values() if i.base == inst.base
-                    )
-                    if slot_taken:
-                        return f"Slot {t_slot} already occupied in {inst.base} family"
-
-                # Move instance to new name
-                del self._instances[old_name]
-                inst.name = new_name
-
-                # Set label (use provided label, or derive from new_name)
-                base_cfg = self._bases.get(inst.base, {})
-                if label:
-                    inst.label = label
-                elif t_base == inst.base and t_slot != inst.slot:
-                    # Numbered variant (e.g. claude-3) — use "Claude 3"
-                    if t_slot == 1:
-                        inst.label = base_cfg.get("label", inst.base.capitalize())
-                    else:
-                        inst.label = f"{base_cfg.get('label', inst.base.capitalize())} {t_slot}"
-                else:
-                    inst.label = new_name
-
-                # Update slot + color if it's a numbered family name
-                if t_base == inst.base:
-                    inst.slot = t_slot
-                    inst.color = _derive_color(base_cfg.get("color", "#888"), t_slot)
-
-                self._instances[new_name] = inst
-                self._renames[old_name] = new_name
-                result = _inst_dict(inst)
-
-            # Renaming moved a live instance onto new_name/(base, slot); drop any
-            # reclaimable now colliding with it (same fresh-wins invariant).
-            self._evict_reclaimable_collisions_locked()
+                if error := self._chat_id_error_locked(new_name, inst.base, self._instances):
+                    return error
+                self._rename_locked(inst, new_name, label or new_name)
+                self._evict_reclaimable_collisions_locked()
+            result = _inst_dict(inst)
 
         self._notify()
         self._save_renames()
         self._save_instances()
         return result
+
+    def _rename_locked(self, inst: Instance, new_name: str, label: str):
+        old_name = inst.name
+        del self._instances[old_name]
+        inst.name = new_name
+        inst.label = label
+        self._instances[new_name] = inst
+        self._renames.pop(new_name, None)
+        self._renames[old_name] = new_name
 
     def set_label(self, name: str, label: str) -> bool:
         """Set display label only (no identity change)."""
@@ -569,35 +447,25 @@ class RuntimeRegistry:
             return dict(self._bases[base]) if base in self._bases else None
 
     def is_agent_family(self, name: str) -> bool:
-        """Check if a name belongs to any agent family (base, slot, or custom alias)."""
+        """Protect registered IDs and reserved agent names from anonymous use."""
         with self._lock:
-            # Check registered instance first (handles custom names like 'claude-music')
-            inst = self._instances.get(name)
-            if inst:
-                return inst.base in self._bases
-            # Fall back to name parsing for slot names like 'claude-2'
-            base, _ = self._parse_name(name)
-            if base in self._bases:
-                return True
-            # Treat unregistered custom aliases like 'claude-prime' as belonging
-            # to the same family so stale senders are rejected until claimed.
-            return any(name.startswith(f"{family}-") for family in self._bases)
+            return (
+                name in self._instances
+                or name in self._reclaimable
+                or name in self._renames
+                or any(profile["name"] == name for profiles in self._profiles.values()
+                       for profile in profiles.values())
+                or any(name == base or name.startswith(f"{base}-") for base in self._bases)
+            )
 
     def family_instance_count(self, name: str) -> int:
-        """Count registered instances in the same family as `name`."""
+        """Count instances for an exact registered chat ID or configured family."""
         with self._lock:
-            # Check registered instance first (handles custom names)
             inst = self._instances.get(name)
-            if inst:
-                base = inst.base
-            else:
-                base, _ = self._parse_name(name)
-                if base not in self._bases:
-                    for family in self._bases:
-                        if name.startswith(f"{family}-"):
-                            base = family
-                            break
-            return sum(1 for i in self._instances.values() if i.base == base)
+            if inst is None:
+                inst = self._reclaimable.get(name)
+            base = inst.base if inst is not None else name
+            return sum(1 for inst in self._instances.values() if inst.base == base)
 
     def has_claimed_instances(self, base: str) -> bool:
         """Check if any instance in this family has been claimed (state=active)."""
@@ -606,15 +474,6 @@ class RuntimeRegistry:
                 i.state == "active" and i.base == base
                 for i in self._instances.values()
             )
-
-    def get_family_instance(self, base: str) -> dict | None:
-        """Return the instance dict for a family if exactly one exists.
-        Used by heartbeat to find renamed instances after server restart."""
-        with self._lock:
-            matches = [i for i in self._instances.values() if i.base == base]
-            if len(matches) == 1:
-                return _inst_dict(matches[0])
-        return None
 
     def resolve_to_instances(self, name: str) -> list[str]:
         """Resolve a name to actual registered instance names.
@@ -711,31 +570,17 @@ class RuntimeRegistry:
             "name": inst.name, "label": inst.label, "color": inst.color,
         }
 
-    def _conflicts_with_other_family(self, name: str, own_base: str) -> str | None:
-        """Check if `name` stomps on another family's namespace.
-
-        Returns an error string if it conflicts, None if safe.
-        Blocks: renaming claude to 'gemini', 'gemini-2', 'codex', etc.
-        Allows: renaming claude to 'cudders', 'claude-prime', etc.
-        """
-        t_base, _ = self._parse_name(name)
-        # If the parsed base matches a known family that isn't ours, block it
-        if t_base in self._bases and t_base != own_base:
-            return f"Name '{name}' conflicts with the {t_base} agent family"
-        # Also block if the raw name exactly matches another family's base
-        if name in self._bases and name != own_base:
-            return f"Name '{name}' is a reserved agent family name"
+    def _chat_id_error_locked(self, name: str, base: str, live: dict[str, Instance]) -> str | None:
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?", name):
+            return "Name must be 1–40 lowercase letters, digits or internal hyphens"
+        if name in ("system", "user"):
+            return "That name is reserved"
+        if name in live:
+            return f"Name already in use: {name}"
+        for other in self._bases:
+            if other != base and (name == other or re.fullmatch(rf"{re.escape(other)}-[0-9]+", name)):
+                return f"Name '{name}' conflicts with the {other} agent family"
         return None
-
-    def _parse_name(self, name: str) -> tuple[str, int]:
-        """Parse 'gemini-2' -> ('gemini', 2), 'gemini' -> ('gemini', 1)."""
-        if "-" in name:
-            prefix, suffix = name.rsplit("-", 1)
-            try:
-                return prefix, int(suffix)
-            except ValueError:
-                pass
-        return name, 1
 
     def clean_renames_for(self, name: str):
         """Remove all rename chain entries pointing to or from `name`."""
