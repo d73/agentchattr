@@ -27,7 +27,10 @@ class RestartPolicyTests(unittest.TestCase):
             patch.object(wrapper_windows, "_vt_keepalive_thread"),
             patch.object(wrapper_windows.subprocess, "Popen", return_value=process) as launch,
             patch.object(wrapper_windows.time, "monotonic", return_value=0),
-            patch.object(wrapper_windows.time, "sleep") as sleep,
+            patch.object(
+                wrapper_windows.time, "sleep",
+                side_effect=[None, None, None, None, AssertionError("unexpected fifth retry")],
+            ) as sleep,
             redirect_stdout(output),
         ):
             with self.assertRaises(SystemExit) as stopped:
