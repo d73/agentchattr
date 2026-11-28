@@ -742,6 +742,7 @@ def configure(cfg: dict, session_token: str = ""):
                         sender,
                         full_text,
                         channel=channel,
+                        sender_kind="human",
                     )
                     if s.get("one_shot"):
                         schedules.delete(s["id"])
@@ -950,7 +951,7 @@ _ping_tasks: set[asyncio.Task] = set()
 
 def _record_ping_reply(msg: dict):
     pending = _pending_pings.get(msg.get("reply_to"))
-    if not pending or msg.get("type", "chat") != "chat":
+    if not pending or msg.get("type", "chat") != "chat" or msg.get("sender_kind") != "agent":
         return
     channel, targets = pending
     if msg.get("channel", "general") == channel and msg.get("text", "").strip() == "OK":
@@ -979,35 +980,39 @@ async def _handle_new_message(msg: dict):
     msg_type = msg.get("type", "chat")
     sender = msg.get("sender", "")
     channel = msg.get("channel", "general")
+    sender_kind = msg.get("sender_kind")
+    sender_identity = msg.get("sender_identity")
+    sender_is_agent = sender_kind == "agent"
+    if sender_kind not in ("human", "agent"):
+        await broadcast(msg)
+        return
+
     _record_ping_reply(msg)
 
     # Track last active channel for leave/join messages (skip system messages)
     global _last_active_channel
-    if _unarchive_for_activity(channel, msg_type, sender):
+    if _unarchive_for_activity(channel, msg_type):
         await broadcast_settings()
     if msg_type not in ("system", "leave", "join"):
         _last_active_channel = channel
         # Remember where this specific sender was last active so their
         # disconnect message follows them to the right channel.
-        if sender and sender != "system":
+        if sender_is_agent:
             _agent_last_channel[sender] = channel
     # Strip @mentions to find the slash command (e.g. "@claude @codex /hatmaking")
     stripped = _re.sub(r"@[\w-]+\s*", "", text).strip().lower()
     _broadcast_cmds = ("/hatmaking", "/artchallenge", "/roastreview", "/poetry")
     cmd_word = stripped.split()[0] if stripped else ""
     is_broadcast_cmd = cmd_word in _broadcast_cmds
-    known_agents = set(registry.get_all_names()) if registry else set()
-    known_agents.update(config.get("agents", {}).keys())
     _session_draft_re = _re.compile(r'```session\s*\n(.*?)\n```', _re.DOTALL)
-    draft_match = _session_draft_re.search(text)
-    is_agent_session_draft = bool(draft_match and sender in known_agents)
+    draft_match = _session_draft_re.search(text) if sender_is_agent else None
     is_hidden_session_request = msg_type == "session_request"
 
-    is_agent_continue = (stripped == "/continue" and sender in known_agents)
+    is_agent_continue = stripped == "/continue" and sender_is_agent
     suppress_broadcast = (
         is_broadcast_cmd
         or is_hidden_session_request
-        or is_agent_session_draft
+        or draft_match is not None
         or is_agent_continue
     )
 
@@ -1020,12 +1025,12 @@ async def _handle_new_message(msg: dict):
         store.delete([msg["id"]])
 
     # Summary cards are channel history, not new requests to their mentions.
-    if sender == "system" or msg_type == "summary":
+    if msg_type == "summary":
         return
 
     # Check for slash commands — use stripped text (sans @mentions)
     if stripped == "/continue":
-        if sender in known_agents:
+        if sender_is_agent:
             store.add("system", f"Loop guard: only humans can /continue. {sender} tried to self-resume.", channel=channel)
             return
         router.continue_routing(channel)
@@ -1036,7 +1041,8 @@ async def _handle_new_message(msg: dict):
     if stripped == "/roastreview":
         agent_names = registry.get_all_names() if registry else list(config.get("agents", {}).keys())
         mentions = " ".join(f"@{a}" for a in agent_names)
-        store.add(sender, f"{mentions} Time for a roast review! Inspect each other's work and constructively roast it.", channel=channel)
+        store.add(sender, f"{mentions} Time for a roast review! Inspect each other's work and constructively roast it.",
+                  channel=channel, sender_kind=sender_kind, sender_identity=sender_identity)
         return
 
     if stripped.startswith("/artchallenge"):
@@ -1050,6 +1056,8 @@ async def _handle_new_message(msg: dict):
             "Write your SVG code to a .svg file, then attach it using chat_send(image_path=...). "
             "Make it creative, keep it under 5KB. Let's see what you've got!",
             channel=channel,
+            sender_kind=sender_kind,
+            sender_identity=sender_identity,
         )
         return
 
@@ -1071,6 +1079,8 @@ async def _handle_new_message(msg: dict):
             "Call chat_set_hat(sender=your_name, svg='<svg ...>...</svg>') to wear it. "
             "Be creative — top hats, party hats, crowns, propeller beanies, whatever you want!",
             channel=channel,
+            sender_kind=sender_kind,
+            sender_identity=sender_identity,
         )
         return
 
@@ -1086,18 +1096,15 @@ async def _handle_new_message(msg: dict):
             "limerick": "Write a limerick about the current state of this codebase.",
             "sonnet": "Write a sonnet about the current state of this codebase.",
         }
-        store.add(sender, f"{mentions} {prompts[form]}", channel=channel)
+        store.add(sender, f"{mentions} {prompts[form]}", channel=channel,
+                  sender_kind=sender_kind, sender_identity=sender_identity)
         return
 
     # Detect session draft blocks from agents only.
     # The session request prompt contains an example ```session block,
     # so treating every non-system sender as a draft source creates a false
     # invalid-draft card the moment the user asks for a custom session.
-    _session_draft_re = _re.compile(r'```session\s*\n(.*?)\n```', _re.DOTALL)
-    draft_match = _session_draft_re.search(text)
-    known_agents = set(registry.get_all_names()) if registry else set()
-    known_agents.update(config.get("agents", {}).keys())
-    if draft_match and sender in known_agents:
+    if draft_match:
         # Check if this is a revision of an existing draft
         draft_id, revision = _resolve_draft_lineage(text, channel)
 
@@ -1133,7 +1140,7 @@ async def _handle_new_message(msg: dict):
                            "errors": ["Invalid JSON in session block"], "valid": False},
             )
 
-    raw_targets = router.get_targets(sender, text, channel)
+    raw_targets = router.get_targets(text, channel, sender_is_agent=sender_is_agent)
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
     targets = []
@@ -1144,7 +1151,7 @@ async def _handle_new_message(msg: dict):
             targets.append(t)
     targets = list(dict.fromkeys(targets))  # dedupe, preserve order
 
-    if _re.match(r"^\s*/ping(?:\s|$)", text, _re.IGNORECASE) and sender.lower() not in {n.lower() for n in known_agents}:
+    if _re.match(r"^\s*/ping(?:\s|$)", text, _re.IGNORECASE) and not sender_is_agent:
         if not targets:
             store.add("system", "Ping requires an available agent target or @all.",
                       msg_type="system", channel=channel, reply_to=msg.get("id"))
@@ -1174,7 +1181,6 @@ async def _handle_new_message(msg: dict):
     # Session turn guard: if a session is active on this channel and the sender
     # is an agent, only allow triggering the agent whose turn it is.
     # Human @mentions are always allowed (the session engine handles pausing).
-    sender_is_agent = sender in known_agents
     allowed_agent = session_engine.get_allowed_agent(channel) if session_engine and sender_is_agent else None
 
     import mcp_bridge
@@ -1183,6 +1189,8 @@ async def _handle_new_message(msg: dict):
         if registry:
             inst = registry.get_instance(target)
             if inst and inst.get("state") == "pending":
+                continue
+            if inst and inst["identity_id"] == sender_identity:
                 continue
         # Session guard: suppress out-of-turn agent triggers
         if allowed_agent and target != allowed_agent:
@@ -1487,14 +1495,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         await broadcast_clear(channel=channel)
                         continue
                     if cmd == "/continue":
-                        router.continue_routing()
+                        router.continue_routing(channel)
                         store.add("system", "Resuming agent conversation...", msg_type="system", channel=channel)
                         await broadcast_status()
                         continue
                     # Broadcast slash commands — expand without storing the raw command.
                     # _handle_new_message will store the expanded version.
                     if cmd in ("/hatmaking", "/artchallenge", "/roastreview", "/poetry"):
-                        await _handle_new_message({"sender": sender, "text": text, "channel": channel})
+                        await _handle_new_message({"sender": sender, "text": text, "channel": channel,
+                                                   "sender_kind": "human"})
                         continue
 
                 # Store message — the on_message callback handles broadcast + triggers
@@ -1503,7 +1512,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     reply_to = int(reply_to)
 
                 store.add(sender, text, attachments=attachments, reply_to=reply_to,
-                          channel=channel)
+                          channel=channel, sender_kind="human")
 
             elif event.get("type") == "delete":
                 ids = event.get("ids", [])
@@ -1567,6 +1576,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 msg_type="rule_proposal",
                                 channel=channel,
                                 metadata={"rule_id": rule["id"], "text": text, "status": "pending"},
+                                sender_kind="human",
                             )
                             # store.add() fires _on_store_message → broadcast already.
                             # Do NOT call broadcast(msg) again here.
@@ -1982,7 +1992,8 @@ async def api_send(request: Request):
         return JSONResponse({"error": "text is required"}, status_code=400)
     channel = body.get("channel", "general")
 
-    msg = store.add(sender, text, channel=channel)
+    msg = store.add(sender, text, channel=channel, sender_kind="agent",
+                    sender_identity=inst["identity_id"])
     return JSONResponse(msg)
 
 
@@ -2207,7 +2218,7 @@ async def resolve_decision(msg_id: int, request: Request):
     username = room_settings.get("username", "user")
     reply_text = f"@{sender} {chosen}" if sender else chosen
     try:
-        store.add(username, reply_text, reply_to=msg_id, channel=channel)
+        store.add(username, reply_text, reply_to=msg_id, channel=channel, sender_kind="human")
     except Exception:
         import traceback; traceback.print_exc()
     # Broadcast updated decision card so the UI swaps buttons to resolved state
@@ -2360,7 +2371,7 @@ async def create_job(request: Request):
                 ws_clients.difference_update(dead)
     # Post breadcrumb in main timeline with job_id for clickable link
     store.add(created_by, f"Job created: {title}", msg_type="job_created",
-              channel=channel, metadata={"job_id": result["id"]})
+              channel=channel, metadata={"job_id": result["id"]}, sender_kind="human")
     return result
 
 
@@ -2420,7 +2431,7 @@ async def post_job_message(job_id: int, request: Request):
     job = jobs.get(job_id)
     if job:
         channel = job.get("channel", "general")
-        raw_targets = router.get_targets(sender, text, channel)
+        raw_targets = router.get_targets(text, channel, sender_is_agent=False)
         targets = []
         for t in raw_targets:
             if registry:
@@ -2927,6 +2938,7 @@ async def request_session_draft(request: Request):
         channel=channel,
         msg_type="session_request",
         metadata={"session_request": True, "mentions": [f"@{agent_name}"], "request": description},
+        sender_kind="human",
     )
     return JSONResponse({"ok": True})
 

@@ -15,19 +15,19 @@ class RouterMentionTests(unittest.TestCase):
                         online_checker=lambda: {"codex", "agy"})
         for command in ("/summary", "/summarise", "/summary please", "/summary @unknown"):
             with self.subTest(command=command):
-                self.assertEqual(router.get_targets("derek", command), [])
-        self.assertEqual(set(router.get_targets("derek", "/summary @all")), {"codex", "agy"})
-        self.assertEqual(router.get_targets("derek", "/summary @codex"), ["codex"])
+                self.assertEqual(router.get_targets(command, sender_is_agent=False), [])
+        self.assertEqual(set(router.get_targets("/summary @all", sender_is_agent=False)), {"codex", "agy"})
+        self.assertEqual(router.get_targets("/summary @codex", sender_is_agent=False), ["codex"])
 
     def test_summary_targets_only_named_agent_even_when_default_is_all(self):
         router = Router(["agy", "c1", "c2"], default_mention="all")
-        self.assertEqual(router.get_targets("derek", "/summary @agy"), ["agy"])
-        self.assertEqual(router.get_targets("derek", "/summarise @missing"), [])
+        self.assertEqual(router.get_targets("/summary @agy", sender_is_agent=False), ["agy"])
+        self.assertEqual(router.get_targets("/summarise @missing", sender_is_agent=False), [])
 
     def test_code_mentions_do_not_route_from_agent_message(self):
         router = Router(["agy", "c1", "c2"], default_mention="all")
-        self.assertEqual(router.get_targets("agy", "@derek Saved summary; `@all` was updated."), [])
-        self.assertEqual(router.get_targets("agy", "```text\n@all\n``` @c1"), ["c1"])
+        self.assertEqual(router.get_targets("@derek Saved summary; `@all` was updated.", sender_is_agent=True), [])
+        self.assertEqual(router.get_targets("```text\n@all\n``` @c1", sender_is_agent=True), ["c1"])
 
     def test_hyphenated_agent_name_is_parsed_as_full_mention(self):
         router = Router(["telegram-bridge"], default_mention="none")
@@ -41,7 +41,7 @@ class RouterMentionTests(unittest.TestCase):
         router = Router(["telegram"], default_mention="none")
 
         self.assertEqual(router.parse_mentions("@telegram-bridge check"), [])
-        self.assertEqual(router.get_targets("ben", "@telegram-bridge check"), [])
+        self.assertEqual(router.get_targets("@telegram-bridge check", sender_is_agent=False), [])
 
     def test_longest_hyphenated_name_wins_when_prefix_agent_also_exists(self):
         router = Router(["telegram", "telegram-bridge"], default_mention="none")
@@ -55,7 +55,7 @@ class RouterMentionTests(unittest.TestCase):
         router = Router(["telegram-bridge"], default_mention="none")
 
         self.assertEqual(router.parse_mentions("@telegram-bot check"), [])
-        self.assertEqual(router.get_targets("ben", "@telegram-bot check"), [])
+        self.assertEqual(router.get_targets("@telegram-bot check", sender_is_agent=False), [])
 
 
 if __name__ == "__main__":

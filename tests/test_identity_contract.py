@@ -25,6 +25,7 @@ if sys.platform == "win32":
     import wrapper_windows
 from mcp.server.fastmcp import Context
 from registry import RuntimeRegistry
+from router import Router
 from store import MessageStore
 
 
@@ -102,6 +103,8 @@ class McpBridgeAuthTests(unittest.TestCase):
         self.assertIn("Sent", result)
         recent = self.store.get_recent(1)
         self.assertEqual(recent[0]["sender"], second["name"])
+        self.assertEqual(recent[0]["sender_kind"], "agent")
+        self.assertEqual(recent[0]["sender_identity"], second["identity_id"])
 
     def test_chat_send_rejects_unauthenticated_agent_sender(self):
         self.registry.register("codex")
@@ -151,6 +154,52 @@ class AppAuthEndpointTests(unittest.TestCase):
         mcp_bridge._activity.clear()
         mcp_bridge._cursors.clear()
         mcp_bridge._renamed_from.clear()
+
+    def test_api_send_stamps_sender_from_token(self):
+        inst = self.registry.register("claude", requested_name="reviewer")
+        response = asyncio.run(app.api_send(FakeRequest(
+            headers={"authorization": f"Bearer {inst['token']}"},
+            body={"text": "Review ready", "sender_kind": "human"},
+        )))
+        self.assertEqual(response.status_code, 200)
+        message = self.store.get_recent(1)[0]
+        self.assertEqual(message["sender_kind"], "agent")
+        self.assertEqual(message["sender_identity"], inst["identity_id"])
+
+    def test_routing_keeps_agent_role_and_skips_own_identity_after_rename(self):
+        sender = self.registry.register("claude", requested_name="old-name")
+        self.registry.claim(sender["name"], "new-name")
+        replacement = self.registry.register("claude", requested_name=sender["name"])
+        router = Router(["new-name", replacement["name"]], default_mention="all")
+        agents = mock.Mock()
+        agents.trigger = mock.AsyncMock()
+        with (mock.patch.object(app, "router", router),
+              mock.patch.object(app, "agents", agents),
+              mock.patch.object(app, "session_engine", None),
+              mock.patch.object(app, "broadcast", mock.AsyncMock()),
+              mock.patch.object(app, "_unarchive_for_activity", return_value=False),
+              mock.patch.object(mcp_bridge, "is_online", return_value=True)):
+            message = {"sender": sender["name"], "sender_kind": "agent",
+                       "sender_identity": sender["identity_id"], "channel": "ops"}
+            asyncio.run(app._handle_new_message({**message, "text": "Status update"}))
+            agents.trigger.assert_not_awaited()
+            asyncio.run(app._handle_new_message({**message, "text": "@new-name @old-name"}))
+            agents.trigger.assert_awaited_once_with(
+                replacement["name"], message="old-name: @new-name @old-name", channel="ops", prompt="",
+            )
+
+    def test_continue_depends_on_sender_kind_even_for_the_same_name(self):
+        router = Router(["claude"], max_hops=0)
+        router.get_targets("@claude", "ops", sender_is_agent=True)
+        with (mock.patch.object(app, "router", router),
+              mock.patch.object(app, "broadcast", mock.AsyncMock()),
+              mock.patch.object(app, "broadcast_status", mock.AsyncMock()),
+              mock.patch.object(app, "_unarchive_for_activity", return_value=False)):
+            message = {"sender": "claude", "text": "/continue", "channel": "ops"}
+            asyncio.run(app._handle_new_message({**message, "sender_kind": "agent"}))
+            self.assertTrue(router.is_paused("ops"))
+            asyncio.run(app._handle_new_message({**message, "sender_kind": "human"}))
+            self.assertFalse(router.is_paused("ops"))
 
     def test_heartbeat_requires_valid_token_for_registered_agent(self):
         inst = self.registry.register("claude")

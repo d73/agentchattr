@@ -37,7 +37,7 @@ def setup_session(tmp_path, stack):
 
 
 def ask(messages, sender='claude', channel='general'):
-    return messages.add(sender, 'Which?', msg_type='decision', channel=channel,
+    return messages.add(sender, 'Which?', msg_type='decision', channel=channel, sender_kind='agent',
                         metadata={'choices': ['Blue', 'Green'], 'resolved': False})
 
 
@@ -60,26 +60,26 @@ class SessionChoiceTests(unittest.TestCase):
         question = ask(messages)
         assert sessions.get(1)['choice_message_id'] == question['id']
         assert timers == []
-        messages.add('claude', 'Please pick one.')
+        messages.add('claude', 'Please pick one.', sender_kind='agent')
         assert timers == []
         assert answer(question)['ok']
         assert sessions.get(1)['state'] == 'waiting'
         assert sessions.get(1)['choice_message_id'] is None
         assert sessions.get(1)['current_turn'] == 0
         assert trigger.trigger_sync.call_count == 1  # reply is routed by app's normal @mention path
-        messages.add('claude', 'I will use Blue.')
-        messages.add('claude', 'Ready for review.')
+        messages.add('claude', 'I will use Blue.', sender_kind='agent')
+        messages.add('claude', 'Ready for review.', sender_kind='agent')
         for timer in list(timers): timer()
         assert sessions.get(1)['current_turn'] == 1
         assert trigger.trigger_sync.call_count == 2
         assert trigger.trigger_sync.call_args.args == ('codex',)
-        messages.add('codex', 'Done.')
+        messages.add('codex', 'Done.', sender_kind='agent')
         timers[-1]()
         assert sessions.get(1)['state'] == 'complete'
 
     def test_question_blocks_already_queued_advance(self):
         sessions, messages, engine, trigger, timers = self.fixture
-        messages.add('claude', 'I need a choice.')
+        messages.add('claude', 'I need a choice.', sender_kind='agent')
         ask(messages)
         timers[0]()
         assert sessions.get(1)['current_turn'] == 0
@@ -88,12 +88,18 @@ class SessionChoiceTests(unittest.TestCase):
     def test_typed_interruption_can_resume_without_clicking_choice(self):
         sessions, messages, engine, trigger, timers = self.fixture
         ask(messages)
-        messages.add('Ben', '@claude Use red instead.')
+        messages.add('Ben', '@claude Use red instead.', sender_kind='human')
         assert sessions.get(1)['state'] == 'paused'
         assert sessions.get(1)['choice_message_id'] is None
-        messages.add('claude', 'Using red.')
+        messages.add('claude', 'Using red.', sender_kind='agent')
         timers[0]()
         assert sessions.get(1)['current_turn'] == 1
+
+    def test_human_with_agents_display_name_pauses_instead_of_advancing(self):
+        sessions, messages, engine, trigger, timers = self.fixture
+        messages.add('claude', 'Please pause.', sender_kind='human')
+        self.assertEqual(sessions.get(1)['state'], 'paused')
+        self.assertEqual(timers, [])
 
     def test_duplicate_answer_is_rejected_without_second_reply(self):
         sessions, messages, engine, trigger, timers = self.fixture
@@ -112,7 +118,7 @@ class SessionChoiceTests(unittest.TestCase):
         answer(old_question)
         assert sessions.get(1)['state'] == 'waiting'
         assert sessions.get(1)['choice_message_id'] == current_question['id']
-        messages.add('claude', 'Responding to the old answer.')
+        messages.add('claude', 'Responding to the old answer.', sender_kind='agent')
         assert timers == []
         assert sessions.get(1)['current_turn'] == 0
         assert trigger.trigger_sync.call_count == 1
@@ -138,7 +144,7 @@ class SessionChoiceTests(unittest.TestCase):
 
     def test_end_session_cancels_queued_response(self):
         sessions, messages, engine, trigger, timers = self.fixture
-        messages.add('claude', 'Done.')
+        messages.add('claude', 'Done.', sender_kind='agent')
         engine.end_session(1)
         timers[0]()
         assert sessions.get(1)['state'] == 'interrupted'
@@ -146,13 +152,13 @@ class SessionChoiceTests(unittest.TestCase):
 
     def test_fast_choice_answer_does_not_complete_turn_with_pre_question_message(self):
         sessions, messages, engine, trigger, timers = self.fixture
-        messages.add('claude', 'I need a choice.')
+        messages.add('claude', 'I need a choice.', sender_kind='agent')
         question = ask(messages)
         answer(question)
         timers[0]()
         assert sessions.get(1)['current_turn'] == 0
         assert trigger.trigger_sync.call_count == 1
-        messages.add('claude', 'Using Blue.')
+        messages.add('claude', 'Using Blue.', sender_kind='agent')
         timers[-1]()
         assert sessions.get(1)['current_turn'] == 1
 

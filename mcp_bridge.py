@@ -169,6 +169,17 @@ def _resolve_tool_identity(
     field_name: str,
     required: bool = False,
 ) -> tuple[str, str | None]:
+    sender, _, error = _resolve_tool_actor(raw_name, ctx, field_name=field_name, required=required)
+    return sender, error
+
+
+def _resolve_tool_actor(
+    raw_name: str,
+    ctx: Context | None,
+    *,
+    field_name: str,
+    required: bool = False,
+) -> tuple[str, dict | None, str | None]:
     provided = raw_name.strip() if raw_name else ""
     token = _extract_agent_token(ctx)
     inst = _authenticated_instance(ctx)
@@ -176,25 +187,25 @@ def _resolve_tool_identity(
         resolved = inst["name"]
         if resolved:
             _touch_presence(resolved)
-        return resolved, None
+        return resolved, inst, None
     if token:
-        return "", "Error: stale or unknown authenticated agent session. Re-register and retry."
+        return "", None, "Error: stale or unknown authenticated agent session. Re-register and retry."
 
     if not provided:
         if required:
-            return "", f"Error: {field_name} is required."
-        return "", None
+            return "", None, f"Error: {field_name} is required."
+        return "", None, None
 
     if registry:
         resolved = registry.resolve_name(provided)
         if resolved != provided and registry.is_registered(resolved):
             provided = resolved
         if registry.is_agent_family(provided):
-            return "", f"Error: authenticated agent session required for '{provided}'."
+            return "", None, f"Error: authenticated agent session required for '{provided}'."
 
     if provided:
         _touch_presence(provided)
-    return provided, None
+    return provided, None, None
 
 
 def chat_send(
@@ -229,9 +240,10 @@ def chat_send(
       chat_send(sender="claude", message="Should I merge?", choices=["Yes", "No", "Show diff first"])
     For normal messages without choices, pass choices=[]:
       chat_send(sender="claude", message="Done.", choices=[])"""
-    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    sender, authenticated, err = _resolve_tool_actor(sender, ctx, field_name="sender", required=True)
     if err:
         return err
+    sender_identity = authenticated["identity_id"] if authenticated else None
 
     # Fallback routing: if caller omitted both channel and job_id, use
     # whatever target this sender last read from. Prevents agents that
@@ -303,10 +315,9 @@ def chat_send(
             filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
             shutil.copy2(str(src), str(upload_dir / filename))
             job_attachments = [{"name": src.name, "url": f"/uploads/{filename}"}]
-        authenticated = _authenticated_instance(ctx)
         msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
                                attachments=job_attachments,
-                               sender_identity=authenticated["identity_id"] if authenticated else None,
+                               sender_identity=sender_identity,
                                recipient_identity=recipient_identity or None, expected_scope=job_scope)
         if msg is None:
             return f"Error: job #{job_id} not found."
@@ -318,7 +329,7 @@ def chat_send(
             job = jobs.get(job_id)
             if job:
                 job_channel = job.get("channel", "general")
-                raw_targets = router.get_targets(sender, text, job_channel)
+                raw_targets = router.get_targets(text, job_channel, sender_is_agent=authenticated is not None)
                 targets = []
                 for t in raw_targets:
                     if registry:
@@ -333,6 +344,8 @@ def chat_send(
                     if registry:
                         inst = registry.get_instance(target)
                         if inst and inst.get("state") == "pending":
+                            continue
+                        if inst and inst["identity_id"] == sender_identity:
                             continue
                         if recipient_identity and (not inst or inst["identity_id"] != recipient_identity):
                             continue
@@ -379,7 +392,9 @@ def chat_send(
 
     msg = store.add(sender, message.strip(), attachments=attachments,
                     reply_to=reply_id, channel=channel,
-                    msg_type=msg_type, metadata=metadata)
+                    msg_type=msg_type, metadata=metadata,
+                    sender_kind="agent" if authenticated else "human",
+                    sender_identity=sender_identity)
     _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
@@ -406,7 +421,7 @@ def chat_propose_job(
         body: Detailed description of the work (max 1000 chars)
         channel: Channel to post the proposal in
     """
-    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    sender, authenticated, err = _resolve_tool_actor(sender, ctx, field_name="sender", required=True)
     if err:
         return err
     if not title.strip():
@@ -419,6 +434,8 @@ def chat_propose_job(
         msg_type="job_proposal",
         channel=channel,
         metadata={"title": title, "body": body, "status": "pending"},
+        sender_kind="agent" if authenticated else "human",
+        sender_identity=authenticated["identity_id"] if authenticated else None,
     )
     _update_cursor(sender, [msg], channel)
     with _presence_lock:
@@ -888,7 +905,7 @@ def chat_rules(
 
     Pass channel to place the proposal card in the correct chat channel (default: 'general').
     Agents cannot activate, edit, or delete rules — only humans can do that from the web UI."""
-    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=False)
+    sender, authenticated, err = _resolve_tool_actor(sender, ctx, field_name="sender", required=False)
     if err:
         return err
     action = action.strip().lower()
@@ -915,6 +932,8 @@ def chat_rules(
                 msg_type="rule_proposal",
                 channel=channel or "general",
                 metadata={"rule_id": result["id"], "text": result["text"], "status": "pending"},
+                sender_kind="agent" if authenticated else "human",
+                sender_identity=authenticated["identity_id"] if authenticated else None,
             )
         return f"Proposed rule #{result['id']}: '{result['text']}'. Human will review in the Rules panel."
 
@@ -999,7 +1018,7 @@ def chat_summary(
     progress, your own most recently completed work item. Do not report another agent's work. Use one line: 'Working: doing XYZ'
     or 'Idle: completed XYZ', replacing XYZ with the actual work. If no item is
     established by the available messages, say so."""
-    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=False)
+    sender, authenticated, err = _resolve_tool_actor(sender, ctx, field_name="sender", required=False)
     if err:
         return err
     action = action.strip().lower()
@@ -1027,7 +1046,9 @@ def chat_summary(
             return "Error: failed to write summary."
         # Post a visual summary message to the timeline
         if store:
-            store.add(sender, text.strip(), msg_type="summary", channel=channel)
+            store.add(sender, text.strip(), msg_type="summary", channel=channel,
+                      sender_kind="agent" if authenticated else "human",
+                      sender_identity=authenticated["identity_id"] if authenticated else None)
         return f"Summary for #{channel} updated ({len(text.strip())} chars)."
 
     return f"Unknown action: {action}. Valid actions: read, write."

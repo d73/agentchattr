@@ -48,15 +48,13 @@ class Router:
                 mentions.add(name)
         return list(mentions)
 
-    def _is_agent(self, sender: str) -> bool:
-        return sender.lower() in self.agent_names
-
-    def get_targets(self, sender: str, text: str, channel: str = "general") -> list[str]:
-        """Determine which agents should receive this message."""
+    def get_targets(self, text: str, channel: str = "general", *,
+                    sender_is_agent: bool) -> list[str]:
+        """Apply the loop guard before callers resolve mentions to identities."""
         ch = self._get_ch(channel)
         mentions = self.parse_mentions(text)
 
-        if not self._is_agent(sender):
+        if not sender_is_agent:
             # Human message resets hop counter and unpauses
             ch["hop_count"] = 0
             ch["paused"] = False
@@ -81,8 +79,7 @@ class Router:
             if ch["hop_count"] > self.max_hops:
                 ch["paused"] = True
                 return []
-            # Don't route back to self
-            return [m for m in mentions if m != sender]
+            return mentions
 
     def continue_routing(self, channel: str = "general"):
         """Resume after loop guard pause."""

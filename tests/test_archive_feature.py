@@ -48,6 +48,8 @@ def seed_history(store: MessageStore, jobs: JobStore, rules: RuleStore, summarie
         timestamp=101.0,
         time_str="00:01:41",
         metadata={"source": "test"},
+        sender_kind="agent",
+        sender_identity="recorded-agent-identity",
     )
 
     job = jobs.create(
@@ -154,9 +156,12 @@ class ArchiveRoundTripTests(unittest.TestCase):
         imported_messages = self.target_store.get_recent(10)
         self.assertEqual(imported_messages[0]["uid"], "msg-root")
         self.assertEqual(imported_messages[0]["timestamp"], 100.0)
+        self.assertNotIn("sender_kind", imported_messages[0])
         self.assertEqual(imported_messages[1]["uid"], "msg-reply")
         self.assertEqual(imported_messages[1]["reply_to"], imported_messages[0]["id"])
         self.assertEqual(imported_messages[1]["metadata"]["source"], "test")
+        self.assertEqual(imported_messages[1]["sender_kind"], "agent")
+        self.assertEqual(imported_messages[1]["sender_identity"], "recorded-agent-identity")
 
         imported_jobs = self.target_jobs.list_all()
         self.assertEqual(len(imported_jobs), 1)
