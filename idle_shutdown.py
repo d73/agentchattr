@@ -1,7 +1,7 @@
 """Idle auto-shutdown: stop the server once the room is empty.
 
 The room counts as empty when no browser tab is connected AND no agent is
-connected. The timer only arms after a browser has connected at least once,
+connected, with no active scheduled work. The timer only arms after a browser has connected at least once,
 so a headless start (start_team.bat before the browser opens) never exits on
 its own. A grace period absorbs page refreshes and brief reconnects.
 """
@@ -17,11 +17,11 @@ class IdleShutdown:
         self.armed = False
         self.idle_since: float | None = None
 
-    def check(self, browsers: int, agents: int, now: float) -> bool:
+    def check(self, browsers: int, agents: int, now: float, *, scheduled_work: bool = False) -> bool:
         """Record the current room state; return True when it is time to exit."""
         if browsers > 0:
             self.armed = True
-        if not self.armed or browsers > 0 or agents > 0:
+        if not self.armed or browsers > 0 or agents > 0 or scheduled_work:
             self.idle_since = None
             return False
         if self.idle_since is None:

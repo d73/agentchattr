@@ -136,6 +136,10 @@ class ScheduleStore:
             result = [s for s in result if s.get("active", True)]
         return result
 
+    def has_active(self) -> bool:
+        with self._lock:
+            return any(s.get("active") for s in self._schedules)
+
     def get(self, schedule_id: str) -> dict | None:
         with self._lock:
             for s in self._schedules:

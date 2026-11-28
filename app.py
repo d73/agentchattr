@@ -707,7 +707,8 @@ def configure(cfg: dict, session_token: str = ""):
                 # Idle auto-shutdown: no browser tabs and no agents connected.
                 if _idle and _shutdown_hook:
                     agents_connected = len(set(registry.get_all_names()) | currently_online)
-                    if _idle.check(len(ws_clients), agents_connected, now):
+                    scheduled_work = schedules is not None and schedules.has_active()
+                    if _idle.check(len(ws_clients), agents_connected, now, scheduled_work=scheduled_work):
                         log.info("Idle auto-shutdown: no browser or agents connected for %ss",
                                  int(_idle.grace_seconds))
                         _shutdown_hook()
