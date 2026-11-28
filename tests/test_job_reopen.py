@@ -188,6 +188,18 @@ class JobReopenIntegrationTests(unittest.TestCase):
             self.assertEqual((vote["actor"], vote["source"]), ("operator", "local-browser"))
             self.assertEqual((audit["actor"], audit["source"]), ("operator", "local-browser"))
 
+    def test_http_reopen_uses_room_username_without_an_operator_override(self):
+        reopen = self.request()
+        body = {"job_uid": self.closed["uid"], "expected_version": self.scope["expected_version"],
+                "decision": "approve", "actor": "request-supplied-name"}
+        request = Mock(headers={"x-session-token": "fixture-session"}, client=SimpleNamespace(host="127.0.0.1"),
+                       json=AsyncMock(return_value=body))
+        with patch.multiple(app, jobs=self.jobs, config={}, session_token="fixture-session",
+                            room_settings={"username": "room-owner"}):
+            result = asyncio.run(app.decide_job_reopen_request(self.closed["id"], reopen["id"], request))
+        vote = result["request"]["decisions"][-1]
+        self.assertEqual((vote["actor"], vote["source"]), ("room-owner", "local-browser"))
+
     def test_mcp_votes_require_exact_active_registration(self):
         request = self.request()
         config = {"job_approvals": {"claude_identity_id": "allowed-one", "agy_identity_id": "allowed-two"}}

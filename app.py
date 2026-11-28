@@ -2314,9 +2314,9 @@ async def resolve_decision(msg_id: int, request: Request):
 @app.post("/api/jobs/{job_uid}/orch-gates/{decision_id}/resolve")
 async def resolve_orch_gate(job_uid: str, decision_id: int, request: Request):
     """Record a local browser choice for the exact current gate."""
-    actor = verify_operator(request, config, session_token)
+    actor = verify_operator(request, config, session_token, room_username=room_settings.get("username", "user"))
     if actor is None:
-        return JSONResponse({"error": "local browser session with configured operator required"}, status_code=403)
+        return JSONResponse({"error": "local browser session required"}, status_code=403)
     try:
         body = await request.json()
     except ValueError:
@@ -2672,7 +2672,7 @@ async def create_job_reopen_request(job_id: int, request: Request):
 
 @app.post("/api/jobs/{job_id}/reopen-requests/{request_id}/decision")
 async def decide_job_reopen_request(job_id: int, request_id: str, request: Request):
-    actor = verify_operator(request, config, session_token)
+    actor = verify_operator(request, config, session_token, room_username=room_settings.get("username", "user"))
     if actor is None:
         return JSONResponse({"error": "Local browser session required"}, status_code=403)
     try:
