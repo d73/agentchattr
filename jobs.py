@@ -636,7 +636,8 @@ class JobStore:
                     time_str: str | None = None,
                     sender_identity: str | None = None,
                     recipient_identity: str | None = None,
-                    expected_scope: dict | None = None) -> dict | None:
+                    expected_scope: dict | None = None, *,
+                    archived_resolution: str | None = None) -> dict | None:
         """Add a message to a job's conversation. Returns the message."""
         with self._lock:
             for a in self._jobs:
@@ -656,6 +657,8 @@ class JobStore:
                     }
                     if msg_type != "chat":
                         msg["type"] = msg_type
+                    if msg_type == "suggestion" and archived_resolution in ("accepted", "dismissed"):
+                        msg["resolved"] = archived_resolution
                     if sender_identity:
                         msg["sender_identity"] = sender_identity
                     if recipient_identity:
