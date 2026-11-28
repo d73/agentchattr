@@ -997,35 +997,6 @@ body.archive-no-select * {
     color: var(--text);
 }
 
-/* --- "Convert to job" pill inside bubble --- */
-
-.convert-job-pill {
-    position: absolute;
-    top: 6px;
-    right: 30px;
-    background: var(--bg-subtle);
-    border: 1px solid color-mix(in srgb, var(--bubble-color, #888) 40%, transparent);
-    color: var(--bubble-color, var(--text-dim));
-    cursor: pointer;
-    padding: 1px 8px;
-    border-radius: var(--radius-lg);
-    opacity: 0;
-    transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
-    font-size: 0.7rem;
-    font-weight: 500;
-    line-height: 1.4;
-    white-space: nowrap;
-}
-
-.message:hover .convert-job-pill { opacity: 0.8; }
-.convert-job-pill:hover {
-    opacity: 1 !important;
-    color: var(--bubble-color, var(--text));
-    border-color: var(--bubble-color, rgba(255, 255, 255, 0.3));
-    background: color-mix(in srgb, var(--bubble-color, #888) 15%, transparent);
-}
-
-
 /* --- Convert-to-Job Lightbox --- */
 
 .convert-job-modal {
