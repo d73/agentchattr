@@ -109,10 +109,7 @@ def check_panels(page, url, screenshots):
         assert section.evaluate("section => section.open")
         assert all(not other.evaluate("section => section.open") for other in sections if other is not section)
         assert "▴" in section.locator("summary").evaluate("el => getComputedStyle(el, '::after').content")
-        expect(section.locator("summary")).to_have_css("background-color", "rgb(28, 30, 50)")
-        expect(section.locator("summary")).to_have_css("border-inline-start-width", "3px")
-        expect(section.locator("summary")).to_have_css("border-inline-start-color", "rgb(124, 138, 255)")
-        expect(section.locator("summary")).to_have_css("border-bottom-width", "1px")
+        expect(section.locator("summary")).to_have_css("border-inline-start-width", "1px")
         grip = settings.get_by_role("separator").bounding_box()
         assert section.locator("summary").bounding_box()["x"] >= grip["x"] + grip["width"]
 
@@ -293,9 +290,7 @@ def assert_theme_contrast(page):
     ratios = page.evaluate("""() => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        function luminance(color) {
-            ctx.fillStyle = color;
-            ctx.fillRect(0, 0, 1, 1);
+        function luminance() {
             const rgb = Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3);
             const [r, g, b] = rgb.map(value => {
                 const s = value / 255;
@@ -304,10 +299,22 @@ def assert_theme_contrast(page):
             return 0.2126 * r + 0.7152 * g + 0.0722 * b;
         }
         return Object.fromEntries(['body', '#input', '#send', '.settings-section[open] summary',
-                                   '.theme-palette-card'].map(selector => {
-            const style = getComputedStyle(document.querySelector(selector));
-            const values = [luminance(style.color), luminance(style.backgroundColor)];
-            return [selector, (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05)];
+                                   '.channel-sidebar-row.active', '.theme-palette-card'].map(selector => {
+            const element = document.querySelector(selector);
+            const backgrounds = [];
+            for (let current = element; current; current = current.parentElement) {
+                backgrounds.push(getComputedStyle(current).backgroundColor);
+            }
+            ctx.clearRect(0, 0, 1, 1);
+            for (const background of backgrounds.reverse()) {
+                ctx.fillStyle = background;
+                ctx.fillRect(0, 0, 1, 1);
+            }
+            const background = luminance();
+            ctx.fillStyle = getComputedStyle(element).color;
+            ctx.fillRect(0, 0, 1, 1);
+            const foreground = luminance();
+            return [selector, (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05)];
         }));
     }""")
     assert all(ratio >= 4.5 for ratio in ratios.values()), ratios
@@ -317,7 +324,8 @@ def check_themes(page, url, screenshots):
     errors = []
     sockets = []
     updates = []
-    saved = {"font": "mono", "font_size": 18, "channels": ["general"]}
+    saved = {"font": "mono", "font_size": 18, "channels": ["general"],
+             "ui_prefs": {"sidebar_mode": "sidebar"}}
     defer_settings = False
     page.on("pageerror", lambda error: errors.append(str(error)))
 
@@ -352,6 +360,7 @@ def check_themes(page, url, screenshots):
     body = page.locator("body")
     page.locator("#settings-toggle").click()
     appearance.locator("summary").click()
+    expect(page.locator(".channel-sidebar-row.active")).to_be_visible()
     expect(mode.get_by_role("radio", name="Dark")).to_be_checked()
     expect(palette.get_by_role("radio", name="Midnight")).to_be_checked()
     expect(body).to_have_css("background-color", "rgb(16, 16, 24)")
@@ -378,29 +387,36 @@ def check_themes(page, url, screenshots):
 
     palettes = {
         "Dark": (
-            ("indigo", "Midnight", "rgb(16, 16, 24)", "rgb(28, 30, 50)", "rgb(124, 138, 255)"),
-            ("green", "Obsidian", "rgb(17, 17, 19)", "rgb(30, 30, 34)", "rgb(16, 185, 129)"),
-            ("blue", "Nordic", "rgb(19, 25, 34)", "rgb(30, 41, 59)", "rgb(56, 189, 248)"),
-            ("amber", "Ember", "rgb(23, 19, 18)", "rgb(38, 31, 29)", "rgb(245, 158, 11)"),
+            ("indigo", "Midnight", "rgb(16, 16, 24)"),
+            ("green", "Obsidian", "rgb(17, 17, 19)"),
+            ("blue", "Nordic", "rgb(19, 25, 34)"),
+            ("amber", "Ember", "rgb(23, 19, 18)"),
         ),
         "Light": (
-            ("indigo", "Paper", "rgb(248, 249, 252)", "rgb(255, 255, 255)", "rgb(79, 70, 229)"),
-            ("green", "Sage", "rgb(241, 246, 242)", "rgb(250, 253, 250)", "rgb(21, 128, 61)"),
-            ("blue", "Frost", "rgb(240, 245, 250)", "rgb(255, 255, 255)", "rgb(2, 132, 199)"),
-            ("amber", "Sand", "rgb(246, 241, 231)", "rgb(253, 251, 247)", "rgb(217, 119, 6)"),
+            ("indigo", "Paper", "rgb(248, 249, 252)"),
+            ("green", "Sage", "rgb(241, 246, 242)"),
+            ("blue", "Frost", "rgb(240, 245, 250)"),
+            ("amber", "Sand", "rgb(246, 241, 231)"),
         ),
     }
     for mode_name, choices in palettes.items():
         mode.get_by_role("radio", name=mode_name).locator("..").click()
         assert palette.locator('input:checked').input_value() == ("green" if mode_name == "Dark" else "amber")
-        for family, label, bg, surface, accent in choices:
+        for family, label, bg in choices:
             choice = palette.get_by_role("radio", name=label)
             choice.locator("..").click()
             expect(choice).to_be_checked()
             expect(root).to_have_attribute("data-palette", family)
             expect(body).to_have_css("background-color", bg)
-            expect(appearance.locator("summary")).to_have_css("background-color", surface)
-            expect(appearance.locator("summary")).to_have_css("border-inline-start-color", accent)
+            page.wait_for_function("""() => {
+                const section = getComputedStyle(document.querySelector('.settings-section[open] summary'));
+                const channel = getComputedStyle(document.querySelector('.channel-sidebar-row.active'));
+                return ['backgroundColor', 'borderColor', 'borderRadius', 'color']
+                    .every(property => section[property] === channel[property]);
+            }""")
+            expect(settings.locator(".settings-section:not([open]) summary").first).to_have_css(
+                "background-color", "rgba(0, 0, 0, 0)",
+            )
             assert_theme_contrast(page)
         if screenshots:
             settings.screenshot(path=screenshots / f"theme-{mode_name.lower()}.png", animations="disabled")
