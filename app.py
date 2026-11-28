@@ -2522,7 +2522,13 @@ async def set_agent_role(agent_name: str, request: Request):
     except Exception:
         return JSONResponse({"error": "invalid json"}, status_code=400)
     role = body.get("role", "").strip()
-    mcp_bridge.set_role(agent_name, role)
+    try:
+        mcp_bridge.set_role(agent_name, role)
+    except OSError:
+        log.exception("Failed to save role for %s", agent_name)
+        # The browser updates the role optimistically; restore the saved value.
+        await broadcast_status()
+        return JSONResponse({"error": "Could not save agent role"}, status_code=500)
     await broadcast_status()
     return JSONResponse({"ok": True, "role": role})
 
