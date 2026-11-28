@@ -395,7 +395,6 @@ def chat_send(
                     msg_type=msg_type, metadata=metadata,
                     sender_kind="agent" if authenticated else "human",
                     sender_identity=sender_identity)
-    _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
     result = f"Sent (id={msg['id']})"
@@ -437,7 +436,6 @@ def chat_propose_job(
         sender_kind="agent" if authenticated else "human",
         sender_identity=authenticated["identity_id"] if authenticated else None,
     )
-    _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
     return f"Proposed job (msg_id={msg['id']}): {title}"
@@ -644,13 +642,14 @@ def _update_cursor(sender: str, msgs: list[dict], channel: str | None):
         ch_key = channel if channel else "__all__"
         with _cursors_lock:
             agent_cursors = _cursors.setdefault(sender, {})
-            agent_cursors[ch_key] = msgs[-1]["id"]
+            last_id = msgs[-1]["id"]
+            agent_cursors[ch_key] = max(last_id, agent_cursors.get(ch_key, last_id))
         _save_cursors()
 
 
 def chat_read(
     sender: str = "",
-    since_id: int = 0,
+    since_id: int | None = None,
     limit: int = 20,
     channel: str = "",
     job_id: int = 0,
@@ -660,8 +659,8 @@ def chat_read(
 
     Smart defaults:
     - First call with sender: returns last `limit` messages (full context).
-    - Subsequent calls with same sender: returns only NEW messages since last read.
-    - Pass since_id to override and read from a specific point.
+    - Subsequent calls with same sender: returns up to `limit` unread messages, oldest first.
+    - Pass since_id to page from a specific point without changing the saved cursor.
     - Omit sender to always get the last `limit` messages (no cursor).
     - Pass channel to filter by channel name (default: all channels).
     - Pass job_id to read a specific job. Job reads return a header entry first,
@@ -730,23 +729,20 @@ def chat_read(
         with _last_read_lock:
             _last_read_channel[sender] = ch
             _last_read_job_id.pop(sender, None)
-    if since_id:
-        msgs = store.get_since(since_id, channel=ch)
-    elif sender:
-        ch_key = ch if ch else "__all__"
+    if limit < 1:
+        return "Error: limit must be positive."
+    cursor = since_id
+    if cursor is None and sender:
         with _cursors_lock:
-            agent_cursors = _cursors.get(sender, {})
-            cursor = agent_cursors.get(ch_key, 0)
-        if cursor:
-            msgs = store.get_since(cursor, channel=ch)
-        else:
-            msgs = store.get_recent(limit, channel=ch)
-    else:
+            cursor = _cursors.get(sender, {}).get(ch or "__all__")
+    if cursor is None:
         msgs = store.get_recent(limit, channel=ch)
+    else:
+        msgs = store.get_since(cursor, channel=ch)[:limit]
 
-    msgs = msgs[-limit:]
-    _update_cursor(sender, msgs, ch)
     serialized = _serialize_messages(msgs)
+    if since_id is None:
+        _update_cursor(sender, msgs, ch)
 
     # Escalating empty-read hints to discourage polling loops
     if not serialized and sender:
