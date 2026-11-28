@@ -8,6 +8,32 @@ import wrapper
 
 
 class RegistrationRetryTests(unittest.TestCase):
+    def test_registration_converts_a_display_name_and_preserves_label_preferences(self):
+        for name, label, expected_id, expected_label in (
+            ("Build God 2", None, "build-god-2", "Build God 2"),
+            ("  Big Bird 1!  ", "Helper", "big-bird-1", "Helper"),
+            ("c2", None, "c2", None),
+        ):
+            with self.subTest(name=name, label=label), patch('urllib.request.urlopen') as urlopen:
+                response = urlopen.return_value.__enter__.return_value
+                response.read.return_value = json.dumps({"name": expected_id}).encode()
+                self.assertEqual(wrapper._register_instance(8300, "codex", label, name)["name"], expected_id)
+                urlopen.assert_called_once()
+                registration = json.loads(urlopen.call_args.args[0].data)
+                self.assertEqual((registration["base"], registration["name"], registration["label"]),
+                                 ("codex", expected_id, expected_label))
+
+    def test_empty_conversion_remains_an_explicit_invalid_name(self):
+        detail = "Name must be 1–40 lowercase letters, digits or internal hyphens"
+        error = urllib.error.HTTPError(
+            'http://localhost', 409, 'Conflict', {}, io.BytesIO(json.dumps({'error': detail}).encode()),
+        )
+        with patch('urllib.request.urlopen', side_effect=error) as urlopen:
+            with self.assertRaisesRegex(RuntimeError, detail):
+                wrapper._register_instance(8300, 'codex', name='!!!')
+            urlopen.assert_called_once()
+            self.assertEqual(json.loads(urlopen.call_args.args[0].data)['name'], '')
+
     def test_release_after_window_shutdown_and_lease_expiry(self):
         clock = [0]
         def register(*args):
@@ -57,7 +83,7 @@ class RegistrationRetryTests(unittest.TestCase):
             return urllib.error.HTTPError('http://localhost', 409, 'Conflict', {}, body)
         with patch('urllib.request.urlopen', side_effect=error('Name already in use: c2')):
             with self.assertRaises(wrapper.NameInUseError):
-                wrapper._register_instance(8300, 'codex', 'c2', 'c2')
+                wrapper._register_instance(8300, 'codex', name='C2')
         with patch('urllib.request.urlopen', side_effect=error('That name is reserved')):
             with self.assertRaises(RuntimeError) as raised:
                 wrapper._register_instance(8300, 'codex', 'c2', 'c2')

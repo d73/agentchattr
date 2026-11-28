@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 from agents import take_trigger
+from registry import sanitize_chat_id
 
 ROOT = Path(__file__).parent
 
@@ -398,6 +399,11 @@ def _register_instance(server_port: int, base: str, label: str | None = None, na
     import urllib.error
     import urllib.request
 
+    if name is not None:
+        requested_name = name.strip()
+        name = sanitize_chat_id(requested_name)
+        if label is None and name != requested_name:
+            label = requested_name
     registration = {"base": base, "label": label}
     if name is not None:
         registration["name"] = name
@@ -447,7 +453,7 @@ def _register_at_startup(server_port, base, label, name, timeout=40):
             if remaining <= 0:
                 raise
             if not announced:
-                print(f"  Name {name} is in use. Retrying for up to {timeout:g} seconds...", flush=True)
+                print(f"  Name {sanitize_chat_id(name)} is in use. Retrying for up to {timeout:g} seconds...", flush=True)
                 announced = True
             time.sleep(min(1, remaining))
 
@@ -632,7 +638,7 @@ def main():
     parser.add_argument("agent", choices=agent_names, help=f"Agent to wrap ({', '.join(agent_names)})")
     parser.add_argument("--no-restart", action="store_true", help="Do not restart on exit")
     parser.add_argument("--label", type=str, default=None, help="Custom display label")
-    parser.add_argument("--name", type=str, default=None, help="Requested chat identity (lowercase letters, digits and hyphens)")
+    parser.add_argument("--name", type=str, default=None, help="Requested name (converted to a lowercase chat ID)")
     # Per-project isolation flags (must match the server's flags so wrappers
     # launched separately connect to the right instance). Values are consumed
     # by apply_cli_overrides() above; listing here so --help shows them.
