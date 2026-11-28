@@ -116,12 +116,9 @@ class SettingsLoadTests(unittest.TestCase):
                 app._save_agent_color_changes({"codex": "#444444"}, None)
         self.assertIs(app.room_settings["agent_colors"], previous)
 
-    def test_color_delta_is_acknowledged_and_broadcast_over_the_socket(self):
-        app.room_settings.clear()
-        app.room_settings.update(channels=["general"], agent_colors={"claude": "#333333"})
+    def exchange_settings_frames(self, events):
         frames = []
-        incoming = iter([{"type": "agent_color_changes", "request_id": 1,
-                          "changes": {"codex": "#444444"}}])
+        incoming = iter(events)
 
         class Socket:
             query_params = {"token": "test"}
@@ -153,11 +150,35 @@ class SettingsLoadTests(unittest.TestCase):
         ):
             asyncio.run(app.websocket_endpoint(Socket()))
 
+        return frames
+
+    def test_color_delta_is_acknowledged_and_broadcast_over_the_socket(self):
+        app.room_settings.clear()
+        app.room_settings.update(channels=["general"], agent_colors={"claude": "#333333"})
+        frames = self.exchange_settings_frames([
+            {"type": "agent_color_changes", "request_id": 1, "changes": {"codex": "#444444"}},
+        ])
+
         expected = {"claude": "#333333", "codex": "#444444"}
         self.assertIn({"type": "agent_colors_saved", "request_id": 1, "data": expected, "revision": 1}, frames)
         latest_settings = [f for f in frames if f["type"] == "settings"][-1]["data"]
         self.assertEqual(latest_settings["agent_colors"], expected)
         self.assertEqual(latest_settings["agent_colors_revision"], 1)
+
+    def test_chat_typography_is_persisted_and_acknowledged_over_the_socket(self):
+        frames = self.exchange_settings_frames([
+            {"type": "update_settings", "typography_request_id": "1-1", "data": {"font": "mono"}},
+            {"type": "update_settings", "typography_request_id": "1-2", "data": {"font_size": 20}},
+            {"type": "update_settings", "typography_request_id": "1-3", "data": {"font_size": 99}},
+        ])
+
+        responses = [frame for frame in frames if "typography_request_id" in frame]
+        self.assertEqual([frame["typography_request_id"] for frame in responses], ["1-1", "1-2", "1-3"])
+        self.assertEqual(responses[0]["data"]["font"], "mono")
+        self.assertEqual(responses[1]["data"]["font_size"], 20)
+        self.assertEqual(responses[2]["data"]["font_size"], 20)
+        saved = json.loads(self.path.read_text("utf-8"))
+        self.assertEqual((saved["font"], saved["font_size"]), ("mono", 20))
 
 
 if __name__ == "__main__":

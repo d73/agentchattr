@@ -1412,9 +1412,11 @@ async def broadcast_todo_update(msg_id: int, status: str | None):
     await _broadcast(data)
 
 
-async def broadcast_settings():
-    data = json.dumps({"type": "settings", "data": _settings_payload()})
-    await _broadcast(data)
+async def broadcast_settings(typography_request_id=None):
+    event = {"type": "settings", "data": _settings_payload()}
+    if isinstance(typography_request_id, str) and len(typography_request_id) <= 32:
+        event["typography_request_id"] = typography_request_id
+    await _broadcast(json.dumps(event))
 
 
 async def broadcast_rule(action: str, rule: dict):
@@ -1808,7 +1810,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         if isinstance(r, str) and r.strip()
                     ][:20]
                 _save_settings()
-                await broadcast_settings()
+                await broadcast_settings(event.get("typography_request_id"))
 
             elif event.get("type") == "rename_agent":
                 agent_name = (event.get("name") or "").strip()

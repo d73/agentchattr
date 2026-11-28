@@ -5,6 +5,7 @@
 const SESSION_TOKEN = window.__SESSION_TOKEN__ || "";
 
 let ws = null;
+const pendingChatTypography = new Map();
 let pendingAttachments = [];
 let channelUploads = 0;
 let autoScroll = true;
@@ -966,7 +967,7 @@ function handleServerEvent(event) {
     } else if (event.type === 'agent_colors_saved') {
         handleAgentColorsSaved(event);
     } else if (event.type === 'settings') {
-        applySettings(event.data);
+        applySettings(event.data, event.typography_request_id);
     } else if (event.type === 'delete') {
         handleDeleteBroadcast(event.ids);
     } else if (event.type === 'rules' || event.type === 'decisions') {
@@ -1118,6 +1119,11 @@ function connectWebSocket() {
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
+        }
+        if (pendingChatTypography.size) {
+            saveChatTypography(Object.fromEntries(
+                Array.from(pendingChatTypography, ([key, { value }]) => [key, value]),
+            ));
         }
     };
 
@@ -2452,7 +2458,32 @@ function updateTyping(agent, active) {
 
 let pendingChannelSwitch = null;
 
-function applySettings(data) {
+function applyChatFont(font) {
+    document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
+    document.body.classList.add('font-' + font);
+    document.getElementById('setting-font').value = font;
+}
+
+function applyChatFontSize(size) {
+    document.documentElement.style.setProperty('--chat-font-size', size + 'px');
+}
+
+function currentChatFontSize(input) {
+    return parseInt(document.documentElement.style.getPropertyValue('--chat-font-size'), 10)
+        || Number(input.defaultValue);
+}
+
+function saveChatTypography(data) {
+    const requestId = crypto.getRandomValues(new Uint32Array(2)).join('-');
+    for (const [key, value] of Object.entries(data)) {
+        pendingChatTypography.set(key, { requestId, value });
+    }
+    if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'update_settings', data, typography_request_id: requestId }));
+    }
+}
+
+function applySettings(data, typographyRequestId) {
     if (data.title) {
         document.getElementById('room-title').textContent = data.title;
         // Tab title carries both names, so several servers are distinguishable
@@ -2472,19 +2503,19 @@ function applySettings(data) {
         const nameInput = document.getElementById('setting-username');
         if (document.activeElement !== nameInput) nameInput.value = username;
     }
-    if (data.font) {
-        document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
-        document.body.classList.add('font-' + data.font);
-        document.getElementById('setting-font').value = data.font;
+    // Older settings snapshots must not roll back newer local edits.
+    for (const [key, pending] of pendingChatTypography) {
+        if (pending.requestId === typographyRequestId) pendingChatTypography.delete(key);
     }
-    if (Number.isInteger(data.font_size)) {
+    if (data.font && !pendingChatTypography.has('font')) {
+        applyChatFont(data.font);
+    }
+    if (Number.isInteger(data.font_size) && !pendingChatTypography.has('font_size')) {
         const input = document.getElementById('setting-font-size');
-        const style = document.documentElement.style;
-        const size = data.font_size + 'px';
-        if (document.activeElement !== input || style.getPropertyValue('--chat-font-size') !== size) {
+        if (document.activeElement !== input || input.valueAsNumber === currentChatFontSize(input)) {
             input.value = data.font_size;
         }
-        style.setProperty('--chat-font-size', size);
+        applyChatFontSize(data.font_size);
     }
     if (data.ui_prefs && typeof data.ui_prefs === 'object') {
         applyUiPrefs(data.ui_prefs);
@@ -2717,7 +2748,6 @@ function clearChat() {
 function saveSettings() {
     const newUsername = document.getElementById('setting-username').value.trim();
     const newSubtitle = document.getElementById('setting-subtitle').value.trim();
-    const newFont = document.getElementById('setting-font').value;
     const newHops = document.getElementById('setting-hops').value;
     const histVal = document.getElementById('setting-history').value;
     const newHistory = histVal === 'all' ? 'all' : (parseInt(histVal) || 50);
@@ -2736,7 +2766,6 @@ function saveSettings() {
             data: {
                 username: newUsername || 'user',
                 subtitle: newSubtitle,
-                font: newFont,
                 max_agent_hops: parseInt(newHops) || 4,
                 history_limit: newHistory,
                 contrast: newContrast,
@@ -2768,13 +2797,14 @@ function setupSettingsKeys() {
     document.getElementById('setting-inactive-days')?.addEventListener('change', () => saveSettings());
 
     const fontSize = document.getElementById('setting-font-size');
-    fontSize.addEventListener('change', () => {
-        if (fontSize.value && fontSize.validity.valid && ws?.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'update_settings', data: { font_size: fontSize.valueAsNumber } }));
-        } else {
-            fontSize.value = parseInt(document.documentElement.style.getPropertyValue('--chat-font-size'), 10)
-                || fontSize.defaultValue;
-        }
+    fontSize.addEventListener('input', () => {
+        const size = fontSize.valueAsNumber;
+        if (!Number.isInteger(size) || !fontSize.validity.valid || size === currentChatFontSize(fontSize)) return;
+        applyChatFontSize(size);
+        saveChatTypography({ font_size: size });
+    });
+    fontSize.addEventListener('blur', () => {
+        fontSize.value = currentChatFontSize(fontSize);
     });
     fontSize.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -2787,6 +2817,11 @@ function setupSettingsKeys() {
     for (const id of ['setting-font', 'setting-history', 'setting-contrast', 'setting-rules-refresh']) {
         const el = document.getElementById(id);
         el.addEventListener('change', () => {
+            if (id === 'setting-font') {
+                applyChatFont(el.value);
+                saveChatTypography({ font: el.value });
+                return;
+            }
             // Apply contrast immediately (don't wait for server round-trip)
             if (id === 'setting-contrast') {
                 document.body.classList.toggle('high-contrast', el.value === 'high');
