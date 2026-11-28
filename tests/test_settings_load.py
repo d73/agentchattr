@@ -247,6 +247,26 @@ class SettingsLoadTests(unittest.TestCase):
         app._load_settings()
         self.assertEqual(app.room_settings["font"], "montserrat")
 
+    def test_agent_pill_order_validates_and_persists_stable_ids(self):
+        left, right = "a" * 32, "b" * 32
+        self.path.write_text(json.dumps({"agent_pill_order": [left, "bad"], "font_size": 19}), "utf-8")
+        app._load_settings()
+        self.assertEqual(app.room_settings["agent_pill_order"], [])
+        frames = self.exchange_settings_frames([
+            {"type": "update_settings", "data": {"agent_pill_order": [right, left, right]},
+             "typography_request_id": "3-1"},
+            {"type": "update_settings", "data": {"agent_pill_order": {"0": left}}},
+            {"type": "update_settings", "data": {"agent_pill_order": [left, 7]}},
+        ])
+        acknowledged = next(frame for frame in frames if frame.get("typography_request_id") == "3-1")
+        self.assertEqual(acknowledged["data"]["agent_pill_order"], [right, left])
+        saved = json.loads(self.path.read_text("utf-8"))
+        self.assertEqual(saved["agent_pill_order"], [right, left])
+        self.assertEqual(saved["font_size"], 19)
+        app.room_settings.pop("agent_pill_order")
+        app._load_settings()
+        self.assertEqual(app.room_settings["agent_pill_order"], [right, left])
+
 
 if __name__ == "__main__":
     unittest.main()

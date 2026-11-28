@@ -73,6 +73,8 @@ DEFAULT_THEME_MODE = "dark"
 DEFAULT_THEME_PALETTE = "indigo"
 THEME_MODES = (DEFAULT_THEME_MODE, "light", "auto")
 THEME_PALETTES = (DEFAULT_THEME_PALETTE, "green", "blue", "amber")
+_AGENT_IDENTITY_RE = _re.compile(r"[0-9a-f]{32}")
+_MAX_AGENT_PILL_ORDER = 4096
 
 # Room settings (persisted to data/settings.json)
 room_settings: dict = {
@@ -85,6 +87,7 @@ room_settings: dict = {
     "font_size": DEFAULT_CHAT_FONT_SIZE,
     "theme_mode": DEFAULT_THEME_MODE,
     "theme_palette": DEFAULT_THEME_PALETTE,
+    "agent_pill_order": [],
     "channels": ["general"],
     # Manually archived channels (hidden in a collapsed "Archived" group) and the
     # idle threshold, in hours, after which a channel moves to "Inactive" (0 = off).
@@ -98,6 +101,14 @@ room_settings: dict = {
 # "agent_colors" ({name: "#rrggbb"}) is deliberately absent until a client first
 # sets it. Absent = never initialized (a client may seed it from its legacy
 # localStorage); present, even as {}, = authoritative (an explicit Reset).
+
+def _clean_agent_pill_order(raw: object) -> list[str] | None:
+    if not isinstance(raw, list) or len(raw) > _MAX_AGENT_PILL_ORDER:
+        return None
+    if any(not isinstance(identity, str) or not _AGENT_IDENTITY_RE.fullmatch(identity) for identity in raw):
+        return None
+    return list(dict.fromkeys(raw))
+
 
 def _clean_ui_prefs(raw: dict) -> dict:
     """Whitelist + validate synced per-user UI options (absent key = unset)."""
@@ -322,6 +333,7 @@ def _load_settings():
         room_settings["theme_mode"] = DEFAULT_THEME_MODE
     if room_settings.get("theme_palette") not in THEME_PALETTES:
         room_settings["theme_palette"] = DEFAULT_THEME_PALETTE
+    room_settings["agent_pill_order"] = _clean_agent_pill_order(room_settings.get("agent_pill_order")) or []
     # Ensure "general" always exists and is first
     if "channels" not in room_settings or not room_settings["channels"]:
         room_settings["channels"] = ["general"]
@@ -1796,6 +1808,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     room_settings["theme_mode"] = new["theme_mode"]
                 if new.get("theme_palette") in THEME_PALETTES:
                     room_settings["theme_palette"] = new["theme_palette"]
+                pill_order = _clean_agent_pill_order(new.get("agent_pill_order"))
+                if pill_order is not None:
+                    room_settings["agent_pill_order"] = pill_order
                 if "max_agent_hops" in new:
                     try:
                         hops = int(new["max_agent_hops"])

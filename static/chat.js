@@ -6,6 +6,7 @@ const SESSION_TOKEN = window.__SESSION_TOKEN__ || "";
 
 let ws = null;
 const pendingAppearanceSettings = new Map();
+let agentPillOrder = [];
 let systemTheme;
 let themeMode = document.documentElement.dataset.themeMode || 'dark';
 let themePalette = document.documentElement.dataset.palette || 'indigo';
@@ -180,10 +181,10 @@ Object.defineProperty(window, '_lastMentionedAgent', {
 });
 
 // --- Drag-scroll for overflow containers ---
-function enableDragScroll(el) {
+function enableDragScroll(el, ignoreSelector) {
     let isDown = false, startX, scrollLeft;
     el.addEventListener('mousedown', e => {
-        if (e.button !== 0) return;  // left-click only
+        if (e.button !== 0 || (ignoreSelector && e.target.closest(ignoreSelector))) return;
         isDown = true; startX = e.pageX - el.offsetLeft; scrollLeft = el.scrollLeft;
         el.style.cursor = 'grabbing';
     });
@@ -508,6 +509,14 @@ function init() {
     setupSidePanelGrips();
     setupSettingsKeys();
     setupThemeSettings();
+    const mentionRow = document.getElementById('mention-toggles');
+    enableDragScroll(mentionRow, '[data-reorderable]');
+    enableDragScroll(document.getElementById('agent-status'));
+    setupHorizontalReorder(mentionRow, {
+        move: (item, anchor, after) => moveAgentPill(item.dataset.agent, anchor.dataset.agent, after),
+        status: document.getElementById('agent-pill-order-status'),
+        label: item => item.textContent,
+    });
     setupUserColorSetting();
     setupAttentionStyleSetting();
     if (window.ChannelAttention) window.ChannelAttention.setup();
@@ -1841,16 +1850,60 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+function orderedAgentEntries() {
+    const positions = new Map(agentPillOrder.map((identity, index) => [identity, index]));
+    return Object.entries(agentConfig).sort(([a, left], [b, right]) => {
+        const leftPosition = positions.get(left.identity_id) ?? agentPillOrder.length;
+        const rightPosition = positions.get(right.identity_id) ?? agentPillOrder.length;
+        return leftPosition - rightPosition ||
+            (left.label || a).localeCompare(right.label || b, undefined, { sensitivity: 'base' });
+    });
+}
+
+function applyAgentPillOrder(order) {
+    if (order.length === agentPillOrder.length && order.every((id, index) => id === agentPillOrder[index])) return;
+    agentPillOrder = order;
+    const entries = orderedAgentEntries();
+    const focused = document.activeElement;
+    for (const id of ['mention-toggles', 'agent-status']) {
+        const row = document.getElementById(id);
+        const pills = new Map([...row.querySelectorAll('[data-agent]')].map(pill => [pill.dataset.agent, pill]));
+        const scroll = row.scrollLeft;
+        let next = row.firstElementChild;
+        if (next?.id === 'mention-all-toggle') next = next.nextElementSibling;
+        for (const [name] of entries) {
+            const pill = pills.get(name);
+            if (!pill) continue;
+            if (pill !== next) row.insertBefore(pill, next);
+            next = pill.nextElementSibling;
+        }
+        row.scrollLeft = scroll;
+    }
+    if (focused && document.activeElement !== focused) focused.focus({ preventScroll: true });
+}
+
+function moveAgentPill(name, anchorName, after) {
+    const identity = agentConfig[name]?.identity_id;
+    const anchor = agentConfig[anchorName]?.identity_id;
+    if (!identity || !anchor || identity === anchor) return false;
+    // Include saved identities that are currently absent, plus any new agents in label order.
+    const order = [...new Set([...agentPillOrder, ...orderedAgentEntries().map(([, cfg]) => cfg.identity_id).filter(Boolean)])];
+    order.splice(order.indexOf(identity), 1);
+    order.splice(order.indexOf(anchor) + Number(after), 0, identity);
+    applyAgentPillOrder(order);
+    saveAppearanceSettings({ agent_pill_order: order });
+    return true;
+}
+
 function buildStatusPills() {
     const container = document.getElementById('agent-status');
     container.innerHTML = '';
-    const byLabel = ([an, ac], [bn, bc]) =>
-        (ac.label || an).localeCompare(bc.label || bn, undefined, { sensitivity: 'base' });
-    for (const [name, cfg] of Object.entries(agentConfig).sort(byLabel)) {
+    for (const [name, cfg] of orderedAgentEntries()) {
         const pill = document.createElement('div');
         pill.className = 'status-pill';
         if (cfg.state === 'pending') pill.classList.add('pending');
         pill.id = `status-${name}`;
+        pill.dataset.agent = name;
         pill.title = `@${name}`;  // Tooltip: canonical name for manual @-typing
         pill.style.setProperty('--agent-color', colorOverrides[name] || cfg.color || '#4ade80');
         pill.innerHTML = `<span class="status-dot"></span><span class="status-label">${escapeHtml(cfg.label || name)}</span>`;
@@ -1876,7 +1929,6 @@ function buildStatusPills() {
         });
         container.appendChild(pill);
     }
-    enableDragScroll(container);
 }
 
 // --- Role presets (shared by pill popover + bubble picker) ---
@@ -2542,6 +2594,9 @@ function applySettings(data, appearanceRequestId) {
     // Older settings snapshots must not roll back newer local edits.
     for (const [key, pending] of pendingAppearanceSettings) {
         if (pending.requestId === appearanceRequestId) pendingAppearanceSettings.delete(key);
+    }
+    if (Array.isArray(data.agent_pill_order) && !pendingAppearanceSettings.has('agent_pill_order')) {
+        applyAgentPillOrder(data.agent_pill_order);
     }
     if (data.theme_mode && !pendingAppearanceSettings.has('theme_mode')) {
         themeMode = data.theme_mode;
@@ -4156,16 +4211,19 @@ function buildMentionToggles() {
         container.appendChild(allBtn);
     }
 
-    // Alphabetical by display label (same order as the top status pills); @all stays first.
-    const byLabel = ([an, ac], [bn, bc]) =>
-        (ac.label || an).localeCompare(bc.label || bn, undefined, { sensitivity: 'base' });
-    for (const [name, cfg] of Object.entries(agentConfig).sort(byLabel)) {
+    for (const [name, cfg] of orderedAgentEntries()) {
         if (cfg.state === 'pending') continue;  // skip pending instances
         const btn = document.createElement('button');
         btn.className = 'mention-toggle';
+        btn.type = 'button';
         btn.dataset.agent = name;
         btn.textContent = `@${cfg.label || name}`;
         btn.title = `@${name} — double-click to select only this agent`;
+        if (cfg.identity_id) {
+            btn.dataset.reorderable = '';
+            btn.title += ' · Drag to reorder or press Alt+Shift+Left/Right';
+            btn.setAttribute('aria-keyshortcuts', 'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight');
+        }
         btn.style.setProperty('--agent-color', colorOverrides[name] || cfg.color);
         // Restore active state for mentions that survived the rebuild
         if (activeMentions.has(name)) {
@@ -4196,7 +4254,6 @@ function buildMentionToggles() {
         container.appendChild(btn);
     }
     syncMentionAllToggle();
-    enableDragScroll(container);
 }
 
 // --- Voice typing ---
