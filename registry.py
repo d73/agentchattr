@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
 
+from atomic_io import quarantine_corrupt_json
+
 
 @dataclass
 class Instance:
@@ -141,25 +143,34 @@ class RuntimeRegistry:
 
     def _load_instances(self):
         p = self._instances_path()
-        if not p.exists():
-            return
         try:
             data = json.loads(p.read_text("utf-8"))
-        except Exception:
+        except FileNotFoundError:
+            return
+        except ValueError as exc:
+            quarantine_corrupt_json(p, type(exc).__name__)
+            return
+        if not isinstance(data, dict):
+            quarantine_corrupt_json(p, "expected a registry object")
             return
         # Slot-based profiles were added when automatic slot 1 stopped using "-1".
         self._legacy_slot_names = "profiles" not in data
         saved_profiles = data.get("profiles", {})
+        damaged = False
         if not isinstance(saved_profiles, dict):
+            damaged = True
             saved_profiles = {}
         for base, profiles in saved_profiles.items():
             if not isinstance(profiles, dict):
+                damaged = True
                 continue
-            self._profiles[base] = {
+            valid_profiles = {
                 slot: profile for slot, profile in profiles.items()
                 if isinstance(profile, dict)
                 and all(isinstance(profile.get(k), str) for k in ("name", "label", "color"))
             }
+            self._profiles[base] = valid_profiles
+            damaged |= len(valid_profiles) != len(profiles)
         # On startup nobody is proven alive: a persisted "active" instance may be a
         # dead pre-restart wrapper. Load everything as reclaimable — a wrapper that is
         # genuinely still alive reactivates its token on its next call (resolve_token),
@@ -167,11 +178,22 @@ class RuntimeRegistry:
         # active would make the empty post-restart presence map immortalize the ghost
         # (the crash-timeout only fires for names with last_seen > 0).
         for section in ("instances", "reclaimable"):
-            for n, d in data.get(section, {}).items():
+            entries = data.get(section, {})
+            if not isinstance(entries, dict):
+                damaged = True
+                continue
+            for n, d in entries.items():
+                if not isinstance(d, dict) or not all(
+                    isinstance(d.get(key), str) for key in ("name", "base", "label", "color", "token")
+                ):
+                    damaged = True
+                    continue
                 try:
                     self._reclaimable[n] = _inst_from_dict(d)
-                except Exception:
-                    pass
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    damaged = True
+        if damaged:
+            quarantine_corrupt_json(p, "invalid registry records")
 
     def _evict_reclaimable_collisions_locked(self):
         """Drop reclaimables that collide with any live instance, by name or (base, slot).

@@ -5,10 +5,20 @@ loss mid-write leaves a partial file (and for settings, a silent reset to
 defaults on the next start). os.replace swaps the finished file in one step.
 """
 
+import logging
 import os
 import time
 import uuid
 from pathlib import Path
+
+
+def quarantine_corrupt_json(path: Path, reason: str) -> None:
+    """Preserve damaged state before allowing the store to write a replacement."""
+    backup = path.with_name(f"{path.name}.corrupt-{uuid.uuid4().hex}")
+    path.replace(backup)
+    logging.getLogger(__name__).warning(
+        "Invalid JSON state in %s (%s); preserved original at %s", path, reason, backup
+    )
 
 
 def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
