@@ -152,17 +152,23 @@ def main():
 
     plugins = None
     mcp_bridge.orch_job_auth = None
+    mcp_bridge.orch_presence_changed = None
     if config.get("plugins"):
         from copy import deepcopy
         from plugin_host import PluginHost, Services
         from orch_workflow import complete_orch_workflow, list_orch_workflow_actions
         from orch_workflow import publish_orch_workflow, read_orch_workflow
         from orch_workflow import publish_orch_history_event
+        from orch_events import OrchEvents
 
         plugins = PluginHost(data_dir)
         orch_entry = config["plugins"].get("orch")
         orch_settings = orch_entry.get("settings", {}) if isinstance(orch_entry, dict) else {}
         orch_identity = orch_settings.get("assignee") if isinstance(orch_settings, dict) else None
+        orch_channel = orch_settings.get("channel") if isinstance(orch_settings, dict) else None
+        orch_events = None
+        if all(isinstance(item, str) and item.strip() for item in (orch_identity, orch_channel)):
+            orch_events = OrchEvents(orch_channel, orch_identity, jobs, data_dir / "orch-reset-receipts.sqlite3")
 
         def transition_plugin_job(job_id, event, *, actor, actor_kind, expected_scope, **details):
             if (actor_kind != "orch" or not isinstance(expected_scope, dict)
@@ -191,6 +197,7 @@ def main():
             list_orch_workflow_actions=partial(list_orch_workflow_actions, jobs, store),
             complete_orch_workflow=partial(complete_orch_workflow, jobs, store),
             publish_orch_history_event=partial(publish_orch_history_event, jobs),
+            subscribe_orch_events=orch_events.subscribe if orch_events else None,
         )
         plugins.load(config["plugins"], services, core_routes=app.router.routes,
                      core_tools=(tool.__name__ for tool in mcp_bridge._ALL_TOOLS))
@@ -198,6 +205,16 @@ def main():
             name == "orch_list_jobs" for name, _ in plugins.tools
         ):
             mcp_bridge.orch_job_auth = (orch_identity, data_dir.resolve() / ".orchestrator.env")
+            if orch_events is not None:
+                app.state.orch_events = orch_events
+                store.on_message(orch_events.message_added, committed_only=True)
+
+                def publish_online_worker(name):
+                    worker = registry.get_instance(name)
+                    if worker and worker["base"] == "codex" and worker["state"] == "active":
+                        orch_events.roster_changed(registry.get_all(), app_agents.get_status())
+
+                mcp_bridge.orch_presence_changed = publish_online_worker
         plugins.install_http(app)
         app.state.plugins = plugins
 

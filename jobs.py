@@ -440,7 +440,10 @@ class JobStore:
             committed = dict(current, choice=choice, actor=actor,
                              actor_source="local-browser", decided_at=time.time())
             self._write_gates_locked(job, [committed if record is current else record for record in records])
-            return self._gate_result(committed)
+            result = self._gate_result(committed)
+            job_id = job["id"]
+        self._fire("decision", {"job_id": job_id})
+        return result
 
     def rename_channel(self, old_name: str, new_name: str):
         with self._lock:
@@ -718,6 +721,8 @@ class JobStore:
                 self._save_reopen_requests_locked(job, replacement)
                 snapshot = self._snapshot(job)
         self._fire("update", snapshot)
+        if updated["status"] != "pending":
+            self._fire("decision", {"job_id": job_id})
         return {"request": deepcopy(updated), "job": snapshot}
 
     def _save_reopen_requests_locked(self, job, requests):

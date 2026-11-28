@@ -14,9 +14,10 @@ def configured_operator(config) -> str | None:
 def verify_operator(
     request, config: dict, session_token: str, *,
     room_username: str, is_host_interface: Callable[[str], bool] | None = None,
+    browser_token: str | None = None,
 ) -> str | None:
     """Attribute a direct browser request from loopback or an allowed host interface."""
-    session = request.headers.get("x-session-token", "")
+    session = request.headers.get("x-session-token", "") if browser_token is None else browser_token
     if (not session_token or not hmac.compare_digest(session.encode(), session_token.encode())
             or any(header in request.headers for header in (
                 "authorization", "x-agent-token", "forwarded", "x-forwarded-for"

@@ -10,6 +10,7 @@ import sys
 import threading
 import uuid
 import logging
+import sqlite3
 import time
 import shutil
 from pathlib import Path
@@ -33,6 +34,7 @@ from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from plugin_host import ASSET_PREFIX
 from operator_auth import verify_operator
+from orch_events import RESET_PATH, forwarded
 from orch_workflow import history as orch_history, history_context as orch_history_context
 from orch_workflow import history_event_context as orch_history_event_context
 from orch_workflow import record_reply as record_orch_reply, reply_metadata as orch_reply_metadata
@@ -548,6 +550,9 @@ def _install_security_middleware(token: str, cfg: dict):
                 )
 
             plugins = getattr(request.app.state, "plugins", None)
+            if (request.method == "GET" and path == RESET_PATH
+                    and getattr(request.app.state, "orch_events", None) is not None):
+                return await call_next(request)
             if plugins is not None:
                 if request.method in {"GET", "HEAD"} and path.startswith(ASSET_PREFIX):
                     return await call_next(request)
@@ -976,6 +981,14 @@ def _on_rule_change(action: str, rule: dict):
 
 def _on_job_change(action: str, data: dict):
     """Called from any thread when a job changes."""
+    orch_events = getattr(app.state, "orch_events", None)
+    if orch_events is not None:
+        try:
+            orch_events.job_changed(action, data)
+        except Exception:
+            log.exception("Could not publish Orch Job wake hint")
+    if action == "decision":
+        return
     if _event_loop is None:
         return
     try:
@@ -1126,7 +1139,8 @@ async def _handle_new_message(msg: dict):
     sender_identity = msg.get("sender_identity")
     sender_base = msg.get("sender_base")
     sender_is_agent = sender_kind == "agent"
-    if sender_kind not in ("human", "agent"):
+    orch_events = getattr(app.state, "orch_events", None)
+    if sender_kind not in ("human", "agent") or (orch_events is not None and orch_events.is_reset(text)):
         await broadcast(msg)
         return
 
@@ -1440,6 +1454,9 @@ async def broadcast(msg: dict):
 
 async def broadcast_status():
     status = agents.get_status()
+    orch_events = getattr(app.state, "orch_events", None)
+    if orch_events is not None and registry is not None:
+        orch_events.roster_changed(registry.get_all(), status)
     status["paused"] = any(router.is_paused(ch) for ch in room_settings.get("channels", ["general"]))
     data = json.dumps({"type": "status", "data": status})
     await _broadcast(data)
@@ -1609,6 +1626,23 @@ async def _initialize_websocket(websocket: WebSocket):
     await broadcast_status()
 
 
+async def _record_browser_orch_reset(websocket, token, events, text, channel, attachments):
+    origin = websocket.headers.get("origin", "")
+    port = config.get("server", {}).get("port", 8300)
+    actor = verify_operator(websocket, config, session_token, browser_token=token,
+                            room_username=room_settings.get("username", "user"))
+    if (not actor or forwarded(websocket.headers) or not _origin_allowed(origin, port)
+            or channel not in room_settings.get("channels", ["general"])
+            or not events.covers_channel(channel) or attachments):
+        await _send_ws_frame(websocket, json.dumps({
+            "type": "message_error", "error": "Orch reset requires a local browser in a scoped channel",
+        }))
+        return
+    message = store.add(actor, text, channel=channel, sender_kind="human",
+                        uid=str(uuid.uuid4()), once=True)
+    events.record_reset(message, actor)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     # --- Security: validate session token on WebSocket connect ---
@@ -1635,6 +1669,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 channel = event.get("channel", "general")
 
                 if not text and not attachments:
+                    continue
+
+                orch_events = getattr(app.state, "orch_events", None)
+                if orch_events is not None and orch_events.is_reset(text):
+                    try:
+                        await _record_browser_orch_reset(websocket, token, orch_events, text, channel, attachments)
+                    except (OSError, sqlite3.Error):
+                        log.exception("Could not persist Orch reset command")
+                        await _send_ws_frame(websocket, json.dumps({
+                            "type": "message_error", "error": "Could not persist Orch reset command",
+                        }))
                     continue
 
                 # Command handling
@@ -2400,6 +2445,9 @@ async def resolve_decision(msg_id: int, request: Request):
                         raise OSError(exc.errno, f"Could not save decision: {exc}", str(store._path.resolve())) from exc
     if error:
         return JSONResponse({"error": error[0]}, status_code=error[1])
+    orch_events = getattr(app.state, "orch_events", None)
+    if orch_events is not None:
+        orch_events.decision_resolved(msg)
     # Post the chosen answer as a regular chat message tagged @sender
     username = room_settings.get("username", "user")
     metadata = None
@@ -2458,6 +2506,23 @@ async def resolve_orch_gate(job_uid: str, decision_id: int, request: Request):
         if updated:
             await _broadcast(json.dumps({"type": "message_update", "message": updated}))
     return decision
+
+
+@app.get(RESET_PATH)
+async def read_orch_reset_commands(request: Request, after_message_id: int = -1):
+    from mcp_bridge import orch_coordinator_for_token
+
+    events = getattr(request.app.state, "orch_events", None)
+    if events is None:
+        return JSONResponse({"error": "Orch reset receipts are unavailable"}, status_code=404)
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if (request.client is None or request.client.host not in ("127.0.0.1", "::1")
+            or forwarded(request.headers) or scheme != "Bearer"
+            or orch_coordinator_for_token(token) != events.coordinator):
+        return JSONResponse({"error": "Orch service credential required"}, status_code=403)
+    if not -1 <= after_message_id < 2**63:
+        return JSONResponse({"error": "Invalid reset receipt cursor"}, status_code=400)
+    return JSONResponse(events.reset_ids(after_message_id), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/messages/{msg_id}/resolve_rule_proposal")
