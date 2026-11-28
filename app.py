@@ -593,7 +593,7 @@ def configure(cfg: dict, session_token: str = ""):
             # OR the 60s crash timeout below.
             # Short timeout (10s) prevents slot theft when MCP tool calls are intermittent.
             try:
-                now = _time.time()
+                now = _time.monotonic()
                 with mcp_bridge._presence_lock:
                     currently_online = {
                         name for name, ts in mcp_bridge._presence.items()
@@ -2617,7 +2617,7 @@ async def register_agent(request: Request):
     for expired_name in result.pop("_expired", []):
         mcp_bridge.purge_identity(expired_name)
     with mcp_bridge._presence_lock:
-        mcp_bridge._presence[result["name"]] = __import__("time").time()
+        mcp_bridge._presence[result["name"]] = time.monotonic()
         if body.get("activity_known") is False:
             mcp_bridge._activity_known[result["name"]] = False
         else:
@@ -2736,8 +2736,7 @@ async def heartbeat(agent_name: str, request: Request):
         return JSONResponse({"error": "authenticated agent session required"}, status_code=403)
 
     current_name = auth_inst["name"] if auth_inst else agent_name
-    with mcp_bridge._presence_lock:
-        mcp_bridge._presence[current_name] = __import__("time").time()
+    mcp_bridge._touch_presence(current_name)
     # Optional activity report from wrapper's terminal monitor
     _activity_changed = False
     try:

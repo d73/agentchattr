@@ -322,8 +322,7 @@ def chat_send(
                                recipient_identity=recipient_identity or None, expected_scope=job_scope)
         if msg is None:
             return f"Error: job #{job_id} not found."
-        with _presence_lock:
-            _presence[sender] = time.time()
+        _touch_presence(sender)
 
         # Route @mentions in job messages to trigger other agents
         if router and agents:
@@ -396,8 +395,7 @@ def chat_send(
                     msg_type=msg_type, metadata=metadata,
                     sender_kind="agent" if authenticated else "human",
                     sender_identity=sender_identity, sender_base=sender_base)
-    with _presence_lock:
-        _presence[sender] = time.time()
+    _touch_presence(sender)
     result = f"Sent (id={msg['id']})"
     if msg.get("persistence_error"):
         result += (f". Warning: message log write failed: {msg['persistence_error']}. "
@@ -438,8 +436,7 @@ def chat_propose_job(
         sender_identity=authenticated["identity_id"] if authenticated else None,
         sender_base=authenticated["base"] if authenticated else None,
     )
-    with _presence_lock:
-        _presence[sender] = time.time()
+    _touch_presence(sender)
     return f"Proposed job (msg_id={msg['id']}): {title}"
 
 
@@ -826,18 +823,18 @@ def chat_who() -> str:
 def _touch_presence(name: str):
     """Update presence timestamp — called on any MCP tool use."""
     with _presence_lock:
-        _presence[name] = time.time()
+        _presence[name] = time.monotonic()
 
 
 def _get_online() -> list[str]:
-    now = time.time()
+    now = time.monotonic()
     with _presence_lock:
         return [name for name, ts in _presence.items()
                 if now - ts < PRESENCE_TIMEOUT]
 
 
 def is_online(name: str) -> bool:
-    now = time.time()
+    now = time.monotonic()
     with _presence_lock:
         return name in _presence and now - _presence.get(name, 0) < PRESENCE_TIMEOUT
 
@@ -846,7 +843,7 @@ def set_active(name: str, active: bool):
     with _presence_lock:
         _activity[name] = active
         if active:
-            _activity_ts[name] = __import__("time").time()
+            _activity_ts[name] = time.monotonic()
 
 
 def set_activity_known(name: str, known: bool):
@@ -862,26 +859,24 @@ def is_activity_known(name: str) -> bool:
 def set_needs_input(name: str, needs: bool):
     with _presence_lock:
         if needs:
-            _needs_input_ts[name] = __import__("time").time()
+            _needs_input_ts[name] = time.monotonic()
         else:
             _needs_input_ts.pop(name, None)
 
 
 def is_needs_input(name: str) -> bool:
-    import time as _time
     with _presence_lock:
         ts = _needs_input_ts.get(name)
-        return ts is not None and _time.time() - ts <= NEEDS_INPUT_TIMEOUT
+        return ts is not None and time.monotonic() - ts <= NEEDS_INPUT_TIMEOUT
 
 
 def is_active(name: str) -> bool:
-    import time as _time
     with _presence_lock:
         if not _activity.get(name, False):
             return False
         # Auto-expire stale activity
         ts = _activity_ts.get(name, 0)
-        if _time.time() - ts > ACTIVITY_TIMEOUT:
+        if time.monotonic() - ts > ACTIVITY_TIMEOUT:
             _activity[name] = False
             return False
         return True

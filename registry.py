@@ -31,7 +31,7 @@ class Instance:
     epoch: int = 1
     state: str = "pending"   # "pending" | "active"
     registered_at: float = field(default_factory=time.time)
-    last_seen: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.monotonic)
 
 
 class RuntimeRegistry:
@@ -202,7 +202,7 @@ class RuntimeRegistry:
             if base not in self._bases:
                 return None
 
-            now = time.time()
+            now = time.monotonic()
             expired = [old_name for old_name, old in self._instances.items()
                        if now - old.last_seen > self.HEARTBEAT_TIMEOUT]
             live = {n: i for n, i in self._instances.items() if n not in expired}
@@ -263,7 +263,8 @@ class RuntimeRegistry:
             # recovery/reclaim still uses chat_claim, but normal startup should
             # not block on a manual confirmation step.
             state = "active"
-            inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state)
+            inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state,
+                            last_seen=now)
             self._instances[name] = inst
             # Fresh registration supersedes reclaimable
             # identities sharing those names/(base, slot) coordinates — including custom
@@ -336,7 +337,7 @@ class RuntimeRegistry:
 
             if reclaim:
                 del self._reclaimable[sender]
-                inst.last_seen = time.time()
+                inst.last_seen = time.monotonic()
                 self._instances[sender] = inst
             if target_name is not None:
                 if target_name != inst.name:
@@ -539,7 +540,7 @@ class RuntimeRegistry:
         with self._lock:
             for inst in self._instances.values():
                 if inst.token == token:
-                    inst.last_seen = time.time()
+                    inst.last_seen = time.monotonic()
                     return _inst_dict(inst)
             for name, inst in list(self._reclaimable.items()):
                 if inst.token != token or name in self._instances:
@@ -553,7 +554,7 @@ class RuntimeRegistry:
                     changed = True
                     continue
                 inst.state = "active"
-                inst.last_seen = time.time()
+                inst.last_seen = time.monotonic()
                 self._instances[name] = inst
                 del self._reclaimable[name]
                 result = _inst_dict(inst)

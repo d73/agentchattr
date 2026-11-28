@@ -236,7 +236,7 @@ class AppAuthEndpointTests(unittest.TestCase):
 
     def test_timeout_cannot_remove_registration_refreshed_after_snapshot(self):
         instance = self.registry.register("claude")
-        initial = instance["registered_at"]
+        initial = self.registry._instances[instance["name"]].last_seen
         now = initial + self.registry.HEARTBEAT_TIMEOUT + 1
         mcp_bridge._presence["claude"] = initial
         deregister = self.registry.deregister
@@ -249,7 +249,7 @@ class AppAuthEndpointTests(unittest.TestCase):
             return deregister(*args, **kwargs)
 
         with (
-            mock.patch("registry.time.time", return_value=now),
+            mock.patch("registry.time.monotonic", return_value=now),
             mock.patch.object(self.registry, "deregister", side_effect=heartbeat_then_remove),
         ):
             self.assertEqual(app._expire_crashed_agents(now), set())
@@ -259,7 +259,7 @@ class AppAuthEndpointTests(unittest.TestCase):
 
     def test_timeout_removes_stale_instance_and_keeps_its_token_reclaimable(self):
         instance = self.registry.register("claude")
-        initial = instance["registered_at"]
+        initial = self.registry._instances[instance["name"]].last_seen
         mcp_bridge._presence["claude"] = initial
 
         self.assertEqual(app._expire_crashed_agents(initial + self.registry.HEARTBEAT_TIMEOUT + 1),
@@ -269,6 +269,23 @@ class AppAuthEndpointTests(unittest.TestCase):
         self.assertEqual(self.store.get_recent(1)[0]["type"], "leave")
         self.assertEqual(self.registry.resolve_token(instance["token"])["identity_id"],
                          instance["identity_id"])
+
+    def test_presence_expires_on_elapsed_time_even_when_wall_clock_moves(self):
+        with (
+            mock.patch("mcp_bridge.time.monotonic", return_value=100),
+            mock.patch("mcp_bridge.time.time", return_value=1_000),
+        ):
+            mcp_bridge._touch_presence("claude")
+        with (
+            mock.patch("mcp_bridge.time.monotonic", return_value=101),
+            mock.patch("mcp_bridge.time.time", return_value=2_000),
+        ):
+            self.assertTrue(mcp_bridge.is_online("claude"))
+        with (
+            mock.patch("mcp_bridge.time.monotonic", return_value=100 + mcp_bridge.PRESENCE_TIMEOUT),
+            mock.patch("mcp_bridge.time.time", return_value=500),
+        ):
+            self.assertFalse(mcp_bridge.is_online("claude"))
 
     def test_deregister_uses_authenticated_identity_not_path_text(self):
         inst = self.registry.register("claude")
@@ -286,7 +303,8 @@ class AppAuthEndpointTests(unittest.TestCase):
     def test_register_replaces_expired_session_and_purges_old_runtime_state(self):
         inst = self.registry.register("claude")
         mcp_bridge._activity["claude"] = True
-        with mock.patch("registry.time.time", return_value=inst["registered_at"] + 16):
+        since = self.registry._instances[inst["name"]].last_seen
+        with mock.patch("registry.time.monotonic", return_value=since + 16):
             response = asyncio.run(app.register_agent(FakeRequest(body={"base": "claude"})))
         fresh = json.loads(response.body)
         self.assertEqual(fresh["name"], "claude")
