@@ -179,13 +179,19 @@ def server_registrations(url, token):
     try:
         with urllib.request.urlopen(request, timeout=1) as response:
             payload = json.load(response)
-        bases = payload["registered_bases"]
-        if not isinstance(bases, list) or not all(isinstance(base, str) for base in bases):
-            raise ValueError("invalid registered_bases")
-        return set(bases)
-    except (OSError, ValueError, TypeError, KeyError) as exc:
+    except urllib.error.HTTPError as exc:
+        if 500 <= exc.code < 600:
+            raise ConnectionError("AgentChattr registration status is temporarily unavailable.") from exc
         raise RuntimeError("Cannot read registrations from the selected AgentChattr server. "
                            "Update or restart it before starting the team.") from exc
+    except OSError as exc:
+        raise ConnectionError("Cannot reach the selected AgentChattr server for registration status.") from exc
+    except ValueError as exc:
+        raise RuntimeError("The selected AgentChattr server returned invalid registration status.") from exc
+    bases = payload.get("registered_bases") if isinstance(payload, dict) else None
+    if not isinstance(bases, list) or not all(isinstance(base, str) for base in bases):
+        raise RuntimeError("The selected AgentChattr server returned invalid registration status.")
+    return set(bases)
 
 
 def main():
@@ -282,10 +288,18 @@ def start_team(url, env, commands):
             console = subprocess.Popen(inner, cwd=ROOT, env=env,
                                        creationflags=subprocess.CREATE_NEW_CONSOLE)
         deadline = time.monotonic() + 15
-        while name not in server_registrations(url, token):
+        while True:
+            try:
+                if name in server_registrations(url, token):
+                    break
+            except ConnectionError:
+                # Startup already began, so keep polling this child within
+                # the original deadline instead of treating it as missing.
+                pass
             if (not conemu and console.poll() is not None) or time.monotonic() >= deadline:
                 raise RuntimeError(f"Cannot confirm {LABELS[name]} startup. "
-                                   "Its wrapper did not register with this server. Check its terminal before retrying.")
+                                   "No registration was confirmed on this server. "
+                                   "Check its terminal before retrying.")
             time.sleep(1)
         print(f"{LABELS[name]}: started and registered with this server.")
     webbrowser.open(url)
