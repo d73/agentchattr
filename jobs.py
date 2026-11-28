@@ -235,7 +235,7 @@ class JobStore:
 
     @staticmethod
     def _gate_result(record):
-        return {key: deepcopy(record[key]) for key in _ORCH_GATE_FIELDS}
+        return {key: deepcopy(record[key]) for key in _ORCH_GATE_FIELDS} | {"actor_source": record.get("actor_source")}
 
     def _write_gates_locked(self, job, records):
         previous = job.get("_orch_gates")
@@ -316,7 +316,8 @@ class JobStore:
             if (job["lifecycle"]["stage_id"] != _ORCH_GATE_STAGE[gate]
                     or current["stage_version"] != self._stage_version(job)):
                 return None
-            committed = dict(current, choice=choice, actor=actor, decided_at=time.time())
+            committed = dict(current, choice=choice, actor=actor,
+                             actor_source="local-browser", decided_at=time.time())
             self._write_gates_locked(job, [committed if record is current else record for record in records])
             return self._gate_result(committed)
 
@@ -488,6 +489,9 @@ class JobStore:
             approval = reopen_requests[-1]
             record["reopen_approval"] = {key: deepcopy(approval[key])
                                          for key in ("id", "approval_basis", "decisions")}
+            source = approval["decisions"][-1].get("source")
+            if source:
+                record["source"] = source
             job["reopen_requests"] = reopen_requests
         job.update(status=status, lifecycle=deepcopy(updated), updated_at=now,
                    lifecycle_events=[*job.get("lifecycle_events", []), record])
@@ -526,8 +530,9 @@ class JobStore:
         self._fire("update", snapshot)
         return {"request": deepcopy(current), "job": snapshot}
 
-    def decide_reopen(self, job_id, request_id, *, expected_uid, expected_version, actor, role, decision):
-        """Persist a verified decision and any resulting reopen atomically."""
+    def decide_reopen(self, job_id, request_id, *, expected_uid, expected_version, actor, role, decision,
+                      source=None):
+        """Persist an authorized decision and any resulting reopen atomically."""
         with self._lock:
             job = next((item for item in self._jobs if item["id"] == job_id), None)
             if job is None or job["uid"] != expected_uid:
@@ -539,7 +544,8 @@ class JobStore:
                 raise ReopenConflict("Reopen request no longer matches the Job")
             state = job["lifecycle"]
             try:
-                updated = record_decision(current, actor=actor, role=role, decision=decision, now=time.time())
+                updated = record_decision(current, actor=actor, role=role, decision=decision,
+                                          now=time.time(), source=source)
             except ValueError as exc:
                 raise ReopenConflict(str(exc)) from exc
             if updated is current:

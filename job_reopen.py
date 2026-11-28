@@ -42,8 +42,9 @@ def create_request(*, request_id: str, job_uid: str, job_version: int,
     }
 
 
-def record_decision(reopen: dict, *, actor: str, role: str, decision: str, now: float) -> dict:
-    """Return the new request state for an already verified principal.
+def record_decision(reopen: dict, *, actor: str, role: str, decision: str, now: float,
+                    source: str | None = None) -> dict:
+    """Return the new request state for an already authorized caller.
 
     The caller checks the Job UID and version and persists this record under
     the same Job lock as the lifecycle transition.
@@ -72,7 +73,10 @@ def record_decision(reopen: dict, *, actor: str, role: str, decision: str, now: 
             raise ValueError("This delegate role already recorded a decision")
 
     updated = deepcopy(reopen)
-    updated["decisions"].append({"actor": actor, "role": role, "decision": decision, "at": now})
+    vote = {"actor": actor, "role": role, "decision": decision, "at": now}
+    if source:
+        vote["source"] = source
+    updated["decisions"].append(vote)
     if role == "owner":
         if decision == "approve":
             updated.update(status="approved", approval_basis="owner")

@@ -717,6 +717,7 @@ agentchattr is designed for **localhost use only** and includes several protecti
 - **Loopback-only registration** — agent registration, deregistration, and heartbeat endpoints only accept connections from localhost, preventing remote agent impersonation.
 - **Origin checking** — the server rejects requests from origins that don't match `localhost` / `127.0.0.1`, preventing cross-origin and DNS rebinding attacks.
 - **No `shell=True`** — subprocess calls avoid shell injection by passing argument lists directly.
+- **Local browser approvals** — open AgentChattr at `localhost` to approve an Orch gate or decide a Job reopen. Set `[operator] identity` in `config.local.toml` to the name the audit should record. Clicking the card choice submits it directly. The audit records the source as a local browser session and uses the configured name for attribution.
 - **Network binding warning** — if the server is configured to bind to a non-localhost address, it refuses to start unless you explicitly pass `--allow-network`.
 
 The session token is displayed in the terminal on startup and is only accessible to processes on the same machine.

@@ -1,9 +1,9 @@
 import asyncio
-import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import app
@@ -11,7 +11,6 @@ import mcp_bridge
 from config_loader import load_config
 from job_reopen import ReopenConflict, REOPEN_WAIT_SECONDS, create_request, record_decision
 from jobs import JobStore
-from operator_auth import PROOF_FILE, PROOF_KEY, prepare_operator_verifier
 from store import MessageStore
 
 
@@ -146,19 +145,15 @@ class JobReopenIntegrationTests(unittest.TestCase):
         self.assertEqual(result["job"]["lifecycle"]["flags"], ["paused"])
         self.assertEqual(result["job"]["lifecycle_events"][-1]["operation_id"], result["request"]["id"])
 
-    def test_http_bound_card_requires_independent_operator_proof(self):
+    def test_http_bound_card_requires_loopback_browser_session(self):
         config = {"server": {"data_dir": str(self.root)}, "operator": {"identity": "operator"}}
-        proof = "ab" * 32
-        prepare_operator_verifier(self.root)
-        digest = hashlib.sha256(proof.encode("ascii")).hexdigest()
-        (self.root / PROOF_FILE).write_text(f"{PROOF_KEY}={digest}\n", encoding="utf-8")
-        prepare_operator_verifier(self.root)
         headers = {"x-session-token": "browser-session"}
         body = {"job_uid": self.closed["uid"], "expected_version": self.scope["expected_version"],
                 "reason": "Fix the existing output"}
         messages = MessageStore(self.root / "messages.jsonl")
         with patch.multiple(app, jobs=self.jobs, store=messages, config=config, session_token="browser-session"):
-            request = Mock(headers=headers, json=AsyncMock(return_value=body))
+            request = Mock(headers=headers, client=SimpleNamespace(host="127.0.0.1"),
+                           json=AsyncMock(return_value=body))
             created = asyncio.run(app.create_job_reopen_request(self.closed["id"], request))
             self.assertEqual(asyncio.run(app.create_job_reopen_request(self.closed["id"], request)), created)
             msg = messages.get_by_id(created["card_msg_id"])
@@ -169,14 +164,29 @@ class JobReopenIntegrationTests(unittest.TestCase):
             self.assertEqual(asyncio.run(app.resolve_decision(msg["id"], generic_click)).status_code, 409)
             request.json.return_value = {**body, "decision": "approve"}
             rid = created["request"]["id"]
-            self.assertEqual(asyncio.run(app.decide_job_reopen_request(self.closed["id"], rid, request)).status_code, 403)
-            headers["x-orch-operator-proof"] = proof
-            headers["authorization"] = "Bearer agent-token"
-            self.assertEqual(asyncio.run(app.decide_job_reopen_request(self.closed["id"], rid, request)).status_code, 403)
-            headers.pop("authorization")
+            rejected = [
+                ("192.0.2.8", headers), ("127.0.0.1", {}), ("127.0.0.1", {"x-session-token": "wrong"}),
+                ("127.0.0.1", {**headers, "authorization": "Bearer agent-token"}),
+                ("127.0.0.1", {**headers, "x-agent-token": ""}),
+            ]
+            for peer, rejected_headers in rejected:
+                with self.subTest(peer=peer, header_names=sorted(rejected_headers)):
+                    request.client.host = peer
+                    request.headers = rejected_headers
+                    response = asyncio.run(app.decide_job_reopen_request(self.closed["id"], rid, request))
+                    self.assertEqual(response.status_code, 403)
+            request.client.host = "::1"
+            request.headers = headers
+            request.json.return_value = {**body, "expected_version": body["expected_version"] - 1,
+                                         "decision": "approve"}
+            self.assertEqual(asyncio.run(app.decide_job_reopen_request(self.closed["id"], rid, request)).status_code, 409)
+            request.json.return_value = {**body, "decision": "approve"}
             result = asyncio.run(app.decide_job_reopen_request(self.closed["id"], rid, request))
             self.assertEqual(result["request"]["approval_basis"], "owner")
-            self.assertEqual(result["job"]["lifecycle_events"][-1]["actor"], "operator")
+            vote = result["request"]["decisions"][-1]
+            audit = JobStore(self.path).get(self.closed["id"])["lifecycle_events"][-1]
+            self.assertEqual((vote["actor"], vote["source"]), ("operator", "local-browser"))
+            self.assertEqual((audit["actor"], audit["source"]), ("operator", "local-browser"))
 
     def test_mcp_votes_require_exact_active_registration(self):
         request = self.request()
