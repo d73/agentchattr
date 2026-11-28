@@ -18,10 +18,13 @@ def check(page, url, screenshots, plugin):
     actions = []
     channel = "orch-workflow"
     moved = "renamed-workflow"
+    uid = "fca6bc6e-1b45-4dd8-8e3a-ed5b575a6149"
+    blocker_id = "orch:" + "a" * 32
+    path = f"#job/{uid}/event/{blocker_id}"
 
     def message(mid, text, *, sender="orch", room=channel, kind=None, **metadata):
         if kind:
-            metadata["orch_workflow"] = {"job_uid": "active", "kind": kind, "revision": 2, "prompt_id": mid}
+            metadata["orch_workflow"] = {"job_uid": uid, "kind": kind, "revision": 2, "prompt_id": mid}
         return {
             "id": mid, "text": text, "channel": room, "type": "decision" if "choices" in metadata else "chat",
             "sender": sender, "sender_kind": "human" if sender == "Derek" else "agent",
@@ -29,7 +32,7 @@ def check(page, url, screenshots, plugin):
         }
 
     active = {
-        "id": 2, "uid": "active", "title": "Push notifications for Orch", "channel": channel,
+        "id": 2, "uid": uid, "title": "Push notifications for Orch", "channel": channel,
         "body": "Replace polling with a scoped push subscription.", "status": "open",
         "lifecycle": {"managed_by": "orch", "stage_id": "orch.awaiting_approval"},
         "orch_workflow_active": True, "source_msg_id": 101, "messages": [],
@@ -44,25 +47,30 @@ def check(page, url, screenshots, plugin):
     }
     jobs = [active, manual, legacy, closed]
     gate = message(105, "Brief revision 2 is ready for review.", choices=["Approve", "Revise", "Cancel"],
-                   orch_gate={"job_uid": "active", "gate": "brief", "revision": 2})
+                   orch_gate={"job_uid": uid, "gate": "brief", "revision": 2})
     question = message(91, "What should the fallback polling limit be?", room=moved, sender="agy", kind="revise")
     reply = message(92, "Use a 60-second maximum.", room=moved, sender="Derek")
     closeout = message(106, "The work and verification are complete.")
     closeout["metadata"]["orch_workflow"] = {"job_uid": "closed", "kind": "closeout", "prompt_id": 106}
     entries = [
         {"kind": "brief", "revision": 1, "choice": "Revise", "actor": "Derek",
-         "time": "21:55", "text": "Initial brief", "message_id": 99, "channel": channel},
-        {"kind": "reply", "revision": 1, "actor": "Derek", "time": "21:56",
+         "time": 1795856000, "text": "Initial brief", "message_id": 99, "channel": channel},
+        {"kind": "reply", "revision": 1, "actor": "Derek", "time": 1795856060, "event_id": "message:92",
          "text": reply["text"], "message_id": 92, "channel": channel},
-        {"kind": "brief", "revision": 2, "time": "21:58", "text": "Added the 60-second fallback cap.",
+        {"kind": "brief", "revision": 2, "time": 1795856120, "text": "Added the 60-second fallback cap.",
          "message_id": 105, "channel": channel},
+        {"kind": "deadline_missed", "revision": 2, "time": 1795856180, "event_id": blocker_id,
+         "problem": True, "resolved_at": 1795856240, "reason_code": "evidence_deadline"},
+        {"kind": "set_flags", "time": 1795856240, "flags": ["attention"], "detail": True},
     ]
+    current_action = [105]
     chat = [
         message(100, "Brief revision 1 is ready for review.", choices=["Approve", "Revise", "Cancel"],
                 resolved=True, chosen="Revise"),
         message(103, question["text"], sender="agy", kind="revise"),
         message(104, reply["text"], sender="Derek"),
         gate,
+        message(108, f"Operator help needed. [View event]({path})", kind="blocker"),
     ]
 
     def api(route):
@@ -75,12 +83,16 @@ def check(page, url, screenshots, plugin):
             return route.fulfill(body="null", content_type="application/json")
         if path == "/api/jobs/orch-intake":
             return route.fulfill(json={"job": active, "created": False})
-        if path == "/api/jobs/active/orch-history":
+        if path == f"/api/jobs/{uid}/orch-history":
             return route.fulfill(json={
-                "job_uid": "active", "workflow_active": True, "channel": channel,
-                "source_message_id": 101, "current_action_message_id": 105, "entries": entries,
+                "job_uid": uid, "workflow_active": True, "channel": channel,
+                "source_message_id": 101, "current_action_message_id": current_action[0], "entries": entries,
             })
-        if path.startswith("/api/jobs/active/orch-history/"):
+        if path.startswith(f"/api/jobs/{uid}/orch-events/"):
+            target = path.rsplit("/", 1)[1].replace("%3A", ":")
+            return route.fulfill(json={"job_uid": uid, "event_id": target if target in (blocker_id, "message:92") else None,
+                                       "message_id": 92 if target == "message:92" else None})
+        if path.startswith(f"/api/jobs/{uid}/orch-history/"):
             mid = int(path.rsplit("/", 1)[1])
             if mid == 99:
                 return route.fulfill(status=404, json={"error": "missing"})
@@ -92,20 +104,20 @@ def check(page, url, screenshots, plugin):
         if path == "/api/jobs/5/reopen-requests":
             reopened.append(route.request.post_data_json)
             return route.fulfill(json={"request": {"status": "pending"}, "card_msg_id": 107})
-        if path == "/api/jobs/active/orch-gates/105/resolve":
+        if path == f"/api/jobs/{uid}/orch-gates/105/resolve":
             actions[:] = [action for action in actions if action["message_id"] != 105]
             return route.fulfill(json={"choice": "Revise"})
         if path == "/api/plugins/orch/status":
             return route.fulfill(json={
                 "identity": "orch", "daemon": {"state": "online"}, "channel": channel,
-                "jobs": [{"id": 2, "uid": "active", "stage": "orch.drafting", "awaiting_local": True}],
+                "jobs": [{"id": 2, "uid": uid, "stage": "orch.drafting", "awaiting_local": True}],
                 "workflow_actions": actions,
             })
         return route.fulfill(json=[] if path.endswith(("/messages", "/roles")) else {})
 
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.route("https://cdn.jsdelivr.net/**", lambda route: route.fulfill(
-        body="window.marked={setOptions(){},parse:text=>text};",
+        body=r"window.marked={setOptions(){},parse:text=>text.replace(/\[([^\]]+)\]\((#job\/[^)]+)\)/g,'<a href=\"$2\">$1</a>')};",
     ))
     def websocket(ws):
         ws.on_message(lambda raw: sent.append(raw))
@@ -141,7 +153,17 @@ def check(page, url, screenshots, plugin):
     page.locator("#jobs-toggle").click()
     page.locator("#jobs-list .job-card[data-id='2']").press("Enter")
     expect(sidebar.get_by_text("Read-only history")).to_be_visible()
-    expect(sidebar.get_by_text("Added the 60-second fallback cap.")).to_be_visible()
+    expect(sidebar.get_by_text("Added the 60-second fallback cap.")).to_have_count(0)
+    expect(sidebar.get_by_text("Evidence deadline passed")).to_be_visible()
+    expect(sidebar.get_by_text(re.compile("Resolved"))).to_be_visible()
+    expect(sidebar.get_by_text("Flags changed")).to_be_hidden()
+    sidebar.get_by_role("button", name="Show details (1)").click()
+    expect(sidebar.get_by_text("Flags changed")).to_be_visible()
+    expect(sidebar.get_by_role("button", name="Reply or approve in #orch-workflow")).to_be_visible()
+    current_action[0] = None
+    page.evaluate("uid => Hub.emit('message_update', {message: {metadata: {orch_gate: {job_uid: uid}}}})", uid)
+    expect(sidebar.locator("#job-history-footer")).to_be_hidden()
+    expect(sidebar.get_by_text(re.compile("Open conversation in"))).to_have_count(0)
     expect(sidebar.locator(".jobs-conv-input")).to_be_hidden()
     expect(sidebar.locator("#jobs-status-toggles")).to_be_hidden()
     if screenshots:
@@ -189,9 +211,9 @@ def check(page, url, screenshots, plugin):
         assert not pill.get_attribute("data-orch-attention") == "true"
 
         def refresh():
-            page.evaluate("Hub.emit('message_update', {message: {metadata: {orch_gate: {job_uid: 'active'}}}})")
+            page.evaluate("uid => Hub.emit('message_update', {message: {metadata: {orch_gate: {job_uid: uid}}}})", uid)
 
-        actions[:] = [{"job_uid": "active", "job_id": 2, "title": active["title"], "channel": channel,
+        actions[:] = [{"job_uid": uid, "job_id": 2, "title": active["title"], "channel": channel,
                        "message_id": 105, "kind": "brief", "label": "brief approval"}]
         refresh()
         expect(pill).to_have_attribute("aria-label", "Jump to Job #2 brief approval in #orch-workflow (#105)")
@@ -201,7 +223,7 @@ def check(page, url, screenshots, plugin):
         expect(pill).to_have_attribute("aria-label", "Orch online · No actions waiting for you")
 
         actions[:] = [
-            {"job_uid": "active", "job_id": 2, "title": active["title"], "channel": moved,
+            {"job_uid": uid, "job_id": 2, "title": active["title"], "channel": moved,
              "message_id": 92, "kind": "reply", "label": "revision feedback"},
             {"job_uid": "closed", "job_id": 5, "title": closed["title"], "channel": channel,
              "message_id": 106, "kind": "reopen", "label": "reopen decision"},
@@ -231,6 +253,21 @@ def check(page, url, screenshots, plugin):
     sidebar.get_by_role("button", name="Jump to #92 in #orch-workflow").click()
     expect(page.locator("#jobs-toggle")).to_have_attribute("aria-expanded", "false")
     expect(page.locator("#message-92 .chat-bubble")).to_be_focused()
+    page.evaluate("channel => switchChannel(channel)", channel)
+    page.get_by_role("link", name="View event").click()
+    row = sidebar.locator(f'[data-event-id="{blocker_id}"]')
+    expect(row).to_be_focused()
+    page.goto("about:blank")
+    page.set_viewport_size({"width": 360, "height": 700})
+    page.goto(url + "/static/index.html" + path)
+    expect(row).to_be_focused()
+    assert sidebar.locator("#orch-job-history").evaluate("(el) => el.scrollWidth <= el.clientWidth")
+    if screenshots:
+        page.screenshot(path=screenshots / "orch-history-360px.png", animations="disabled")
+    page.evaluate("(href) => location.hash = href", f"#job/{uid}/event/message:92")
+    expect(page.locator("#message-92 .chat-bubble")).to_be_focused()
+    page.evaluate("(href) => location.hash = href", f"#job/{uid}/event/invalid")
+    expect(sidebar.get_by_role("status").filter(has_text="Event unavailable")).to_be_visible()
     assert not errors, errors
 
 

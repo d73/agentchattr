@@ -15,6 +15,7 @@ import archive
 import mcp_bridge
 from jobs import JobStore
 from orch_workflow import complete_orch_workflow, history, list_orch_workflow_actions, publish_orch_workflow
+from orch_workflow import publish_orch_history_event
 from orch_workflow import read_orch_workflow, record_reply, reply_metadata
 from run import _publish_orch_gate
 from store import MessageStore
@@ -181,6 +182,73 @@ class OrchWorkflowTests(unittest.TestCase):
                 self.assertEqual(404, client.get(f"{wrong}/{reply['id']}", headers=token).status_code)
                 self.store.delete([reply["id"]])
                 self.assertEqual(404, client.get(f"{path}/{reply['id']}", headers=token).status_code)
+
+    def test_event_link_scope_rename_and_legacy_projection(self):
+        self.activate()
+        uid = self.job["uid"]
+        state = dict(v=1, kind="deadline_missed", revision=6, attempt="a" * 32,
+                     operation_id="one", time=1795856180, reason_code="evidence_deadline")
+        publish = lambda **changes: publish_orch_history_event(
+            self.jobs, uid, coordinator="orch", payload={**state, **changes})
+        event_id = publish()["event_id"]
+        self.assertEqual(event_id, publish()["event_id"])
+        with self.assertRaises(ValueError):
+            publish(time=1795856190)
+        with self.assertRaises(ValueError):
+            publish(reason_code="raw worker evidence")
+        with self.assertRaises(ValueError):
+            publish(commit="a" * 40)
+        self.assertIsNone(publish_orch_history_event(self.jobs, uid, coordinator="outsider", payload=state))
+        prompt = self.publish(kind="blocker", operation_id="blocker", revision=6, event_id=event_id)
+        notice = self.store.get_by_id(prompt["prompt_id"])["text"]
+        self.assertIn(f"[View event](#job/{uid}/event/{event_id})", notice)
+        unavailable = self.publish(operation_id="missing", event_id="orch:" + "0" * 32)
+        self.assertNotIn("View event", self.store.get_by_id(unavailable["prompt_id"])["text"])
+
+        neighbor = self.create_job("tools")
+        self.activate(neighbor)
+        self.jobs.rename_channel("tools", "renamed")
+        self.store.rename_channel("tools", "renamed")
+        records_path = self.root / "jobs.json"
+        import json
+        records = json.loads(records_path.read_text(encoding="utf-8"))
+        records[0]["lifecycle_events"] = [
+            {"event": "set_flags", "actor": "orch", "operation_id": "legacy:1", "flags": ["attention"],
+             "time": 1795856100},
+            {"event": "set_flags", "actor": "orch", "operation_id": "current:2", "time": 1795856120,
+             "before": {"flags": ["attention"]}, "after": {"flags": ["paused"]}},
+            {"event": "future_event", "time": 1795856130},
+        ]
+        records_path.write_text(json.dumps(records), encoding="utf-8")
+        self.jobs = JobStore(records_path)
+        self.store = MessageStore(self.root / "messages.jsonl")
+        projected = history(self.jobs, self.store, uid)["entries"]
+        self.assertEqual(1, sum(row["event_id"] == event_id for row in projected))
+        flags = [row for row in projected if row["kind"] == "set_flags"]
+        self.assertEqual(["attention"], flags[0]["flags"])
+        self.assertNotIn("flags_removed", flags[0])
+        self.assertEqual(["attention"], flags[1]["flags_removed"])
+        self.assertEqual(["paused"], flags[1]["flags_added"])
+        self.assertTrue(any(row["kind"] == "future_event" for row in projected))
+        self.assertEqual("renamed", next(row for row in projected if row["event_id"] == event_id)["channel"])
+        self.assertEqual("renamed", self.publish(kind="blocker", operation_id="blocker", revision=6,
+                                                 event_id=event_id)["channel"])
+
+        web = FastAPI()
+        web.add_api_route("/api/jobs/{job_uid}/orch-events/{event_id}", app.get_orch_history_event, methods=["GET"])
+        with patch.multiple(app, app=web, jobs=self.jobs, store=self.store, session_token=None):
+            app._install_security_middleware("browser-fixture", {})
+            with TestClient(web, client=("127.0.0.1", 50000)) as client:
+                path = f"/api/jobs/{uid}/orch-events"
+                headers = {"X-Session-Token": "browser-fixture"}
+                self.assertEqual(403, client.get(f"{path}/{event_id}").status_code)
+                self.assertEqual(event_id, client.get(f"{path}/{event_id}", headers=headers).json()["event_id"])
+                self.assertIsNone(client.get(f"{path}/invalid", headers=headers).json()["event_id"])
+                wrong_path = f"/api/jobs/{neighbor['uid']}/orch-events/{event_id}"
+                self.assertIsNone(client.get(wrong_path, headers=headers).json()["event_id"])
+                message_id = prompt["prompt_id"]
+                self.assertEqual(message_id, client.get(f"{path}/message:{message_id}", headers=headers)
+                                 .json()["message_id"])
 
     def test_browser_created_job_activation_is_an_atomic_coordinator_claim(self):
         source = self.store.add("owner", "A new Job in another channel", channel="notes", sender_kind="human")

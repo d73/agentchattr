@@ -53,6 +53,7 @@ class Services:
     activate_orch_workflow: Callable | None = None
     list_orch_workflow_actions: Callable | None = None
     complete_orch_workflow: Callable | None = None
+    publish_orch_history_event: Callable | None = None
 
 
 @dataclass(frozen=True)

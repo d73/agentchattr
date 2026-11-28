@@ -157,6 +157,7 @@ def main():
         from plugin_host import PluginHost, Services
         from orch_workflow import complete_orch_workflow, list_orch_workflow_actions
         from orch_workflow import publish_orch_workflow, read_orch_workflow
+        from orch_workflow import publish_orch_history_event
 
         plugins = PluginHost(data_dir)
         orch_entry = config["plugins"].get("orch")
@@ -189,6 +190,7 @@ def main():
             activate_orch_workflow=jobs.activate_orch_workflow,
             list_orch_workflow_actions=partial(list_orch_workflow_actions, jobs, store),
             complete_orch_workflow=partial(complete_orch_workflow, jobs, store),
+            publish_orch_history_event=partial(publish_orch_history_event, jobs),
         )
         plugins.load(config["plugins"], services, core_routes=app.router.routes,
                      core_tools=(tool.__name__ for tool in mcp_bridge._ALL_TOOLS))
