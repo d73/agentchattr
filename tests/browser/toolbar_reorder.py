@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 from playwright.sync_api import expect, sync_playwright
 
-from agent_pill_order import free_ports, heartbeat, register, server
+from agent_pill_order import free_ports, heartbeat, register, server, wait_for_preview_grip
 
 
 DEFAULT_ORDER = [
@@ -30,9 +30,14 @@ def drag_before(page, source, target, *, cancel=False, screenshot=None):
     end = page.locator("#" + target).bounding_box()
     assert start and end
     x, y = start["x"] + start["width"] / 2, start["y"] + start["height"] / 2
+    target_x = end["x"] + 3
+    threshold_x = x + (8 if target_x > x else -8)
     page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(end["x"] + 3, y, steps=12)
+    page.mouse.move(threshold_x, y)
+    wait_for_preview_grip(page, start, (x, y), (threshold_x, y))
+    page.mouse.move(target_x, y, steps=12)
+    wait_for_preview_grip(page, start, (x, y), (target_x, y))
     expect(page.locator("#" + source)).to_have_class("settings-btn reorder-origin")
     expect(page.locator(".reorder-preview > svg")).to_be_visible()
     assert page.locator(".reorder-preview").evaluate("el => el.childNodes.length === 1")

@@ -92,15 +92,33 @@ def check_order(page, lower, upper=None):
         expect(page.locator("#mention-toggles > :first-child")).to_have_text("@all")
 
 
+def wait_for_preview_grip(page, source_box, down, pointer):
+    page.wait_for_function("""([source, down, pointer]) => {
+        const preview = document.querySelector('.reorder-preview')?.getBoundingClientRect();
+        if (!preview) return false;
+        return Math.abs(preview.left - (source.x + pointer[0] - down[0])) < 1.1
+            && Math.abs(preview.top - (source.y + pointer[1] - down[1])) < 1.1
+            && Math.abs(preview.width - source.width) < 1.1
+            && Math.abs(preview.height - source.height) < 1.1;
+    }""", arg=[source_box, down, pointer])
+
+
 def drag_before(page, source, target, screenshot=None, cancel=False):
     pill = lambda agent: page.locator(f"#mention-toggles [data-agent='{agent}']")
     start = pill(source).bounding_box()
     end = pill(target).bounding_box()
     assert start and end
-    y = start["y"] + start["height"] / 2
-    page.mouse.move(start["x"] + start["width"] / 2, y)
+    # Exercise a corner grab on the cancellation path and a center grab on a drop.
+    x = start["x"] + (5 if cancel else start["width"] / 2)
+    y = start["y"] + (3 if cancel else start["height"] / 2)
+    target_x = end["x"] + 4
+    threshold_x = x + (8 if target_x > x else -8)
+    page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(end["x"] + 4, y, steps=12)
+    page.mouse.move(threshold_x, y)
+    wait_for_preview_grip(page, start, (x, y), (threshold_x, y))
+    page.mouse.move(target_x, y, steps=12)
+    wait_for_preview_grip(page, start, (x, y), (target_x, y))
     expect(page.locator(".reorder-origin")).to_have_count(1)
     expect(page.locator(".reorder-preview")).to_be_visible()
     expect(page.locator(".reorder-drop-indicator")).to_be_visible()
