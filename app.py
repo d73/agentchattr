@@ -2631,8 +2631,8 @@ async def create_job(request: Request):
     meta = dict(proposal.get("metadata") or {}) if proposal else {}
     if proposal:
         author_identity = proposal.get("sender_identity")
-        if author_identity and registry:
-            writer = registry.get_active_instance_by_identity(author_identity)
+        if author_identity:
+            writer = registry.get_active_instance_by_identity(author_identity) if registry else None
             assignee = writer["name"] if writer else ""
         else:
             assignee = proposal.get("sender", "")
