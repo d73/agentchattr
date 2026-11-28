@@ -2,6 +2,7 @@
 import asyncio
 import json
 import unittest
+from types import SimpleNamespace
 
 from fastapi import WebSocketDisconnect
 import test_history_delivery as history_fixture
@@ -25,6 +26,7 @@ class HistoryPagingProtocolTests(unittest.TestCase):
 
         class Socket:
             query_params = {'token': 'test'}
+            client = SimpleNamespace(host='127.0.0.1')
             async def accept(self): pass
             async def send_text(self, raw): frames.append(json.loads(raw))
             async def receive_text(self):

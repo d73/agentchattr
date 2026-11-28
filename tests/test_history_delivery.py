@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -22,6 +23,7 @@ class HistoryDeliveryTests(unittest.TestCase):
         self.messages = MessageStore(str(root / 'messages.jsonl'))
         empty = Mock()
         empty.list_all.return_value = []
+        empty.channel_activity.return_value = {}
         agents = Mock()
         agents.get_status.return_value = {}
         router = Mock()
@@ -38,6 +40,7 @@ class HistoryDeliveryTests(unittest.TestCase):
         frames = []
         class Socket:
             query_params = {'token': 'test'}
+            client = SimpleNamespace(host='127.0.0.1')
             interrupted = False
             async def accept(self): pass
             async def receive_text(self): raise WebSocketDisconnect()
@@ -72,6 +75,20 @@ class HistoryDeliveryTests(unittest.TestCase):
         frames = self.read_connection()
         self.assertFalse(any(f['type'] == 'history' for f in frames))
         self.assertEqual(sum(f['type'] == 'history_complete' for f in frames), 1)
+
+    def test_disconnect_during_initialization_clears_browser_client(self):
+        class Socket:
+            query_params = {'token': 'test'}
+            client = SimpleNamespace(host='127.0.0.1')
+
+            async def accept(self):
+                pass
+
+            async def send_text(self, raw):
+                raise WebSocketDisconnect()
+
+        asyncio.run(app.websocket_endpoint(Socket()))
+        self.assertEqual(asyncio.run(app.get_browser_clients()), {'count': 0})
 
     def test_history_setting_is_applied_per_channel_without_deleting_messages(self):
         self.settings['history_limit'] = '3'

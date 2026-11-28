@@ -1399,20 +1399,7 @@ def _on_registry_change():
 
 # --- WebSocket ---
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    # --- Security: validate session token on WebSocket connect ---
-    token = websocket.query_params.get("token", "")
-    if token != session_token or not is_local_client(websocket.client.host if websocket.client else ""):
-        # Must accept before closing so the browser receives the close frame.
-        # Code 4003 triggers an auto-reload in the client to pick up the new token.
-        await websocket.accept()
-        await websocket.close(code=4003, reason="forbidden: invalid session token")
-        return
-
-    await websocket.accept()
-    ws_clients.add(websocket)
-
+async def _initialize_websocket(websocket: WebSocket):
     await websocket.send_text(json.dumps({"type": "log_status", "data": store.log_status()}))
 
     # Send settings
@@ -1487,7 +1474,22 @@ async def websocket_endpoint(websocket: WebSocket):
     # Send status
     await broadcast_status()
 
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    # --- Security: validate session token on WebSocket connect ---
+    token = websocket.query_params.get("token", "")
+    if token != session_token or not is_local_client(websocket.client.host if websocket.client else ""):
+        # Must accept before closing so the browser receives the close frame.
+        # Code 4003 triggers an auto-reload in the client to pick up the new token.
+        await websocket.accept()
+        await websocket.close(code=4003, reason="forbidden: invalid session token")
+        return
+
+    await websocket.accept()
+    ws_clients.add(websocket)
     try:
+        await _initialize_websocket(websocket)
         while True:
             raw = await websocket.receive_text()
             event = json.loads(raw)
@@ -1856,10 +1858,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await broadcast_settings()
 
     except WebSocketDisconnect:
-        ws_clients.discard(websocket)
+        pass
     except Exception:
-        ws_clients.discard(websocket)
         log.exception("WebSocket error")
+    finally:
+        ws_clients.discard(websocket)
 
 
 # --- REST endpoints ---
