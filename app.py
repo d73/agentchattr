@@ -66,6 +66,8 @@ _routing_refresh_lock = threading.Lock()
 # --- Security: session token (set by configure()) ---
 session_token: str = ""
 
+DEFAULT_CHAT_FONT_SIZE = 14
+
 # Room settings (persisted to data/settings.json)
 room_settings: dict = {
     "title": "agentchattr",
@@ -74,6 +76,7 @@ room_settings: dict = {
     "subtitle": "",
     "username": "user",
     "font": "sans",
+    "font_size": DEFAULT_CHAT_FONT_SIZE,
     "channels": ["general"],
     # Manually archived channels (hidden in a collapsed "Archived" group) and the
     # idle threshold, in hours, after which a channel moves to "Inactive" (0 = off).
@@ -235,6 +238,10 @@ def _settings_path() -> Path:
 ROOM_SUBTITLE_MAX = 40
 
 
+def _valid_chat_font_size(value):
+    return type(value) is int and 10 <= value <= 32
+
+
 def normalize_room_subtitle(value):
     """Clean a room subtitle, or return None if it is not usable.
 
@@ -291,6 +298,8 @@ def _load_settings():
     # settings.json is hand-editable, so the file bypasses every check the
     # live update path applies. Re-normalise on load rather than trust it.
     room_settings["subtitle"] = normalize_room_subtitle(room_settings.get("subtitle")) or ""
+    if not _valid_chat_font_size(room_settings.get("font_size")):
+        room_settings["font_size"] = DEFAULT_CHAT_FONT_SIZE
     # Ensure "general" always exists and is first
     if "channels" not in room_settings or not room_settings["channels"]:
         room_settings["channels"] = ["general"]
@@ -1756,6 +1765,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     room_settings["username"] = new["username"].strip() or "user"
                 if "font" in new and new["font"] in ("mono", "serif", "sans"):
                     room_settings["font"] = new["font"]
+                if _valid_chat_font_size(new.get("font_size")):
+                    room_settings["font_size"] = new["font_size"]
                 if "max_agent_hops" in new:
                     try:
                         hops = int(new["max_agent_hops"])

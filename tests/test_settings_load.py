@@ -54,6 +54,20 @@ class SettingsLoadTests(unittest.TestCase):
         self.assertEqual(app.room_settings["title"], "mine")
         self.assertEqual(self.corrupt_copies(), [])
 
+    def test_chat_font_size_is_restored_or_defaults(self):
+        for stored, expected in (
+            ({}, 14),
+            ({"font_size": 18}, 18),
+            ({"font_size": 33}, 14),
+            ({"font_size": "18"}, 14),
+            ({"font_size": True}, 14),
+        ):
+            with self.subTest(stored=stored):
+                app.room_settings.pop("font_size", None)
+                self.path.write_text(json.dumps(stored), "utf-8")
+                app._load_settings()
+                self.assertEqual(app.room_settings["font_size"], expected)
+
     def test_synced_options_are_validated_on_load(self):
         self.path.write_text(json.dumps({
             "agent_colors": {"claude": "#ff0000", "bad": "red", "worse": 5},

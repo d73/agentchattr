@@ -220,7 +220,7 @@
                     <button type="button" class="side-panel-icon side-panel-close" onclick="closeSidePanel('settings')" title="Close settings" aria-label="Close settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
                 </div>
                 <div class="side-panel-scroll settings-sections">
-                    <details class="settings-section" data-section="profile" open>
+                    <details class="settings-section" name="settings-sections" data-section="profile" open>
                         <summary>Profile &amp; Server</summary>
                         <div class="settings-section-fields">
                             <div class="settings-field" title="The name shown on your messages and used when agents @mention you.">
@@ -238,7 +238,7 @@
                             </div>
                         </div>
                     </details>
-                    <details class="settings-section" data-section="appearance">
+                    <details class="settings-section" name="settings-sections" data-section="appearance">
                         <summary>Appearance &amp; Layout</summary>
                         <div class="settings-section-fields">
                             <div class="settings-field" title="The typeface used for the chat: monospace or sans-serif.">
@@ -247,6 +247,16 @@
                                     <option value="mono">Monospace</option>
                                     <option value="sans">Sans</option>
                                 </select>
+                            </div>
+                            <div class="settings-field" title="The size of chat message and composer text in pixels.">
+                                <label for="setting-font-size">Font Size</label>
+                                <div class="sched-num-wrap">
+                                    <input type="number" id="setting-font-size" class="sched-pop-num" min="10" max="32" step="1" value="14">
+                                    <div class="sched-num-btns">
+                                        <button type="button" onclick="stepNumInput('setting-font-size',1)" tabindex="-1" title="Increase font size" aria-label="Increase font size">&#9650;</button>
+                                        <button type="button" onclick="stepNumInput('setting-font-size',-1)" tabindex="-1" title="Decrease font size" aria-label="Decrease font size">&#9660;</button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="settings-field" title="Normal or High contrast for text and borders.">
                                 <label for="setting-contrast">Contrast</label>
@@ -285,7 +295,7 @@
                             </div>
                         </div>
                     </details>
-                    <details class="settings-section" data-section="alerts">
+                    <details class="settings-section" name="settings-sections" data-section="alerts">
                         <summary>Alerts &amp; Sounds</summary>
                         <div class="settings-section-fields">
                             <div class="settings-field" title="How a status pill signals that your input is needed. Synced across browsers.">
@@ -304,11 +314,11 @@
                                     <option value="flash">Flash</option>
                                 </select>
                             </div>
-                            <div class="settings-field" title="Sound played when an agent's pill starts needing you: the agent's own sound, a specific sound, or None. Synced across browsers.">
+                            <div class="settings-field" title="Sound played when an agent's pill starts needing you. Choose Default sound, the agent's sound, a specific sound, or None. Synced across browsers.">
                                 <label for="setting-attention-sound">Needs attention sound</label>
                                 <select id="setting-attention-sound" title="Sound played when an agent's pill starts needing you (synced across browsers)"></select>
                             </div>
-                            <div class="settings-field mention-alerts-field" title="Get a browser notification and/or sound when you are @mentioned. The page must stay open; permission is per browser.">
+                            <div id="mention-alerts-field" class="settings-field mention-alerts-field" data-help="Get a browser notification and/or sound when you are @mentioned. The page must stay open; permission is per browser.">
                                 <label for="setting-mention-alerts">Mention alerts</label>
                                 <select id="setting-mention-alerts" aria-describedby="mention-alerts-status">
                                     <option value="off">Off</option>
@@ -322,7 +332,7 @@
                             </div>
                         </div>
                     </details>
-                    <details class="settings-section" data-section="agents">
+                    <details class="settings-section" name="settings-sections" data-section="agents">
                         <summary>Agents &amp; Data</summary>
                         <div class="settings-section-fields">
                             <div class="settings-field" title="How many agent-to-agent replies can happen in a row before the chat pauses, to stop runaway loops.">

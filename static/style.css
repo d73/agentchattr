@@ -553,6 +553,7 @@ header h1 {
 .settings-field select { width: 130px; }
 .mention-alerts-field { max-width: 320px; }
 .mention-alerts-field select { width: 280px; max-width: 100%; }
+.mention-alerts-field select:disabled { pointer-events: none; }
 .mention-alerts-field small { color: var(--text-muted); line-height: 1.4; }
 
 .settings-field input:focus,
@@ -2224,6 +2225,10 @@ body.channels-in-sidebar #channel-bar {
     word-break: break-word;
 }
 
+#messages .chat-bubble .msg-text {
+    font-size: var(--chat-font-size, 14px);
+}
+
 .msg-text .mention {
     font-weight: 600;
     /* color set inline from agent config */
@@ -3392,7 +3397,7 @@ a.file-attachment:hover { border-color: var(--accent); }
     color: var(--text);
     padding: 10px 14px;
     font-family: inherit;
-    font-size: 14px;
+    font-size: var(--chat-font-size, 14px);
     resize: none;
     outline: none;
     min-height: 40px;
