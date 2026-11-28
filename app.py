@@ -3170,7 +3170,14 @@ async def serve_upload(filename: str):
     if not filepath.is_relative_to(upload_dir.resolve()):
         return JSONResponse({"error": "invalid path"}, status_code=400)
     if filepath.is_file():
-        if filepath.suffix.lower() in IMAGE_UPLOAD_EXTS:
+        extension = filepath.suffix.lower()
+        if extension == ".svg":
+            # A direct navigation opens SVG as a document rather than an image.
+            return FileResponse(filepath, media_type="image/svg+xml", headers={
+                "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+                "X-Content-Type-Options": "nosniff",
+            })
+        if extension in IMAGE_UPLOAD_EXTS:
             return FileResponse(filepath)
         # Documents are downloads, never executable same-origin pages.
         return FileResponse(filepath, media_type="application/octet-stream",
