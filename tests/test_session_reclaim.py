@@ -148,13 +148,11 @@ class SessionReclaimTests(unittest.TestCase):
         self.assertEqual(reg2.resolve_token(survivor["token"])["name"], "claude-2")
         self.assertEqual(reg2.resolve_token(fresh["token"])["name"], "claude")
 
-    def test_claim_into_live_slot_keeps_current_token_alive_after_restart(self):
+    def test_claim_into_reclaimable_id_keeps_current_token_alive_after_restart(self):
         """Same invariant via the claim rename path.
 
-        A stale reclaimable at 'claude' (base=claude, slot=1) remains while a live
-        instance is claimed into the canonical 'claude' (also base=claude, slot=1). The
-        current identity's token must survive a restart even if the stale wrapper
-        reconnects first and tries to grab the slot.
+        The live instance claims the stale session's chat ID and keeps its
+        own slot. The stale token cannot restore the chat ID after restart.
         """
         a = self.reg.register("claude")              # A = 'claude'
         tok_a = a["token"]
@@ -162,24 +160,23 @@ class SessionReclaimTests(unittest.TestCase):
         tok_b = b["token"]
         self.reg.register("claude")                  # C = 'claude-3'
         self.reg.deregister("claude", reclaimable=True)              # A reclaimable at slot 1
-        claimed = self.reg.claim("claude-2", "claude")   # B claims canonical 'claude' (base=claude, slot=1)
-        self.assertEqual(claimed["name"], "claude")
+        claimed = self.reg.claim("claude-2", "claude")
+        self.assertEqual((claimed["name"], claimed["slot"], claimed["color"]), ("claude", 2, b["color"]))
         reg2 = RuntimeRegistry(data_dir=self.tmp)    # server restart
         reg2.seed({
             "claude": {"label": "Claude", "color": "#ff6a00"},
             "codex": {"label": "Codex", "color": "#00B67D"},
         })
-        reg2.resolve_token(tok_a)                    # stale wrapper (A) reconnects first
+        self.assertIsNone(reg2.resolve_token(tok_a))  # stale wrapper reconnects first
         rb = reg2.resolve_token(tok_b)               # current 'claude' wrapper (B)
         self.assertIsNotNone(rb, "current live 'claude' (B) token must survive even if stale A resolved first")
-        self.assertEqual(rb["name"], "claude")
+        self.assertEqual((rb["name"], rb["slot"]), ("claude", 2))
 
-    def test_rename_into_live_slot_keeps_current_token_alive_after_restart(self):
+    def test_rename_into_reclaimable_id_keeps_current_token_alive_after_restart(self):
         """Same invariant via the human-initiated rename path.
 
-        Renaming a live instance onto a (base, slot) still occupied by a stale
-        reclaimable must drop the stale record, so the current identity's token
-        survives a restart even if the stale wrapper reconnects first.
+        Renaming to a reclaimable chat ID must drop the stale record while
+        preserving the live instance's slot and color.
         """
         a = self.reg.register("claude")              # A = 'claude'
         tok_a = a["token"]
@@ -187,17 +184,17 @@ class SessionReclaimTests(unittest.TestCase):
         tok_b = b["token"]
         self.reg.register("claude")                  # C = 'claude-3'
         self.reg.deregister("claude", reclaimable=True)              # A reclaimable at slot 1
-        renamed = self.reg.rename("claude-2", "claude")  # B renamed onto canonical 'claude' (base=claude, slot=1)
-        self.assertEqual(renamed["name"], "claude")
+        renamed = self.reg.rename("claude-2", "claude")
+        self.assertEqual((renamed["name"], renamed["slot"], renamed["color"]), ("claude", 2, b["color"]))
         reg2 = RuntimeRegistry(data_dir=self.tmp)    # server restart
         reg2.seed({
             "claude": {"label": "Claude", "color": "#ff6a00"},
             "codex": {"label": "Codex", "color": "#00B67D"},
         })
-        reg2.resolve_token(tok_a)                    # stale wrapper (A) reconnects first
+        self.assertIsNone(reg2.resolve_token(tok_a))  # stale wrapper reconnects first
         rb = reg2.resolve_token(tok_b)               # current 'claude' wrapper (B)
         self.assertIsNotNone(rb, "current live 'claude' (B) token must survive even if stale A resolved first")
-        self.assertEqual(rb["name"], "claude")
+        self.assertEqual((rb["name"], rb["slot"]), ("claude", 2))
 
 
 if __name__ == "__main__":

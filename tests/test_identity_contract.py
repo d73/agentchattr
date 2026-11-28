@@ -110,6 +110,17 @@ class McpBridgeAuthTests(unittest.TestCase):
 
         self.assertIn("authenticated agent session required", result)
 
+    def test_claim_uses_token_record_and_keeps_slot(self):
+        primary = self.registry.register("codex", requested_name="c1")
+        secondary = self.registry.register("codex", requested_name="c2")
+        self.assertIn("authenticated agent session required", mcp_bridge.chat_claim("codex", "worker"))
+
+        result = mcp_bridge.chat_claim("c1", "codex-7", ctx=auth_ctx(secondary["token"]))
+
+        self.assertEqual(json.loads(result)["confirmed_name"], "codex-7")
+        self.assertEqual(self.registry.resolve_token(primary["token"])["name"], "c1")
+        self.assertEqual(self.registry.resolve_token(secondary["token"])["slot"], 2)
+
     def test_stale_token_is_rejected_after_deregister(self):
         inst = self.registry.register("codex")
         self.registry.deregister(inst["name"])

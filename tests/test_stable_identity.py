@@ -2,7 +2,9 @@
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import patch
 
 from registry import RuntimeRegistry
@@ -108,33 +110,88 @@ class StableIdentityTests(unittest.TestCase):
             self.reg.register("codex", requested_name="c2")
         self.assertEqual(self.reg.resolve_token(first["token"])["name"], "c2")
         second = self.reg.register("codex", requested_name="codex-3")
-        self.assertEqual(second["slot"], 3)
-        self.assertEqual(self.reg.register("codex")["slot"], 2)
+        self.assertEqual((second["name"], second["slot"]), ("codex-3", 2))
+        self.assertEqual(self.reg.register("codex")["slot"], 4)
 
     def test_requested_name_rejects_invalid_reserved_and_other_family(self):
         self.reg.seed({"claude": {"label": "Claude"}})
-        for name in ("", "A", "x y", "../x", "system", "user", "claude-2", "codex-0"):
+        for name in ("", "A", "x y", "../x", "system", "user", "claude-2"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 self.reg.register("codex", requested_name=name)
         self.assertEqual(self.reg.register("codex")["name"], "codex")
 
-    def test_canonical_name_falls_back_when_slot_one_has_an_alias(self):
-        worker = self.reg.register("codex", requested_name="c1")
-        self.assertEqual(worker["slot"], 1)
-        with self.assertRaisesRegex(ValueError, "Slot 1 already occupied"):
-            self.reg.register("codex", requested_name="codex-1")
+    def test_explicit_canonical_id_and_alias_work_in_both_launch_orders(self):
+        for names in (("c1", "codex"), ("codex", "c1")):
+            with self.subTest(names=names), tempfile.TemporaryDirectory() as tmp:
+                reg = RuntimeRegistry(tmp)
+                reg.seed(self.config)
+                for slot, name in enumerate(names, start=1):
+                    inst = reg.register("codex", requested_name=name)
+                    self.assertEqual((inst["name"], inst["slot"]), (name, slot))
+                self.assertEqual(reg.resolve_to_instances("codex"), ["codex"])
+                with self.assertRaisesRegex(ValueError, "Name already in use: codex"):
+                    reg.register("codex", requested_name="codex")
 
-        primary = self.reg.register("codex", requested_name="codex")
-        self.assertEqual((primary["name"], primary["slot"]), ("codex", 2))
-        self.assertEqual(self.reg.resolve_to_instances("codex"), ["codex"])
-        self.assertEqual(self.reg.resolve_token(worker["token"])["name"], "c1")
-        with self.assertRaisesRegex(ValueError, "Name already in use: codex"):
-            self.reg.register("codex", requested_name="codex")
+    def test_concurrent_registrations_reserve_slots_and_ids_atomically(self):
+        ids = ("codex", "codex-3", "c1", "c1", None, None, None, None)
+        start = Barrier(len(ids))
 
+        def register(name):
+            start.wait(timeout=5)
+            try:
+                return self.reg.register("codex", requested_name=name)
+            except ValueError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=len(ids)) as workers:
+            # Run the automatic launches alongside the exact-ID claims. An
+            # automatic launch is allowed to win either of the default IDs.
+            results = list(workers.map(register, ids))
+        successes = [result for result in results if isinstance(result, dict)]
+        errors = [result for result in results if isinstance(result, str)]
+        self.assertEqual(sum(inst["name"] == "c1" for inst in successes), 1)
+        self.assertIn("Name already in use: c1", errors)
+        self.assertEqual(len({inst["slot"] for inst in successes}), len(successes))
+        self.assertEqual(len({inst["name"] for inst in successes}), len(successes))
+        self.assertEqual(set(self.reg.get_all_names()), {inst["name"] for inst in successes})
+        restarted = self.restart()
+        for inst in successes:
+            self.assertEqual(restarted.resolve_token(inst["token"])["slot"], inst["slot"])
+
+    def test_saved_profile_can_use_slot_with_blocked_default_id(self):
+        self.reg.register("codex", requested_name="c1")
+        self.reg.register("codex", requested_name="codex")
         self.reg.deregister("c1")
-        self.assertEqual(self.reg.register("codex")["name"], "codex-3")
-        restored = self.restart().resolve_token(primary["token"])
-        self.assertEqual((restored["name"], restored["slot"]), ("codex", 2))
+        fresh = self.reg.register("codex")
+        self.assertEqual((fresh["name"], fresh["slot"]), ("c1", 1))
+
+    def test_automatic_registration_uses_default_when_saved_id_is_taken(self):
+        self.reg.register("codex", requested_name="c1")
+        self.reg.register("codex", requested_name="worker")
+        self.reg.deregister("worker")
+        self.reg.deregister("c1")
+        self.reg.register("codex", requested_name="worker")
+        fresh = self.reg.register("codex")
+        self.assertEqual((fresh["name"], fresh["slot"]), ("codex-2", 2))
+
+    def test_exact_numbered_id_survives_restart(self):
+        for name in ("codex-1", "codex-0"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                reg = RuntimeRegistry(tmp)
+                reg.seed(self.config)
+                inst = reg.register("codex", requested_name=name)
+                self.assertEqual((inst["name"], inst["slot"]), (name, 1))
+                reg = RuntimeRegistry(tmp)
+                reg.seed(self.config)
+                restored = reg.resolve_token(inst["token"])
+                self.assertEqual((restored["name"], restored["slot"]), (name, 1))
+
+    def test_claim_requires_exact_id_and_leaves_ambiguous_family_untouched(self):
+        self.reg.register("codex", requested_name="c1")
+        self.reg.register("codex", requested_name="c2")
+        before = self.reg.get_all()
+        self.assertIn("exact registered chat ID", self.reg.claim("codex", "worker"))
+        self.assertEqual(self.reg.get_all(), before)
 
     def test_requested_name_can_replace_expired_instance(self):
         first = self.reg.register("codex", requested_name="c2")
@@ -146,13 +203,22 @@ class StableIdentityTests(unittest.TestCase):
         self.assertIsNone(self.reg.resolve_token(first["token"]))
         self.assertEqual(self.reg.resolve_token(fresh["token"])["name"], "c2")
 
+    def test_expired_chat_id_can_be_reused_by_another_configured_type(self):
+        self.reg.seed({"claude": {"label": "Claude"}})
+        first = self.reg.register("codex", requested_name="worker")
+        with patch("registry.time.time", return_value=first["registered_at"] + 16):
+            fresh = self.reg.register("claude", requested_name="worker")
+        self.assertEqual((fresh["name"], fresh["base"], fresh["slot"]), ("worker", "claude", 1))
+        self.assertEqual(fresh["_expired"], ["worker"])
+        self.assertIsNone(self.reg.resolve_token(first["token"]))
+
     def test_failed_name_validation_does_not_expire_other_instances(self):
         first = self.reg.register("codex", requested_name="c2")
         second = self.reg.register("codex", requested_name="builder")
         with patch("registry.time.time", return_value=first["registered_at"] + 16):
             self.reg._instances[second["name"]].last_seen = first["registered_at"] + 16
             with self.assertRaises(ValueError):
-                self.reg.register("codex", requested_name="codex-2")
+                self.reg.register("codex", requested_name="builder")
         self.assertIn("c2", self.reg._instances)
         self.assertNotIn("c2", self.reg._reclaimable)
 

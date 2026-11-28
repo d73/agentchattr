@@ -694,7 +694,7 @@ def main():
 
     assigned_name = registration["name"]
     assigned_token = registration["token"]
-    print(f"  Registered as: {assigned_name} (slot {registration.get('slot', '?')})")
+    print(f"  Registered as: {assigned_name} (slot.{registration['base']}.{registration['slot']})")
 
     proxy = None
     proxy_url = None

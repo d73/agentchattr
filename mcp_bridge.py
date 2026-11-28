@@ -956,24 +956,22 @@ def chat_set_hat(sender: str, svg: str, target: str = "", ctx: Context | None = 
 
 
 def chat_claim(sender: str, name: str = "", ctx: Context | None = None) -> str:
-    """Claim your identity in a multi-instance setup.
+    """Confirm the authenticated session's chat ID or request a different exact ID.
 
-    - Without name: accept the auto-assigned identity and unlock chat_send.
-    - With name: reclaim a previous identity (e.g. from a breadcrumb after /resume).
-
-    Your sender must be your current registered name (the one assigned at registration).
-    The identity breadcrumb in chat_read responses shows your current identity."""
-    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
-    if err:
-        return err
+    An optional name changes only the chat ID, while the session keeps its slot.
+    The sender argument is retained for client compatibility.
+    """
     if not registry:
         return "Error: registry not available."
+    inst = _authenticated_instance(ctx)
+    if not inst:
+        return "Error: authenticated agent session required to claim an identity."
     target = name.strip() if name.strip() else None
-    result = registry.claim(sender, target)
+    result = registry.claim(inst["name"], target, identity_id=inst["identity_id"])
     if isinstance(result, str):
         return f"Error: {result}"
     # Touch presence with the CONFIRMED name (may differ from sender)
-    confirmed = result.get("name", sender)
+    confirmed = result["name"]
     _touch_presence(confirmed)
     return json.dumps({"confirmed_name": confirmed, "label": result.get("label", ""), "base": result.get("base", "")})
 
