@@ -259,7 +259,7 @@ class AppAuthEndpointTests(unittest.TestCase):
 
     def test_reclaimed_heartbeat_survives_timeout_runtime_cleanup(self):
         instance = self.registry.register("claude")
-        initial = instance["registered_at"]
+        initial = self.registry._instances[instance["name"]].last_seen
         now = initial + self.registry.HEARTBEAT_TIMEOUT + 1
         mcp_bridge._presence["claude"] = initial
         purge = mcp_bridge.purge_identity
@@ -273,6 +273,7 @@ class AppAuthEndpointTests(unittest.TestCase):
 
         with (
             mock.patch("registry.time.time", return_value=now),
+            mock.patch("registry.time.monotonic", return_value=now),
             mock.patch.object(app, "session_engine", None),
             mock.patch.object(mcp_bridge, "purge_identity", side_effect=heartbeat_then_purge),
         ):
