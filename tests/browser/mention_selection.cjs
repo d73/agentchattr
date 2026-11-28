@@ -33,7 +33,8 @@ test('double-click selects only the target, persists per channel, and preserves 
             createElement: () => new Element(), querySelectorAll: selector => container.querySelectorAll(selector),
         },
         persistMentions(channel) { if (channel) context._channelMentions[channel] = [...context.activeMentions]; },
-        updateSchedulePopoverState() {}, enableDragScroll() {},
+        updateSchedulePopoverState() {},
+        orderedAgentEntries() { return Object.entries(context.agentConfig); },
     });
     vm.runInContext(code, context);
     context.buildMentionToggles();
