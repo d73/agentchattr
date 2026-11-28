@@ -14,6 +14,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 from atomic_io import atomic_write_text
+from job_lifecycle import ACTIVE
 
 from attachment_storage import copy_image_attachment
 
@@ -286,10 +287,14 @@ def chat_send(
     job_scope = None
     if job_uid or job_channel:
         job = jobs.get(job_id) if jobs and job_id else None
+        lifecycle = job.get("lifecycle", {}) if job else {}
+        eligible = bool(job and (job.get("status") == "open" or (
+            lifecycle.get("core_id") == ACTIVE and lifecycle.get("managed_by") == "orch"
+        )))
         if (not job or not job_uid or not job_channel or job.get("uid") != job_uid
                 or job.get("channel") != job_channel or job.get("type") != "job"
-                or job.get("status") != "open" or str(job.get("assignee", "")).casefold() != sender.casefold()):
-            return "Error: the selected Job is no longer open and assigned to this sender."
+                or not eligible or str(job.get("assignee", "")).casefold() != sender.casefold()):
+            return "Error: the selected Job is no longer eligible and assigned to this sender."
         job_scope = {key: job[key] for key in ("uid", "channel", "type", "status", "assignee")}
 
     # Job-scoped send: post into a job conversation instead of main timeline
@@ -692,6 +697,7 @@ def chat_read(
             "title": title,
             "body": body,
             "status": job.get("status", ""),
+            "lifecycle": job.get("lifecycle"),
             "channel": job.get("channel", ""),
             "created_by": job.get("created_by", ""),
             "assignee": job.get("assignee", ""),
