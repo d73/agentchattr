@@ -46,6 +46,8 @@ class Services:
     online_agents: Callable
     get_message: Callable | None = None
     transition_job: Callable | None = None
+    publish_orch_gate: Callable | None = None
+    read_orch_gate: Callable | None = None
 
 
 @dataclass(frozen=True)

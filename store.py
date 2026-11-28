@@ -365,6 +365,27 @@ class MessageStore:
             self._rewrite_jsonl()
             return msg
 
+    def project_orch_gate_decision(self, decision: dict) -> dict | None:
+        """Refresh the display from a fully committed Orch gate decision."""
+        binding = {key: decision[key] for key in ("job_uid", "gate", "revision")}
+        with self._lock:
+            position, card = self._message_row(decision["decision_id"])
+            if not card or card.get("type") != "decision":
+                return None
+            metadata = card.get("metadata") or {}
+            if metadata.get("orch_gate") != binding or metadata.get("choices") != decision["choices"]:
+                return None
+            if (metadata.get("resolved"), metadata.get("chosen")) == (True, decision["choice"]):
+                return None
+            updated = dict(card, metadata=dict(metadata, resolved=True, chosen=decision["choice"]))
+            try:
+                self._save_message(position, updated)
+                self._rewrite_jsonl()
+            except OSError:
+                self._save_message(position, card)
+                raise
+            return updated
+
     def _rewrite_jsonl(self):
         """Save the ID high-water mark before rewriting messages."""
         if self._log_repair_required:
