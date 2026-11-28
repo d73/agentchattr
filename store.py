@@ -286,12 +286,12 @@ class MessageStore:
                 )
             }
 
-    def get_since(self, since_id: int = 0, channel: str | None = None) -> list[dict]:
+    def get_since(self, since_id: int = 0, channel: str | None = None, *, limit: int | None = None) -> list[dict]:
         where, parameters = (" AND channel = ?", (json.dumps(channel),)) if channel else ("", ())
         with self._lock:
             rows = self._db.execute(
-                "SELECT payload FROM messages WHERE msg_id > ?" + where + " ORDER BY position",
-                (since_id, *parameters),
+                "SELECT payload FROM messages WHERE msg_id > ?" + where + " ORDER BY position LIMIT ?",
+                (since_id, *parameters, limit if limit is not None else -1),
             )
             return [json.loads(payload) for (payload,) in rows]
 

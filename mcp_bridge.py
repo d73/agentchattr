@@ -731,7 +731,7 @@ def chat_read(
     if cursor is None:
         msgs = store.get_recent(limit, channel=ch)
     else:
-        msgs = store.get_since(cursor, channel=ch)[:limit]
+        msgs = store.get_since(cursor, channel=ch, limit=limit)
 
     serialized = _serialize_messages(msgs)
     if not since_id:

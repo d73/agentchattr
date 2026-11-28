@@ -22,11 +22,13 @@ class HistoryMemoryTests(unittest.TestCase):
             try:
                 store = MessageStore(str(path))
                 recent = store.get_recent(3, channel="general")
+                unread = store.get_since(0, channel="general", limit=3)
                 _, peak = tracemalloc.get_traced_memory()
             finally:
                 tracemalloc.stop()
 
             self.assertEqual([msg["id"] for msg in recent], [509, 510, 511])
+            self.assertEqual([msg["id"] for msg in unread], [1, 2, 3])
             self.assertLess(peak, message_count * payload_size // 2)
             earlier, more = store.get_before(509, 2, channel="general")
             self.assertEqual([msg["id"] for msg in earlier], [507, 508])
