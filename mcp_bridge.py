@@ -452,7 +452,7 @@ def _resolve_attachments(attachments: list[dict]) -> list[dict]:
     return resolved
 
 
-def _serialize_messages(msgs: list[dict]) -> str:
+def _serialize_messages(msgs: list[dict], *, has_more: bool = False) -> str:
     """Serialize store messages into MCP chat_read output shape."""
     out = []
     for m in msgs:
@@ -486,6 +486,8 @@ def _serialize_messages(msgs: list[dict]) -> str:
         if m.get("type") == "decision" and isinstance(metadata, dict) and "job_reopen" in metadata:
             entry["job_reopen"] = metadata["job_reopen"]
         out.append(entry)
+    if out and has_more:
+        out[-1]["has_more"] = True
     return json.dumps(out, ensure_ascii=False) if out else ""
 
 
@@ -666,6 +668,8 @@ def chat_read(
     - First call with sender: returns last `limit` messages (full context).
     - Subsequent calls with same sender: returns up to `limit` unread messages, oldest first.
     - Pass a nonzero since_id to page from a specific point without changing the saved cursor.
+    - If the last message has `has_more: true`, there is another unread page. Read the same
+      channel again, using the last message ID as since_id only when paging explicitly.
     - Omit sender to always get the last `limit` messages (no cursor).
     - Pass channel to filter by channel name (default: all channels).
     - Pass job_id to read a specific job. Job reads return a header entry first,
@@ -743,12 +747,15 @@ def chat_read(
     if cursor is None and sender:
         with _cursors_lock:
             cursor = _cursors.get(sender, {}).get(ch or "__all__")
+    has_more = False
     if cursor is None:
         msgs = store.get_recent(limit, channel=ch)
     else:
-        msgs = store.get_since(cursor, channel=ch, limit=limit)
+        unread = store.get_since(cursor, channel=ch, limit=limit + 1)
+        has_more = len(unread) > limit
+        msgs = unread[:limit]
 
-    serialized = _serialize_messages(msgs)
+    serialized = _serialize_messages(msgs, has_more=has_more)
     if not since_id:
         _update_cursor(sender, msgs, ch)
 
