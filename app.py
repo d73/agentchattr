@@ -406,7 +406,8 @@ def _install_security_middleware(token: str, cfg: dict):
             # the browser session token, like the rest of the API.
             public_image = path.startswith("/uploads/") and Path(path).suffix.lower() in IMAGE_UPLOAD_EXTS
             client_ip = request.client.host if request.client else ""
-            if path == "/" or path.startswith(("/static/", "/api/roles")) or public_image:
+            public_roles = request.method == "GET" and path == "/api/roles"
+            if path == "/" or path.startswith("/static/") or public_roles or public_image:
                 return await call_next(request)
 
             # Devices on the LAN never get API access, even with a token.
