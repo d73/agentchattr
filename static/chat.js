@@ -1431,7 +1431,21 @@ function appendMessage(msg, options = {}) {
                 ).join('') + '</div>';
             }
         }
-        el.innerHTML = `<div class="todo-strip"></div>${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(appearance.name)}</span>${rolePillHtml}<span class="msg-time">${escapeHtml(msg.time || '')}</span><span class="msg-num">#${msg.id}</span></div><div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}<button class="convert-job-pill" onclick="startJobFromMessage(${msg.id}); event.stopPropagation();" title="Convert to job">convert to job</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div><div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)" title="Reply" aria-label="Reply">${messageActionIcon('reply')}</button><button class="todo-hint" onclick="todoCycle(${msg.id}); event.stopPropagation();" title="${pinAction.label}" aria-label="${pinAction.label}">${messageActionIcon(pinAction.icon)}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete" aria-label="Delete">${messageActionIcon('delete')}</button></div>`;
+        el.classList.add('message-with-toolbar');
+        el.innerHTML = `
+            <div class="todo-strip"></div>${isSelf ? '' : avatarHtml}
+            <div class="chat-bubble" style="--bubble-color: ${senderColor}" tabindex="-1">
+                ${replyHtml}
+                <div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(appearance.name)}</span>${rolePillHtml}<span class="msg-time">${escapeHtml(msg.time || '')}</span><span class="msg-num">#${msg.id}</span></div>
+                <div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}
+                <div class="msg-actions bubble-actions" role="group" aria-label="Message actions">
+                    <button type="button" class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message" aria-label="Copy message">${messageActionIcon('copy')}</button>
+                    <button type="button" class="todo-hint" onclick="event.stopPropagation(); todoCycle(${msg.id});" title="${pinAction.label}" aria-label="${pinAction.label}">${messageActionIcon(pinAction.icon)}</button>
+                    <button type="button" class="reply-btn" onclick="startReply(${msg.id}, event)" title="Reply" aria-label="Reply">${messageActionIcon('reply')}</button>
+                    <button type="button" class="convert-job-btn" onclick="event.stopPropagation(); startJobFromMessage(${msg.id});" title="Convert to Job" aria-label="Convert to Job">${messageActionIcon('job')}</button>
+                    <button type="button" class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete message" aria-label="Delete message">${messageActionIcon('delete')}</button>
+                </div>
+            </div>`;
         if (todoStatus) el.classList.add('msg-todo', `msg-todo-${todoStatus}`);
         if (msg.metadata?.session_output) el.classList.add('session-output');
 
@@ -3521,10 +3535,12 @@ function scrollToMessage(msgId) {
 // --- Todos ---
 
 const MESSAGE_ACTION_ICONS = {
+    copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>',
     reply: '<path d="M9 4 4 9l5 5M4 9h8c4 0 6 2 6 6"/>',
     pin: '<path d="M8 3h8l-1 5 2 3v1H7v-1l2-3zM12 12v7"/>',
     done: '<path d="M8 3h8l-1 5 2 3v1H7v-1l2-3zM12 12v7M16 16l2 2 4-5"/>',
     unpin: '<path d="M8 3h8l-1 5 2 3v1H7v-1l2-3zM12 12v7M4 3l17 17"/>',
+    job: '<rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 9h6M9 12h6M9 15h4"/>',
     delete: '<path d="M5 6h14M9 3h6M7 6l1 12h8l1-12M10 9v6M14 9v6"/>'
 };
 function messageActionIcon(name) {

@@ -982,28 +982,7 @@ main#timeline {
     background: color-mix(in srgb, var(--bubble-color, var(--text-dim)) 15%, var(--bg-msg));
 }
 
-/* --- Bubble copy icon (top-right) --- */
-
-.bubble-copy {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    cursor: pointer;
-    padding: 3px;
-    border-radius: var(--radius-sm);
-    opacity: 0;
-    transition: opacity 0.15s, color 0.15s, background 0.15s;
-    line-height: 0;
-}
-
-.message:hover .bubble-copy { opacity: 0.5; }
-.bubble-copy:hover { opacity: 1 !important; color: var(--text); background: var(--white-08); }
-.bubble-copy.copied { opacity: 1 !important; color: var(--online); }
-
-/* --- Message actions (reply + pin) --- */
+/* --- Message actions --- */
 
 .msg-actions {
     display: flex;
@@ -1016,6 +995,73 @@ main#timeline {
 .message:hover .msg-actions,
 .message:focus-within .msg-actions {
     opacity: 1;
+}
+
+.msg-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 4px;
+}
+
+.message-with-toolbar {
+    padding-top: 22px;
+}
+
+.bubble-actions {
+    position: absolute;
+    top: -23px;
+    right: 6px;
+    z-index: 1;
+    gap: 2px;
+    padding: 2px 4px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-full);
+    background: var(--bg-msg);
+    box-shadow: 0 2px 5px rgb(0 0 0 / 25%);
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+.message:hover .bubble-actions,
+.message:focus-within .bubble-actions {
+    pointer-events: auto;
+}
+
+.bubble-actions button {
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.bubble-actions button:hover,
+.bubble-actions button:focus-visible {
+    background: var(--white-08);
+    color: var(--text);
+}
+
+.bubble-actions .bubble-copy.copied,
+.message.msg-todo-todo .bubble-actions .todo-hint {
+    color: var(--online);
+}
+
+.bubble-actions .delete-btn:hover {
+    color: var(--error-color);
+}
+
+.bubble-actions svg {
+    width: 24px;
+    height: 24px;
+    flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bubble-actions { transition: none; }
 }
 
 /* --- Todo strip --- */
@@ -1039,34 +1085,6 @@ main#timeline {
 
 .message.msg-todo-done {
     opacity: 0.6;
-}
-
-/* Hover hint — pin/reply buttons */
-.todo-hint {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 2px 6px;
-    color: var(--text-dim);
-    user-select: none;
-    background: none;
-    border: none;
-    font-family: inherit;
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-.todo-hint:hover {
-    color: var(--accent);
-}
-
-.message.msg-todo-todo .todo-hint {
-    color: var(--online);
-}
-
-.message.msg-todo-done .todo-hint {
-    color: var(--error-color);
 }
 
 /* --- Delete button (hover action) --- */
@@ -4551,13 +4569,4 @@ a.file-attachment:hover { border-color: var(--accent); }
 .log-warning strong { color: #ffd28b; }
 .log-warning div { margin-top: 4px; }
 
-/* Compact icon-only controls; focus reveals the same actions as hover. */
-.msg-actions button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 4px;
-}
 .action-error-close { float: right; color: inherit; background: transparent; border: 0; cursor: pointer; font-size: 20px; }

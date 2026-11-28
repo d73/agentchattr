@@ -22,7 +22,18 @@ test('pin states update the icon, hover tooltip and accessible label', () => {
   }
 });
 
-test('message action markup uses labeled icons for reply and delete', () => {
-  assert.equal((src.match(/aria-label="Reply">\$\{messageActionIcon\('reply'\)\}/g) || []).length, 3);
-  assert.equal((src.match(/aria-label="Delete">\$\{messageActionIcon\('delete'\)\}/g) || []).length, 3);
+test('chat bubble toolbar uses labeled icons in the approved order', () => {
+  const toolbar = src.match(/class="msg-actions bubble-actions"[^>]*>([\s\S]*?)<\/div>/);
+  assert.ok(toolbar);
+  const actions = [...toolbar[1].matchAll(/title="([^"]+)" aria-label="([^"]+)">\$\{messageActionIcon\(([^)]+)\)\}/g)];
+  assert.deepEqual(actions.map(([, title, label, icon]) => {
+    assert.equal(title, label);
+    return [label, icon];
+  }), [
+    ['Copy message', "'copy'"],
+    ['${pinAction.label}', 'pinAction.icon'],
+    ['Reply', "'reply'"],
+    ['Convert to Job', "'job'"],
+    ['Delete message', "'delete'"],
+  ]);
 });
