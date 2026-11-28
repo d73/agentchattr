@@ -402,6 +402,8 @@ def chat_propose_job(
     body: str = "",
     channel: str = "general",
     ctx: Context | None = None,
+    *,
+    source_msg_id: int | None = None,
 ) -> str:
     """Propose a job for human approval. Posts a proposal card in the timeline.
     The human can Accept (creates the job) or Dismiss. Agents must NOT create jobs
@@ -411,6 +413,7 @@ def chat_propose_job(
         title: Short job title (max 80 chars)
         body: Detailed description of the work (max 1000 chars)
         channel: Channel to post the proposal in
+        source_msg_id: Original message ID from a Convert to Job request, if provided
     """
     sender, authenticated, err = _resolve_tool_actor(sender, ctx, field_name="sender", required=True)
     if err:
@@ -420,11 +423,19 @@ def chat_propose_job(
     title = title.strip()[:80]
     body = (body or "").strip()[:1000]
 
+    metadata = {"title": title, "body": body, "status": "pending"}
+    if source_msg_id is not None:
+        source = store.get_by_id(source_msg_id) if type(source_msg_id) is int and source_msg_id >= 0 else None
+        if source is None or source.get("channel", "general") != channel:
+            return "Error: the proposal source message does not exist in this channel."
+        metadata["source_msg_id"] = source["id"]
+        metadata["source_msg_uid"] = source["uid"]
+
     msg = store.add(
         sender, f"Job proposal: {title}",
         msg_type="job_proposal",
         channel=channel,
-        metadata={"title": title, "body": body, "status": "pending"},
+        metadata=metadata,
         sender_kind="agent" if authenticated else "human",
         sender_identity=authenticated["identity_id"] if authenticated else None,
         sender_base=authenticated["base"] if authenticated else None,

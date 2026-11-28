@@ -188,6 +188,31 @@ class JobStore:
             job = next((item for item in self._jobs if item.get("anchor_msg_id") == anchor_msg_id), None)
             return self._snapshot(job) if job is not None else None
 
+    def get_for_source(self, source_msg_id: int) -> dict | None:
+        with self._lock:
+            job = next((item for item in self._jobs if item.get("source_msg_id") == source_msg_id), None)
+            return self._snapshot(job) if job is not None else None
+
+    def bind_existing_source(self, job_id: int, job_uid: str, source_msg_id: int) -> dict | None:
+        """Preserve a verified source reference on a legacy Job."""
+        with self._lock:
+            for job in self._jobs:
+                if job.get("source_msg_id") == source_msg_id:
+                    return self._snapshot(job)
+            job = next((item for item in self._jobs
+                        if item["id"] == job_id and item["uid"] == job_uid), None)
+            if job is None or job.get("source_msg_id") is not None:
+                return None
+            job["source_msg_id"] = source_msg_id
+            try:
+                self._save()
+            except OSError:
+                del job["source_msg_id"]
+                raise
+            result = self._snapshot(job)
+        self._fire("update", result)
+        return result
+
     def _managed_job_locked(self, uid):
         return next((job for job in self._jobs
                      if job.get("uid") == uid and job["lifecycle"]["managed_by"] == "orch"), None)
@@ -304,6 +329,9 @@ class JobStore:
                created_at: float | None = None,
                updated_at: float | None = None, *,
                from_proposal: bool = False,
+               source_msg_id: int | None = None,
+               managed_by: str = "manual",
+               proposal_writer: str | None = None,
                proposal_author: str | None = None,
                proposal_author_identity: str | None = None,
                archived_lifecycle: dict | None = None,
@@ -312,7 +340,12 @@ class JobStore:
         core = core_status("open" if status is None else status)
         if core is None:
             raise ValueError(f"unknown Job status: {status!r}")
-        lifecycle = new_lifecycle(core, stage=DRAFTING if from_proposal else None)
+        if source_msg_id is not None and (type(source_msg_id) is not int or source_msg_id < 0):
+            raise ValueError("invalid Job source message")
+        if managed_by == "orch" and (source_msg_id is None or core != TODO or job_type != "job"):
+            raise ValueError("Orch intake requires a source message and a new To Do Job")
+        lifecycle = new_lifecycle(core, stage=DRAFTING if from_proposal or managed_by == "orch" else None,
+                                  managed_by=managed_by)
         if archived_lifecycle is not None:
             validate_lifecycle(archived_lifecycle)
             if status is not None and archived_lifecycle["core_id"] != core:
@@ -326,6 +359,10 @@ class JobStore:
         validate_lifecycle(lifecycle)
         st = LEGACY_STATUS[lifecycle["core_id"]]
         with self._lock:
+            if source_msg_id is not None:
+                for existing in self._jobs:
+                    if existing.get("source_msg_id") == source_msg_id:
+                        return self._snapshot(existing)
             if from_proposal and anchor_msg_id is not None:
                 for existing in self._jobs:
                     if existing.get("anchor_msg_id") == anchor_msg_id:
@@ -348,6 +385,10 @@ class JobStore:
                 "updated_at": updated_at or now,
                 "sort_order": self._next_sort_order_locked(st),
             }
+            if source_msg_id is not None:
+                a["source_msg_id"] = source_msg_id
+            if proposal_writer is not None:
+                a["proposal_writer"] = proposal_writer
             if from_proposal or proposal_author is not None or proposal_author_identity is not None:
                 a["proposal_author"] = proposal_author
                 a["proposal_author_identity"] = proposal_author_identity
