@@ -36,8 +36,14 @@ def mock_chat_routes(page, connect):
 def check_panels(page, url, screenshots):
     errors = []
     sockets = []
+    socket_frames = []
+
+    def route_socket(socket):
+        sockets.append(socket)
+        socket.on_message(lambda frame: socket_frames.append(json.loads(frame)))
+
     page.on("pageerror", lambda error: errors.append(str(error)))
-    mock_chat_routes(page, lambda socket: sockets.append(socket))
+    mock_chat_routes(page, route_socket)
     page.goto(url)
     page.evaluate("""() => {
         agentConfig = {codex: {label: 'Codex', color: '#60a5fa'}};
@@ -149,27 +155,48 @@ def check_panels(page, url, screenshots):
     font_size = appearance.get_by_role("spinbutton", name="Font Size")
     expect(font_size).to_have_value("14")
     assert font_size.evaluate("el => el.closest('.settings-field').previousElementSibling.querySelector('label').textContent") == "Font"
-    socket_frames = []
     assert sockets
-    sockets[-1].on_message(lambda frame: socket_frames.append(json.loads(frame)))
 
     font = appearance.get_by_role("combobox", name="Font")
-    font.select_option("sans")
-    expect(page.locator("body.font-sans")).to_have_count(1)
-    font.select_option("mono")
-    expect(page.locator("body.font-mono")).to_have_count(1)
+    families = {
+        "open-sans": ("Open Sans", "Open Sans"),
+        "roboto": ("Roboto", "Roboto"),
+        "helvetica": ("Helvetica", "Helvetica Neue"),
+        "montserrat": ("Montserrat", "Montserrat"),
+        "avenir": ("Avenir", "Avenir Next"),
+        "mono": ("Monospace", "Cascadia Code"),
+    }
+    assert font.locator("option").all_text_contents() == [label for label, _ in families.values()]
+    expect(font).to_have_value("open-sans")
+    sockets[-1].send(json.dumps({"type": "settings", "data": {"font": "sans"}}))
+    expect(page.locator("body")).to_have_attribute("data-chat-font", "open-sans")
+    for value, (_, family) in families.items():
+        font.select_option(value)
+        expect(page.locator("body")).to_have_attribute("data-chat-font", value)
+        assert page.locator("#input").evaluate(
+            "(el, family) => getComputedStyle(el).fontFamily.split(',')[0].replace(/[\"']/g, '') === family",
+            family,
+        )
+        if value in {"open-sans", "roboto", "montserrat"}:
+            for style in ("normal", "italic"):
+                assert page.evaluate("""async ([family, style]) => {
+                    const faces = await document.fonts.load(style + ' 600 14px "' + family + '"');
+                    return faces.some(face => face.status === 'loaded');
+                }""", [family, style])
     font_updates = [frame for frame in socket_frames if "font" in frame.get("data", {})]
-    assert [frame["data"] for frame in font_updates] == [{"font": "sans"}, {"font": "mono"}]
+    assert [frame["data"] for frame in font_updates] == [{"font": key} for key in families]
 
     sockets[-1].send(json.dumps({
         "type": "settings", "data": {"font": "sans", "font_size": 14},
         "typography_request_id": font_updates[0]["typography_request_id"],
     }))
-    expect(page.locator("body.font-mono")).to_have_count(1)
+    expect(page.locator("body")).to_have_attribute("data-chat-font", "mono")
     sockets[-1].send(json.dumps({
         "type": "settings", "data": {"font": "mono", "font_size": 14},
-        "typography_request_id": font_updates[1]["typography_request_id"],
+        "typography_request_id": font_updates[-1]["typography_request_id"],
     }))
+    sockets[-1].send(json.dumps({"type": "settings", "data": {"font": "unknown"}}))
+    expect(font).to_have_value("mono")
 
     appearance.get_by_role("button", name="Increase font size").click()
     expect(font_size).to_have_value("15")
@@ -191,6 +218,19 @@ def check_panels(page, url, screenshots):
     font_size.press("Enter")
     expect(font_size).to_have_value("20")
     assert sum("font_size" in frame.get("data", {}) for frame in socket_frames) == 2
+
+    font.select_option("avenir")
+    attempted = next(frame for frame in reversed(socket_frames) if frame.get("data") == {"font": "avenir"})
+    page.evaluate("window.typographyTestSocket = ws")
+    sockets[-1].close()
+    page.wait_for_function("ws !== window.typographyTestSocket && ws.readyState === WebSocket.OPEN")
+    resent = next(frame for frame in reversed(socket_frames) if frame.get("data") == {"font": "avenir"})
+    assert attempted["typography_request_id"] != resent["typography_request_id"]
+    sockets[-1].send(json.dumps({
+        "type": "settings", "data": {"font": "avenir"},
+        "typography_request_id": resent["typography_request_id"],
+    }))
+    expect(font).to_have_value("avenir")
     if screenshots:
         page.locator("#settings-toggle").focus()
         settings.screenshot(path=screenshots / "settings.png", animations="disabled")
@@ -201,6 +241,8 @@ def check_panels(page, url, screenshots):
     assert all(not section.evaluate("section => section.open") for section in sections)
     page.evaluate("localStorage.setItem('agentchattr-settings-open-section', 'appearance')")
     page.reload()
+    sockets[-1].send(json.dumps({"type": "settings", "data": {"font": "avenir"}}))
+    expect(page.locator("body")).to_have_attribute("data-chat-font", "avenir")
     page.evaluate("Hub.emit('jobs', {data: [{id: 42, title: 'Review', status: 'open', messages: []}]})")
     page.locator("#settings-toggle").click()
     expect(profile.locator("summary")).to_be_focused()
@@ -311,7 +353,7 @@ def check_themes(page, url, screenshots):
     expect(mode.get_by_role("radio", name="Dark")).to_be_checked()
     expect(palette.get_by_role("radio", name="Midnight")).to_be_checked()
     expect(body).to_have_css("background-color", "rgb(16, 16, 24)")
-    expect(page.locator("body.font-mono")).to_have_count(1)
+    expect(page.locator("body")).to_have_attribute("data-chat-font", "mono")
     expect(page.locator("#input")).to_have_css("font-size", "18px")
     page.locator("#input").fill("Draft to verify the active Send button")
 

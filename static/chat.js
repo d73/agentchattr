@@ -2462,9 +2462,12 @@ function updateTyping(agent, active) {
 let pendingChannelSwitch = null;
 
 function applyChatFont(font) {
-    document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
-    document.body.classList.add('font-' + font);
-    document.getElementById('setting-font').value = font;
+    const select = document.getElementById('setting-font');
+    const value = font === 'sans' || font === 'serif' ? select.options[0].value : font;
+    if (![...select.options].some(option => option.value === value)) return null;
+    document.body.dataset.chatFont = value;
+    select.value = value;
+    return value;
 }
 
 function applyChatFontSize(size) {
@@ -2857,8 +2860,8 @@ function setupSettingsKeys() {
         const el = document.getElementById(id);
         el.addEventListener('change', () => {
             if (id === 'setting-font') {
-                applyChatFont(el.value);
-                saveAppearanceSettings({ font: el.value });
+                const font = applyChatFont(el.value);
+                if (font) saveAppearanceSettings({ font });
                 return;
             }
             // Apply contrast immediately (don't wait for server round-trip)
