@@ -18,7 +18,15 @@ _CLOCK_TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]")
 
 def _archive_time(record: dict) -> str | None:
     value = record.get("time")
-    return value if isinstance(value, str) and _CLOCK_TIME.fullmatch(value) else None
+    if isinstance(value, str) and _CLOCK_TIME.fullmatch(value):
+        return value
+    timestamp = record.get("timestamp")
+    if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+        return None
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(timestamp))
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _fingerprint(record: dict) -> str:
