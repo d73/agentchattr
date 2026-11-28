@@ -185,7 +185,7 @@ The matcher strips terminal border and selection symbols, common trailing key hi
 
 Only the last 12 rows are searched for working, eight for idle, and 20 for attention. Attention takes priority over working, and working over idle. The question-plus-option rule is kept in code. A background terminal count by itself does not establish that an agent is working. Screen changes and injected messages remain fallbacks, and the Windows quiet debounce still applies.
 
-The service validates file syntax at startup. Each wrapper selects patterns by its CLI executable (falling back to the configured identity), loads its shared and agent-specific files at startup, and checks for changes every five seconds. An invalid, missing or oversized runtime set produces a warning and leaves the last-known-good set active; on initial failure, bundled defaults are used. Runtime matching has a 25ms per-search limit and a 250ms total budget per screen. A timeout preserves the previous state and logs a warning; three consecutive timed-out checks report needing attention. Pattern files are trusted local configuration. The `regex` dependency supplies the match timeout; after upgrading, install updated dependencies with `python -m pip install -r requirements.txt` if not using a provided launcher.
+The service validates file syntax at startup. Each wrapper loads the shared files and the exact directory configured by its optional `activity_profile`, then checks for changes every five seconds. An invalid, missing or oversized runtime set produces a warning and leaves the last-known-good set active; on initial failure, bundled defaults are used. Runtime matching has a 25ms per-search limit and a 250ms total budget per screen. A timeout preserves the previous state and logs a warning; three consecutive timed-out checks report needing attention. Pattern files are trusted local configuration. The `regex` dependency supplies the match timeout; after upgrading, install updated dependencies with `python -m pip install -r requirements.txt` if not using a provided launcher.
 
 To preview a captured screen without changing live status, run `python pattern_loader.py --agent codex < screen.txt`. It prints normalized rows and reports the matched rule and state with file/line. It warns when a `contains:` rule matches a row over 80 characters, since that may be ordinary prose. CI checks the editable files for syntax only; classification tests use separate fixed fixtures, so a valid new line doesn't require test updates. A valid but overly broad pattern can still cause false positives, so use the preview before relying on it.
 
@@ -456,7 +456,11 @@ python wrapper.py claude -- --dangerously-skip-permissions
 
 ### Configuration
 
-Edit `config.toml` to customize agents, ports, and routing:
+Edit `config.toml` to customize agents, ports, and routing.
+
+Set `provider` to `claude`, `codex`, `gemini`, `kimi`, or `kilo` to select that CLI's built-in behavior and MCP defaults. An explicit `mcp_inject` still overrides the provider's MCP defaults. Set `activity_profile` to an exact directory name under `patterns/`. Leaving it blank uses shared activity rules.
+
+If a custom CLI entry in `config.local.toml` previously inherited settings from its executable or name, add the intended fields to that entry. A shim that launches Claude can set `provider = "claude"` and `activity_profile = "claude"` alongside its own `command`. Chat IDs and config entry names are free to change independently of those fields.
 
 ```toml
 [server]
@@ -464,36 +468,47 @@ port = 8300                 # web UI port
 host = "127.0.0.1"
 
 [agents.claude]
+provider = "claude"
+activity_profile = "claude"
 command = "claude"          # CLI command (must be on PATH)
 cwd = ".."                  # working directory for agent
 color = "#a78bfa"           # status pill + @mention color
 label = "Claude"            # display name
 
 [agents.codex]
+provider = "codex"
+activity_profile = "codex"
 command = "codex"
 cwd = ".."
 color = "#facc15"
 label = "Codex"
 
 [agents.gemini]
+provider = "gemini"
+activity_profile = "gemini"
 command = "gemini"
 cwd = ".."
 color = "#4285f4"
 label = "Gemini"
 
 [agents.kimi]
+provider = "kimi"
+activity_profile = "kimi"
 command = "kimi"
 cwd = ".."
 color = "#1783ff"
 label = "Kimi"
 
 [agents.qwen]
+activity_profile = "qwen"
 command = "qwen"
 cwd = ".."
 color = "#8b5cf6"
 label = "Qwen"
 
 [agents.kilo]
+provider = "kilo"
+activity_profile = "kilo"
 command = "kilo"
 cwd = ".."
 color = "#f7f677"

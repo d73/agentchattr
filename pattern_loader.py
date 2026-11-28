@@ -27,21 +27,9 @@ KNOWN_AGENTS = frozenset(('codex', 'claude', 'antigravity', 'gemini', 'kimi', 'q
                           'kilo', 'codebuddy', 'copilot', 'minimax'))
 
 
-def normalize_agent(name):
-    """Never allow a requested agent name to escape the pattern directory."""
-    name = re.sub(r'-\d+$', '', str(name or '').lower())
-    return name if re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', name) else ''
-
-
-def agent_for_command(command, fallback=''):
-    """Choose patterns by CLI executable, not by a changeable chat identity."""
-    if isinstance(command, str):
-        executable = command.strip().replace('\\', '/').rsplit('/', 1)[-1].lower()
-        executable = re.sub(r'\.(?:exe|cmd|bat)$', '', executable)
-        executable = {'agy': 'antigravity'}.get(executable, executable)
-        if executable in KNOWN_AGENTS:
-            return executable
-    return normalize_agent(fallback)
+def is_profile_name(name: object) -> bool:
+    """Check an exact profile name constrained to a single path component."""
+    return isinstance(name, str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', name) is not None
 
 
 def parse_file(file):
@@ -136,7 +124,7 @@ def _signature(files):
 class PatternStore:
     """One instance per wrapper: atomically reload a complete last-known-good set."""
     def __init__(self, agent, root=ROOT, *, clock=time.monotonic, interval=INTERVAL):
-        self.agent = normalize_agent(agent)
+        self.agent = agent if is_profile_name(agent) else ''
         self.root = Path(root)
         self.clock = clock
         self.interval = interval

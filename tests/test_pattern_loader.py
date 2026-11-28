@@ -5,7 +5,7 @@ from io import StringIO
 import tempfile
 import unittest
 
-from pattern_loader import PatternStore, agent_for_command, preview, validate_files
+from pattern_loader import PatternStore, preview, validate_files
 
 
 class PatternLoaderTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class PatternLoaderTests(unittest.TestCase):
         self.write('_shared', 'idle', 'DONE\n')
         self.write('codex', 'needs_input', 'APPROVE\n')
         self.now = 100.0
-        self.store = PatternStore('codex-2', self.root, clock=lambda: self.now)
+        self.store = PatternStore('codex', self.root, clock=lambda: self.now)
 
     def write(self, agent, state, text):
         (self.root / agent / f'{state}.txt').write_text(text, encoding='utf-8')
@@ -107,11 +107,15 @@ A literal \* star
         with self.assertLogs('pattern_loader', level='WARNING'):
             self.assertEqual(self.store.classify('a' * 1900 + '!')[0], 'unavailable')
 
-    def test_cli_executable_selects_patterns_before_display_name(self):
-        self.assertEqual(agent_for_command(r'C:\Tools\codex.exe', 'claude-music'), 'codex')
-        self.assertEqual(agent_for_command('agy.cmd', 'renamed-agent'), 'antigravity')
-        self.assertEqual(agent_for_command('claude', 'codex-2'), 'claude')
-        self.assertEqual(agent_for_command('unknown-tool', 'codex-2'), 'codex')
+    def test_numbered_profiles_use_the_exact_directory(self):
+        self.assertIsNone(PatternStore('codex-2', self.root).classify('APPROVE')[0])
+        (self.root / 'codex-2').mkdir()
+        for state in ('working', 'idle', 'needs_input'):
+            self.write('codex-2', state, '')
+        self.write('codex-2', 'needs_input', 'CUSTOM APPROVAL\n')
+        numbered = PatternStore('codex-2', self.root)
+        self.assertEqual(numbered.classify('CUSTOM APPROVAL')[0], 'needs_input')
+        self.assertIsNone(numbered.classify('APPROVE')[0])
 
     def test_syntax_check_accepts_any_valid_regex_and_reports_invalid_line(self):
         self.write('codex', 'working', '# comment\n*\nnew valid expression\n')

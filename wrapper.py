@@ -163,35 +163,29 @@ _BUILTIN_DEFAULTS: dict[str, dict] = {
 _VALID_INJECT_MODES = {"settings_file", "env", "flag", "proxy_flag", "env_content"}
 
 
-def _provider_from_command(command: object) -> str:
-    """Return a built-in provider for an exact configured executable name.
-
-    Named agent identities (for example ``claude2``) are independent of
-    the CLI they launch.  Resolve only exact known executable basenames; do
-    not guess from prefixes or arbitrary command text.
-    """
-    if not isinstance(command, str):
-        return ""
-    executable = command.strip().replace("\\", "/").rsplit("/", 1)[-1].lower()
-    for suffix in (".exe", ".cmd", ".bat"):
-        if executable.endswith(suffix):
-            executable = executable[:-len(suffix)]
-            break
-    return executable if executable in _BUILTIN_DEFAULTS else ""
-
-
 def _resolve_mcp_inject(agent: str, agent_cfg: dict) -> dict:
-    """Resolve MCP injection config: explicit config > provider defaults > none."""
+    """Use explicit MCP settings or defaults for the configured provider."""
+    provider = agent_cfg.get("provider", "")
+    if not isinstance(provider, str) or (provider and provider not in _BUILTIN_DEFAULTS):
+        choices = ", ".join(sorted(_BUILTIN_DEFAULTS))
+        raise ValueError(f"[agents.{agent}] provider must be one of: {choices}")
     if agent_cfg.get("mcp_inject"):
         return dict(agent_cfg)
-    provider = agent
-    if provider not in _BUILTIN_DEFAULTS:
-        provider = _provider_from_command(agent_cfg.get("command", ""))
-    if provider:
-        merged = dict(_BUILTIN_DEFAULTS[provider])
-        merged.update({k: v for k, v in agent_cfg.items() if k.startswith("mcp_")})
-        return merged
-    return {}
+    if not provider:
+        return {}
+    merged = dict(_BUILTIN_DEFAULTS[provider])
+    merged.update({k: v for k, v in agent_cfg.items() if k.startswith("mcp_")})
+    return merged
+
+
+def _resolve_activity_profile(agent: str, agent_cfg: dict) -> str:
+    """Read the exact configured pattern directory name; blank uses shared rules."""
+    from pattern_loader import is_profile_name
+
+    profile = agent_cfg.get("activity_profile", "")
+    if profile != "" and not is_profile_name(profile):
+        raise ValueError(f"[agents.{agent}] activity_profile must be a lowercase pattern directory name")
+    return profile
 
 
 def _get_server_url(mcp_cfg: dict, transport: str) -> str:
@@ -686,6 +680,20 @@ def main():
     mcp_cfg = config.get("mcp", {})
 
     try:
+        inject_cfg = _resolve_mcp_inject(agent, agent_cfg)
+        activity_profile = _resolve_activity_profile(agent, agent_cfg)
+    except ValueError as exc:
+        print(f"  Error: {exc}")
+        sys.exit(1)
+    provider = agent_cfg.get("provider", "")
+    inject_mode = inject_cfg.get("mcp_inject", "")
+    if inject_mode and inject_mode not in _VALID_INJECT_MODES:
+        print(f"  Error: unknown mcp_inject mode '{inject_mode}' for agent '{agent}'.")
+        print(f"  Valid modes: {', '.join(sorted(_VALID_INJECT_MODES))}")
+        sys.exit(1)
+    needs_proxy = inject_mode in ("proxy_flag", "")
+
+    try:
         registration = _register_at_startup(server_port, agent, args.label, args.name)
     except Exception as exc:
         print(f"  Registration failed ({exc}).")
@@ -698,17 +706,6 @@ def main():
 
     proxy = None
     proxy_url = None
-
-    # Resolve MCP injection mode to determine if a proxy is needed.
-    # Direct-connect modes (settings_file, env, flag) don't need a proxy.
-    # proxy_flag mode needs a proxy. No mcp_inject = proxy fallback.
-    inject_cfg = _resolve_mcp_inject(agent, agent_cfg)
-    inject_mode = inject_cfg.get("mcp_inject", "")
-    if inject_mode and inject_mode not in _VALID_INJECT_MODES:
-        print(f"  Error: unknown mcp_inject mode '{inject_mode}' for agent '{agent}'.")
-        print(f"  Valid modes: {', '.join(sorted(_VALID_INJECT_MODES))}")
-        sys.exit(1)
-    needs_proxy = inject_mode in ("proxy_flag", "") or not inject_mode
 
     if needs_proxy:
         from mcp_proxy import McpIdentityProxy
@@ -806,7 +803,7 @@ def main():
 
     # Gemini: ensure the project directory is trusted so MCPs are allowed.
     # Gemini blocks ALL MCPs for untrusted folders — even system-settings ones.
-    if agent == "gemini" or inject_cfg.get("mcp_inject") == "env":
+    if provider == "gemini":
         _ensure_gemini_folder_trusted(project_dir)
 
     launch_args, env, inject_env, mcp_settings_path = _build_provider_launch(
@@ -961,8 +958,6 @@ def main():
 
     _agent_pid = [None]
 
-    from pattern_loader import agent_for_command
-    pattern_agent = agent_for_command(command, assigned_name)
     pty_bridge_mode = bool(os.environ.get("TERMGRID_BRIDGE_PORT") or os.environ.get("TERMGRID_BRIDGE_TOKEN"))
     if pty_bridge_mode:
         if sys.platform != "win32" or not os.environ.get("TERMGRID_BRIDGE_PORT") or not os.environ.get("TERMGRID_BRIDGE_TOKEN"):
@@ -973,15 +968,15 @@ def main():
     elif sys.platform == "win32":
         from wrapper_windows import get_activity_checker, run_agent
 
-        _set_activity_checker(get_activity_checker(_agent_pid, agent_name=pattern_agent, trigger_flag=_trigger_flag))
+        _set_activity_checker(get_activity_checker(_agent_pid, agent_name=activity_profile, trigger_flag=_trigger_flag))
     else:
         from wrapper_unix import get_activity_checker, run_agent
 
         unix_session_name = f"agentchattr-{assigned_name}"
         _set_activity_checker(get_activity_checker(
             unix_session_name, trigger_flag=_trigger_flag,
-            provider=_provider_from_command(command),
-            agent_name=pattern_agent,
+            provider=provider,
+            agent_name=activity_profile,
         ))
 
     run_kwargs = dict(
@@ -1002,7 +997,7 @@ def main():
     if sys.platform == "win32":
         run_kwargs["enter_backend"] = agent_cfg.get("enter_backend", "console_input")
     if pty_bridge_mode:
-        run_kwargs.update(set_activity_checker=_set_activity_checker, activity_agent=pattern_agent,
+        run_kwargs.update(set_activity_checker=_set_activity_checker, activity_agent=activity_profile,
                           trigger_flag=_trigger_flag)
     if sys.platform != "win32":
         run_kwargs["session_name"] = unix_session_name
