@@ -21,6 +21,7 @@ import time
 import uuid
 
 from pattern_loader import PatternStore
+from restart_policy import RestartPolicy
 
 TMUX_COMMAND_TIMEOUT = 5.0
 
@@ -251,6 +252,7 @@ def run_agent(
     print(f"  Detach: Ctrl+B, D  (agent keeps running)")
     print(f"  Reattach: tmux attach -t {session_name}\n")
 
+    restart = RestartPolicy()
     while True:
         try:
             # Clean up stale session from a previous crash
@@ -260,6 +262,7 @@ def run_agent(
             )
 
             # Create tmux session running the agent CLI
+            started_at = time.monotonic()
             result = subprocess.run(
                 ["tmux", "new-session", "-d", "-s", session_name,
                  "-c", abs_cwd, agent_cmd],
@@ -286,9 +289,7 @@ def run_agent(
             if no_restart:
                 break
 
-            print(f"\n  {agent.capitalize()} exited.")
-            print(f"  Restarting in 3s... (Ctrl+C to quit)")
-            time.sleep(3)
+            restart.wait_before_restart(started_at, f"{agent.capitalize()} exited.", time.sleep)
         except KeyboardInterrupt:
             # Kill the tmux session on Ctrl+C
             subprocess.run(
