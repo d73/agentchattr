@@ -98,7 +98,7 @@ def _clean_ui_prefs(raw: dict) -> dict:
         }
     if isinstance(raw.get("user_color"), str) and _HEX_COLOR_RE.fullmatch(raw["user_color"]):
         out["user_color"] = raw["user_color"]
-    if raw.get("attention_style") in ("highlight", "flash"):
+    if raw.get("attention_style") in ("highlight", "full-highlight", "flash"):
         out["attention_style"] = raw["attention_style"]
     att = raw.get("attention_sound")
     if isinstance(att, str) and _re.fullmatch(r"[a-z0-9-]{1,40}", att):  # sound name, "none", or legacy on/off

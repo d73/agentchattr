@@ -4517,7 +4517,7 @@ a.file-attachment:hover { border-color: var(--accent); }
 }
 .help-pulse { animation: helpPulse 1s ease 3; }
 
-/* Needs-input state: pill flashes when the CLI is waiting on the user (e.g. a permission prompt) */
+/* Glow is the default pulse when a pill or Job card needs input. */
 .status-pill.needs-input, .job-card.needs-input {
     border-color: var(--agent-color, #fbbf24);
     animation: needs-input-flash 1s ease-in-out infinite;
@@ -4529,7 +4529,7 @@ a.file-attachment:hover { border-color: var(--accent); }
         background-color: color-mix(in srgb, var(--agent-color, #fbbf24) 30%, transparent);
     }
 }
-/* "Flash" option (Settings > Needs attention): a hard on/off blink instead of the soft highlight pulse. */
+/* Flash is the hard on/off blink. */
 :root[data-attention="flash"] :is(.status-pill, .job-card).needs-input {
     animation: needs-input-blink 0.7s steps(1, end) infinite;
 }
@@ -4540,6 +4540,25 @@ a.file-attachment:hover { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
     /* Flash is an explicit opt-in, so it still blinks (slowly, <3 Hz); only the default pulse is suppressed. */
     :root:not([data-attention="flash"]) :is(.status-pill, .job-card).needs-input { animation: none; box-shadow: 0 0 8px 2px var(--agent-color, #fbbf24); }
+}
+
+/* Highlight fills the entire waiting pill, including the Orch status pill. */
+:root[data-attention="full-highlight"] .status-pill.needs-input {
+    animation: none;
+    background-color: #fbbf24;
+    border-color: #fbbf24;
+    box-shadow: 0 0 10px 2px #fbbf24;
+    color: #27210f;
+}
+:root[data-attention="full-highlight"] .status-pill.needs-input :is(.status-label, .status-unknown) {
+    color: inherit;
+}
+:root[data-attention="full-highlight"] .status-pill.needs-input .status-dot {
+    animation: none;
+    background-color: currentColor;
+}
+:root[data-attention="full-highlight"] .status-pill.needs-input.working::before {
+    content: none;
 }
 
 /* Channel attention (Settings > Channel attention): the channel entry glows or flashes when your input is needed there. */
