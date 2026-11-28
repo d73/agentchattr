@@ -111,6 +111,30 @@ class HistoryDeliveryTests(unittest.TestCase):
         self.assertEqual(rename['data']['archived_channels'], ['renamed'])
         self.assertEqual(len(self.messages.get_recent(10, channel='renamed')), 1)
 
+    def test_cancelled_initialization_clears_browser_client(self):
+        async def run_connection():
+            sending = asyncio.Event()
+
+            class Socket:
+                query_params = {'token': 'test'}
+                client = SimpleNamespace(host='127.0.0.1')
+
+                async def accept(self):
+                    pass
+
+                async def send_text(self, raw):
+                    sending.set()
+                    await asyncio.Future()
+
+            task = asyncio.create_task(app.websocket_endpoint(Socket()))
+            await asyncio.wait_for(sending.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(await app.get_browser_clients(), {'count': 0})
+
+        asyncio.run(run_connection())
+
     def test_history_setting_is_applied_per_channel_without_deleting_messages(self):
         self.settings['history_limit'] = '3'
         for i in range(12):
