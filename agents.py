@@ -3,6 +3,7 @@
 import json
 import logging
 from pathlib import Path
+import time
 import uuid
 
 from atomic_io import atomic_write_text
@@ -10,11 +11,7 @@ from atomic_io import atomic_write_text
 log = logging.getLogger(__name__)
 
 
-def take_identity_trigger(data_dir: Path, identity_id: str) -> str | None:
-    """Read one complete trigger addressed to this registration."""
-    if not identity_id:
-        return None
-    queue = data_dir / "identity_triggers" / identity_id
+def _take_spooled_trigger(queue: Path) -> str | None:
     for path in sorted(queue.glob("*.json")):
         try:
             payload = path.read_text(encoding="utf-8")
@@ -23,6 +20,55 @@ def take_identity_trigger(data_dir: Path, identity_id: str) -> str | None:
             continue
         return payload
     return None
+
+
+def take_identity_trigger(data_dir: Path, identity_id: str) -> str | None:
+    """Read one complete trigger addressed to this registration."""
+    if identity_id:
+        return _take_spooled_trigger(data_dir / "identity_triggers" / identity_id)
+    return None
+
+
+def take_trigger(queue_file: Path, identity_id: str = "") -> dict | None:
+    """Take one wake, preserving any other queued work for later polls."""
+    payload = take_identity_trigger(queue_file.parent, identity_id)
+    if payload is not None:
+        entry = json.loads(payload)
+        # Older identity spool records are suggestion acceptances.
+        entry.setdefault("kind", "suggestion_accepted")
+        return entry
+
+    payload = _take_spooled_trigger(queue_file.with_suffix(".d"))
+    if payload is not None:
+        return json.loads(payload)
+
+    # Older servers used a JSONL file. Rotate it before reading so a new
+    # append that opens the original name cannot be erased by the reader.
+    pending = queue_file.with_name(f"{queue_file.name}.pending")
+    if not pending.exists():
+        try:
+            queue_file.rename(pending)
+        except FileNotFoundError:
+            return None
+    lines = pending.read_text(encoding="utf-8").splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            if index + 1 < len(lines):
+                atomic_write_text(pending, "".join(lines[index + 1:]))
+            else:
+                pending.unlink()
+            return entry
+    pending.unlink()
+    return None
+
+
+def _spool_trigger(queue: Path, entry: dict) -> None:
+    queue.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(queue / f"{time.time_ns():020d}-{uuid.uuid4().hex}.json", json.dumps(entry))
 
 
 class AgentTrigger:
@@ -38,9 +84,7 @@ class AgentTrigger:
         if not self._registry.is_active_identity(identity_id):
             return
         queue = self._data_dir / "identity_triggers" / identity_id
-        queue.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(queue / f"{uuid.uuid4().hex}.json",
-                          json.dumps({"channel": channel, "job_id": job_id}))
+        _spool_trigger(queue, {"channel": channel, "job_id": job_id, "kind": "suggestion_accepted"})
 
     def get_status(self) -> dict:
         from mcp_bridge import is_online, is_active, is_needs_input, is_activity_known, get_role
@@ -60,40 +104,23 @@ class AgentTrigger:
 
     async def trigger(self, agent_name: str, message: str = "", channel: str = "general",
                       job_id: int | None = None, **kwargs):
-        """Write to the agent's queue file. The worker terminal picks it up."""
-        queue_file = self._data_dir / f"{agent_name}_queue.jsonl"
-        self._data_dir.mkdir(parents=True, exist_ok=True)
-
-        import time
-        entry = {
-            "sender": message.split(":")[0].strip() if ":" in message else "?",
-            "text": message,
-            "time": time.strftime("%H:%M:%S"),
-            "channel": channel,
-        }
-        custom_prompt = kwargs.get("prompt", "")
-        if isinstance(custom_prompt, str) and custom_prompt.strip():
-            entry["prompt"] = custom_prompt.strip()
-        if job_id is not None:
-            entry["job_id"] = job_id
-
-        with open(queue_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-
-        log.info("Queued @%s trigger (ch=%s, job=%s): %s", agent_name, channel, job_id, message[:80])
+        """Queue a wake for the worker."""
+        self.trigger_sync(agent_name, message, channel, job_id, **kwargs)
 
     def trigger_sync(self, agent_name: str, message: str = "", channel: str = "general",
                      job_id: int | None = None, **kwargs):
-        """Synchronous version of trigger — writes to queue file without async."""
-        queue_file = self._data_dir / f"{agent_name}_queue.jsonl"
-        self._data_dir.mkdir(parents=True, exist_ok=True)
-
-        import time
+        """Publish a complete wake for the addressed registration."""
+        instance = self._registry.get_instance(agent_name) if self._registry else None
+        if instance and instance.get("identity_id"):
+            queue = self._data_dir / "identity_triggers" / instance["identity_id"]
+        else:
+            queue = self._data_dir / f"{agent_name}_queue.d"
         entry = {
             "sender": message.split(":")[0].strip() if ":" in message else "?",
             "text": message,
             "time": time.strftime("%H:%M:%S"),
             "channel": channel,
+            "kind": "mention",
         }
         custom_prompt = kwargs.get("prompt", "")
         if isinstance(custom_prompt, str) and custom_prompt.strip():
@@ -101,7 +128,6 @@ class AgentTrigger:
         if job_id is not None:
             entry["job_id"] = job_id
 
-        with open(queue_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        _spool_trigger(queue, entry)
 
         log.info("Queued @%s trigger (ch=%s, job=%s): %s", agent_name, channel, job_id, message[:80])

@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from agents import take_identity_trigger
+from agents import take_trigger
 
 ROOT = Path(__file__).parent
 
@@ -314,11 +314,6 @@ def main():
         finally:
             set_working(False)
 
-    # Queue watcher — polls queue file for @mentions
-    queue_file = data_dir / f"{name}_queue.jsonl"
-    if queue_file.exists():
-        queue_file.write_text("", "utf-8")
-
     print(f"\n  === {agent_cfg.get('label', agent)} API Wrapper ===")
     print(f"  Model endpoint: {base_url}/chat/completions")
     if model:
@@ -333,30 +328,9 @@ def main():
                 current_name = get_name()
                 qf = data_dir / f"{current_name}_queue.jsonl"
 
-                identity_trigger = take_identity_trigger(data_dir, get_identity_id())
-                lines = []
-                if identity_trigger is not None:
-                    lines = [identity_trigger]
-                elif qf.exists() and qf.stat().st_size > 0:
-                    with open(qf, "r", encoding="utf-8") as f:
-                        lines = f.readlines()
-                    qf.write_text("", "utf-8")
-
-                if lines:
-                    channels_triggered = set()
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            data = json.loads(line)
-                            ch = data.get("channel", "general") if isinstance(data, dict) else "general"
-                            channels_triggered.add(ch)
-                        except json.JSONDecodeError:
-                            channels_triggered.add("general")
-
-                    for ch in channels_triggered:
-                        handle_trigger(channel=ch)
+                entry = take_trigger(qf, get_identity_id())
+                if entry is not None:
+                    handle_trigger(channel=entry.get("channel", "general"))
             except Exception:
                 pass
 
