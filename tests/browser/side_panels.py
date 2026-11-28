@@ -104,6 +104,35 @@ def check_panels(page, url, screenshots):
     expect(settings.get_by_role("button", name="Import history")).to_be_visible()
     alerts.locator("summary").click()
     expect(settings.get_by_role("group", name="Per-agent sounds").get_by_label("Codex sound")).to_be_visible()
+    page.evaluate("""() => {
+        Object.defineProperty(Notification, 'permission', { value: 'denied', configurable: true });
+        MentionAlerts.render();
+    }""")
+    mention_alerts = alerts.get_by_role("combobox", name="Mention alerts")
+    expect(mention_alerts).to_be_disabled()
+    expect(mention_alerts).to_have_value("off")
+    expect(alerts.locator("#mention-alerts-status")).to_be_empty()
+    expect(alerts.locator("#mention-alerts-field")).to_have_attribute("title", "Permission blocked in browser settings")
+    attention_sound = alerts.get_by_role("combobox", name="Needs attention sound")
+    assert attention_sound.locator("option").all_text_contents()[:2] == ["Use Default", "Use agent's sound"]
+    expect(attention_sound).to_have_value("")
+    page.evaluate("""() => {
+        soundPrefs = {default: 'gentle-pop', codex: 'warm-bell'};
+        window.soundPreviews = [];
+        playSoundFile = name => window.soundPreviews.push(name);
+    }""")
+    attention_sound.select_option("default")
+    assert page.evaluate("""() => {
+        playAttentionSound('Codex');
+        soundPrefs.default = 'none';
+        playAttentionSound('Codex');
+        return window.soundPreviews;
+    }""") == ["gentle-pop", "gentle-pop"]
+    attention_sound.select_option("")
+    assert page.evaluate("""() => {
+        playAttentionSound('Codex');
+        return window.soundPreviews.at(-1);
+    }""") == "warm-bell"
     profile.locator("summary").click()
     expect(settings.get_by_role("button", name="Reset color")).to_be_visible()
     appearance.locator("summary").click()

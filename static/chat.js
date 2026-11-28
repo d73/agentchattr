@@ -320,15 +320,14 @@ function setupAttentionStyleSetting() {
     });
     applyAttentionStyle();
     // Audio half of "needs attention": same sound list as the per-agent pickers, synced via ui_prefs.
-    // "Use agent's sound" (the default) plays the agent's own sound; None is silent.
     const sound = document.getElementById('setting-attention-sound');
     if (sound) {
         sound.innerHTML = '';
-        const own = document.createElement('option');
-        own.value = '';
-        own.textContent = "Use agent's sound";
-        sound.appendChild(own);
-        for (const opt of SOUND_OPTIONS) {
+        for (const opt of [
+            { value: 'default', label: 'Use Default' },
+            { value: '', label: "Use agent's sound" },
+            ...SOUND_OPTIONS,
+        ]) {
             const o = document.createElement('option');
             o.value = opt.value;
             o.textContent = opt.label;
@@ -341,11 +340,11 @@ function setupAttentionStyleSetting() {
                 else localStorage.removeItem('agentchattr-attention-sound');
             } catch (e) {}
             saveUiPrefs();
-            if (sound.value && sound.value !== 'none') playSoundFile(sound.value);  // preview
+            if (sound.value) playAttentionSound('default', sound.value);  // preview
         });
     }
 }
-// '' = the agent's own sound, 'none' = silent, otherwise a sound file name. Legacy on/off are mapped.
+// '' follows the agent; 'default' follows Default sound; 'none' is silent.
 function attentionSoundChoice() {
     let v = '';
     try { v = localStorage.getItem('agentchattr-attention-sound') || ''; } catch (e) {}
@@ -353,10 +352,10 @@ function attentionSoundChoice() {
     if (v === 'off') return 'none';
     return /^[a-z0-9-]{1,40}$/.test(v) ? v : '';
 }
-function playAttentionSound(agentName) {
-    const choice = attentionSoundChoice();
+function playAttentionSound(agentName, choice = attentionSoundChoice()) {
     if (choice === 'none') return;
-    if (choice) playSoundFile(choice);
+    if (choice === 'default') playNotificationSound('default');
+    else if (choice) playSoundFile(choice);
     else playNotificationSound(agentName);
 }
 
