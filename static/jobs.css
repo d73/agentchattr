@@ -38,28 +38,108 @@
     display: flex;
     gap: 0.35rem;
     overflow-x: auto;
-    padding: 0.35rem 0.5rem;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
     scrollbar-width: thin;
 }
 
 .job-group-filters button {
     flex: none;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border);
     border-radius: 0.35rem;
     padding: 0.25rem 0.5rem;
     color: inherit;
     background: var(--bg-subtle);
     font: inherit;
+    font-size: var(--fs-base);
+    white-space: nowrap;
     cursor: pointer;
 }
 
 .job-group-filters button[aria-pressed="true"] {
     border-color: var(--accent);
+    background: var(--accent-soft);
 }
 
-.has-job-presentation .job-title,
-.has-job-presentation .job-origin {
-    font-size: 14px;
+.job-card.job-pipeline-card {
+    margin: 8px 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg-msg);
+    font-size: var(--fs-base);
+}
+
+.job-card.job-pipeline-card:hover {
+    background: var(--bg-msg-hover);
+}
+
+.job-pipeline-card .job-title {
+    font-size: inherit;
+    font-weight: var(--fw-semibold);
+}
+
+.job-pipeline-card .job-card-header {
+    align-items: baseline;
+    flex-wrap: wrap;
+}
+
+.job-stage-badge,
+.job-event-tag {
+    padding: 1px 7px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-full);
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+}
+
+.job-stage-badge[data-stage="awaiting_approval"] { color: var(--warning); }
+.job-stage-badge[data-stage="active_coding"] { color: var(--success); }
+
+.job-card-preview {
+    margin-top: 4px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.job-card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    margin-top: 5px;
+}
+
+.job-card-footer time {
+    margin-inline-start: auto;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+}
+
+.job-origin {
+    color: var(--info);
+    overflow-wrap: anywhere;
+}
+
+#jobs-list .jobs-empty {
+    padding: 12px;
+    color: var(--text-dim);
+}
+
+.job-card.job-card-attention {
+    border-inline-start: 4px solid var(--warning);
+}
+
+.job-attention-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--warning);
+    align-self: center;
+    flex: none;
 }
 
 /* Individual job card */
@@ -469,6 +549,64 @@ body.archive-no-select * {
 .job-brief-card .job-brief-text p { margin: 0 0 4px; }
 .job-brief-card .job-brief-text p:last-child { margin-bottom: 0; }
 .job-brief-card .job-brief-text a { color: rgba(168, 85, 247, 0.9); }
+
+.job-event,
+.job-event-brief {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg-msg);
+}
+
+.job-event summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.job-event summary::-webkit-details-marker { display: none; }
+.job-event summary:hover { background: var(--bg-msg-hover); }
+.job-event summary svg { width: 16px; height: 16px; flex: none; }
+.job-event summary span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.job-event summary::after { content: '›'; margin-inline-start: auto; }
+.job-event[open] summary::after { transform: rotate(90deg); }
+.job-event:not([open]) .job-event-json { display: none; }
+
+.job-event-json {
+    margin: 0;
+    padding: 8px 10px;
+    max-height: 18em;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.job-event-brief {
+    display: grid;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 12px;
+    overflow-wrap: anywhere;
+    font-size: var(--fs-base);
+}
+
+.job-event-brief header,
+.job-event-gates {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.job-event-brief header { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.job-event-brief h3 { font-size: inherit; }
+.job-event-brief h4 { font-size: var(--fs-xs); text-transform: uppercase; color: var(--text-muted); }
+.job-event-brief section > :is(p, ul) { margin: 4px 0 0; }
+.job-event-brief ul { padding-inline-start: 1.2em; }
+.job-event-tag { white-space: normal; }
+
 .job-brief-card .job-brief-text code {
     background: rgba(168, 85, 247, 0.1);
     padding: 1px 4px;
