@@ -1,10 +1,12 @@
 """Manual conversion dispatches to one idle instance of the selected agent type."""
+import asyncio
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
+import app
 from agents import AgentTrigger
 
 
@@ -68,3 +70,17 @@ class ProposalWriterQueueTests(unittest.TestCase):
             file.unlink()
         self.assertFalse(self.request(43))
         self.assertEqual(self.delivered("writing"), [])
+
+    def test_request_uses_the_source_channel_and_returns_the_queued_status(self):
+        request = Mock()
+        request.json = AsyncMock(return_value={"writer_base": "codex", "source_msg_id": 42, "channel": "other"})
+        store = Mock()
+        store.get_by_id.return_value = {"id": 42, "channel": "review"}
+        self.status["writing"]["busy"] = True
+        self.status["c3"]["busy"] = True
+        with patch.multiple(app, store=store, agents=self.trigger):
+            self.assertEqual(asyncio.run(app.request_job_proposal(request)), {"status": "queued"})
+        [pending] = (self.root / "proposal_writer_queue").glob("*.json")
+        record = json.loads(pending.read_text(encoding="utf-8"))
+        self.assertEqual(record["channel"], "review")
+        self.assertIn("source_msg_id=42", record["prompt"])
