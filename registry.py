@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
 
-from atomic_io import quarantine_corrupt_json
+from atomic_io import repair_corrupt_json
 
 
 @dataclass
@@ -148,10 +148,10 @@ class RuntimeRegistry:
         except FileNotFoundError:
             return
         except ValueError as exc:
-            quarantine_corrupt_json(p, type(exc).__name__)
+            repair_corrupt_json(p, type(exc).__name__, {})
             return
         if not isinstance(data, dict):
-            quarantine_corrupt_json(p, "expected a registry object")
+            repair_corrupt_json(p, "expected a registry object", {})
             return
         # Slot-based profiles were added when automatic slot 1 stopped using "-1".
         self._legacy_slot_names = "profiles" not in data
@@ -171,6 +171,8 @@ class RuntimeRegistry:
             }
             self._profiles[base] = valid_profiles
             damaged |= len(valid_profiles) != len(profiles)
+        if "profiles" in data:
+            data["profiles"] = self._profiles
         # On startup nobody is proven alive: a persisted "active" instance may be a
         # dead pre-restart wrapper. Load everything as reclaimable — a wrapper that is
         # genuinely still alive reactivates its token on its next call (resolve_token),
@@ -179,6 +181,7 @@ class RuntimeRegistry:
         # (the crash-timeout only fires for names with last_seen > 0).
         for section in ("instances", "reclaimable"):
             entries = data.get(section, {})
+            valid_entries = data[section] = {}
             if not isinstance(entries, dict):
                 damaged = True
                 continue
@@ -192,8 +195,10 @@ class RuntimeRegistry:
                     self._reclaimable[n] = _inst_from_dict(d)
                 except (KeyError, TypeError, ValueError, OverflowError):
                     damaged = True
+                else:
+                    valid_entries[n] = d
         if damaged:
-            quarantine_corrupt_json(p, "invalid registry records")
+            repair_corrupt_json(p, "invalid registry records", data)
 
     def _evict_reclaimable_collisions_locked(self):
         """Drop reclaimables that collide with any live instance, by name or (base, slot).
