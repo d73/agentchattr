@@ -47,12 +47,56 @@ test('the Job list uses canonical lifecycle stages when the coordinator is offli
         lifecycle: { stage_id: 'orch.coding', flags: [] },
     };
     update([{ id: 7, uid: 'different-job', stage: 'awaiting_approval', attention: true }]);
-    assert.deepEqual({ ...ctx.jobPresentation(job) }, { key: 'pipeline-active_coding', attention: false });
+    assert.deepEqual({ ...ctx.jobPresentation(job) }, { filter: 'active_coding', workflow: true, attention: false });
     update([{ id: 7, uid: 'job-abc', stage: 'awaiting_approval', attention: true }]);
-    assert.deepEqual({ ...ctx.jobPresentation(job) }, { key: 'pipeline-active_coding', attention: true });
+    assert.deepEqual({ ...ctx.jobPresentation(job) }, { filter: 'active_coding', workflow: true, attention: true });
     update([]);
-    assert.deepEqual({ ...ctx.jobPresentation(job) }, { key: 'pipeline-active_coding', attention: false });
-    assert.deepEqual({ ...ctx.jobPresentation({ status: 'open' }) }, { key: 'open', attention: false });
+    assert.deepEqual({ ...ctx.jobPresentation(job) }, { filter: 'active_coding', workflow: true, attention: false });
+    assert.deepEqual({ ...ctx.jobPresentation({ status: 'open' }) }, { filter: 'scoping', workflow: false, attention: false });
+});
+
+test('manual Jobs and Orch stages share one status list while Orch cards stay read-only for reordering', () => {
+    function node() {
+        const children = [];
+        return {
+            children, dataset: {}, classList: { add() {}, toggle() {} },
+            appendChild(child) { children.push(child); },
+            addEventListener() {}, setAttribute() {}, querySelector() { return null; },
+        };
+    }
+    const list = node();
+    const ctx = vm.createContext({
+        jobsData: [
+            { id: 1, title: 'Manual work', status: 'done' },
+            { id: 2, title: 'Plan', status: 'open', lifecycle: { stage_id: 'orch.planning' } },
+            { id: 3, title: 'Ready', status: 'open', lifecycle: { stage_id: 'orch.ready' } },
+            { id: 4, title: 'Cancelled', status: 'archived', lifecycle: { stage_id: 'orch.cancelled' } },
+        ],
+        jobPresentations: new Map(), _expandedGroups: new Set(), jobUnread: {}, jobGroupFilter: null,
+        _compareJobsForList: (a, b) => a.id - b.id,
+        document: { getElementById: () => list, createElement: node },
+        window: { escapeHtml: value => value },
+    });
+    vm.runInContext(between(jobs, 'const jobPipelineLabels', '// Message Renderers')
+        + between(jobs, 'function renderJobsList', '// Job conversation view'), ctx);
+    ctx.registerJobPresentation('orch', {
+        scoping: 'Scoping', active_coding: 'Active coding', 'orch.planning': 'Planning', 'orch.ready': 'Ready',
+        'orch.cancelled': 'Cancelled', 'orch.in_review': 'In review', 'orch.done': 'Done',
+    });
+    const [filters] = list.children;
+    const headers = list.children.filter(child => child.className?.startsWith('jobs-group-header'));
+    assert.deepEqual(headers.map(header => header.textContent), [
+        'Scoping', 'Awaiting approval', 'Active coding (3)', 'In review', 'Done (1)',
+    ]);
+    assert.deepEqual(filters.children.map(filter => filter.textContent), [
+        'All', 'Scoping', 'Awaiting approval', 'Active coding', 'In review', 'Done',
+    ]);
+    const codingCards = list.children[list.children.indexOf(headers[2]) + 1].children[0].children;
+    assert.deepEqual(codingCards.map(card => card.draggable), [true, false, false]);
+    assert.ok(codingCards.every(card => card.innerHTML.includes('>Active coding</span>')));
+    const [cancelled] = list.children[list.children.indexOf(headers[4]) + 1].children[0].children;
+    assert.equal(cancelled.draggable, false);
+    assert.match(cancelled.innerHTML, />Done<\/span>/);
 });
 
 test('Orch brief messages expose readable fields and keep escaped JSON in a closed disclosure', () => {
