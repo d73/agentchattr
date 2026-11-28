@@ -234,6 +234,42 @@ class AppAuthEndpointTests(unittest.TestCase):
         )
         self.assertEqual(stale.status_code, 409)
 
+    def test_timeout_cannot_remove_registration_refreshed_after_snapshot(self):
+        instance = self.registry.register("claude")
+        initial = instance["registered_at"]
+        now = initial + self.registry.HEARTBEAT_TIMEOUT + 1
+        mcp_bridge._presence["claude"] = initial
+        deregister = self.registry.deregister
+
+        def heartbeat_then_remove(*args, **kwargs):
+            response = asyncio.run(app.heartbeat(
+                "claude", FakeRequest(headers={"authorization": f"Bearer {instance['token']}"}),
+            ))
+            self.assertEqual(response["name"], "claude")
+            return deregister(*args, **kwargs)
+
+        with (
+            mock.patch("registry.time.time", return_value=now),
+            mock.patch.object(self.registry, "deregister", side_effect=heartbeat_then_remove),
+        ):
+            self.assertEqual(app._expire_crashed_agents(now), set())
+        self.assertEqual(self.registry.get_instance("claude")["identity_id"], instance["identity_id"])
+        self.assertEqual(mcp_bridge._presence["claude"], now)
+        self.assertEqual(self.store.get_recent(1), [])
+
+    def test_timeout_removes_stale_instance_and_keeps_its_token_reclaimable(self):
+        instance = self.registry.register("claude")
+        initial = instance["registered_at"]
+        mcp_bridge._presence["claude"] = initial
+
+        self.assertEqual(app._expire_crashed_agents(initial + self.registry.HEARTBEAT_TIMEOUT + 1),
+                         {"claude"})
+        self.assertIsNone(self.registry.get_instance("claude"))
+        self.assertNotIn("claude", mcp_bridge._presence)
+        self.assertEqual(self.store.get_recent(1)[0]["type"], "leave")
+        self.assertEqual(self.registry.resolve_token(instance["token"])["identity_id"],
+                         instance["identity_id"])
+
     def test_deregister_uses_authenticated_identity_not_path_text(self):
         inst = self.registry.register("claude")
 

@@ -278,7 +278,8 @@ class RuntimeRegistry:
         self._save_instances()
         return result
 
-    def deregister(self, name: str, reclaimable: bool = False) -> dict | None:
+    def deregister(self, name: str, reclaimable: bool = False, *,
+                   identity_id: str | None = None, last_seen_before: float | None = None) -> dict | None:
         """Remove a session, keeping its display profile available for immediate reuse.
 
         `reclaimable` decides whether the token survives:
@@ -291,12 +292,15 @@ class RuntimeRegistry:
             silently reviving a dead session — reclaim is only wanted for sleep,
             not for closing the server or an agent.
 
-        Returns {'ok': True}, or None if the instance was not found.
+        Optional identity and last-seen checks are evaluated with the removal
+        under the same lock as authenticated heartbeat updates.
         """
         with self._lock:
-            if name not in self._instances:
+            inst_removed = self._instances.get(name)
+            if (inst_removed is None
+                    or (identity_id is not None and inst_removed.identity_id != identity_id)
+                    or (last_seen_before is not None and inst_removed.last_seen >= last_seen_before)):
                 return None
-            inst_removed = self._instances[name]
             self._remember_profile_locked(inst_removed)
             del self._instances[name]
             if reclaimable:

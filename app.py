@@ -607,38 +607,14 @@ def configure(cfg: dict, session_token: str = ""):
                             else:
                                 mcp_bridge._activity[name] = False  # auto-expire
 
-                # Crash timeout: if a wrapper hasn't heartbeated for 60s,
-                # it's dead — deregister it to free the slot.
-                _CRASH_TIMEOUT = registry.HEARTBEAT_TIMEOUT
-                registered = set(registry.get_all_names())
-                for name in registered:
-                    with mcp_bridge._presence_lock:
-                        last_seen = mcp_bridge._presence.get(name, 0)
-                    if last_seen > 0 and now - last_seen > _CRASH_TIMEOUT:
-                        log.info(f"Crash timeout: deregistering {name} (no heartbeat for {_CRASH_TIMEOUT}s)")
-                        # Sleep / crash path: keep the token reclaimable so the
-                        # wrapper transparently recovers its identity on wake.
-                        # (A deliberate /api/deregister below stays non-reclaimable.)
-                        result = registry.deregister(name, reclaimable=True)
-                        if result:
-                            mcp_bridge.purge_identity(name)
-                            registry.clean_renames_for(name)
-                            renamed = result.get("_renamed_back")
-                            if renamed:
-                                mcp_bridge.migrate_identity(renamed["old"], renamed["new"])
-                                store.rename_sender(renamed["old"], renamed["new"])
-                                _migrate_agent_last_channel(renamed["old"], renamed["new"])
-                                if _event_loop:
-                                    rename_event = json.dumps({
-                                        "type": "agent_renamed",
-                                        "old_name": renamed["old"],
-                                        "new_name": renamed["new"],
-                                    })
-                                    asyncio.run_coroutine_threadsafe(_broadcast(rename_event), _event_loop)
-                            store.add(name, f"{name} disconnected (timeout)", msg_type="leave", channel=_agent_last_channel.get(name, _last_active_channel))
-                            _posted_leave.add(name)
-
-                # Re-fetch registered names (may have changed from crash timeout above)
+                _posted_leave.update(_expire_crashed_agents(now))
+                # A heartbeat may have refreshed both registration and presence
+                # while the earlier snapshot was being checked for timeouts.
+                with mcp_bridge._presence_lock:
+                    currently_online = {
+                        name for name, ts in mcp_bridge._presence.items()
+                        if now - ts < mcp_bridge.PRESENCE_TIMEOUT
+                    }
                 registered = set(registry.get_all_names())
 
                 # Detect registered instances going offline (leave message only)
@@ -753,6 +729,32 @@ def configure(cfg: dict, session_token: str = ""):
                 log.exception("schedule runner error")
 
     threading.Thread(target=_schedule_runner, daemon=True).start()
+
+
+def _expire_crashed_agents(now: float) -> set[str]:
+    """Remove crashed registrations only if their identity and lease are still stale."""
+    import mcp_bridge
+
+    expired = set()
+    cutoff = now - registry.HEARTBEAT_TIMEOUT
+    for name, instance in registry.get_all().items():
+        with mcp_bridge._presence_lock:
+            last_presence = mcp_bridge._presence.get(name, 0)
+        if not 0 < last_presence < cutoff:
+            continue
+        if not registry.deregister(name, reclaimable=True, identity_id=instance["identity_id"],
+                                   last_seen_before=cutoff):
+            continue
+        if registry.is_registered(name):
+            continue
+        log.info("Crash timeout: deregistering %s (no heartbeat for %ss)",
+                 name, registry.HEARTBEAT_TIMEOUT)
+        mcp_bridge.purge_identity(name)
+        registry.clean_renames_for(name)
+        store.add(name, f"{name} disconnected (timeout)", msg_type="leave",
+                  channel=_agent_last_channel.get(name, _last_active_channel))
+        expired.add(name)
+    return expired
 
 
 # --- Store → WebSocket bridge ---
