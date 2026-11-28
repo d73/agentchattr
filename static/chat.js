@@ -2479,6 +2479,15 @@ function applySettings(data) {
         document.body.classList.add('font-' + data.font);
         document.getElementById('setting-font').value = data.font;
     }
+    if (Number.isInteger(data.font_size)) {
+        const input = document.getElementById('setting-font-size');
+        const style = document.documentElement.style;
+        const size = data.font_size + 'px';
+        if (document.activeElement !== input || style.getPropertyValue('--chat-font-size') !== size) {
+            input.value = data.font_size;
+        }
+        style.setProperty('--chat-font-size', size);
+    }
     if (data.ui_prefs && typeof data.ui_prefs === 'object') {
         applyUiPrefs(data.ui_prefs);
     } else if (!_seededUiPrefs) {
@@ -2642,14 +2651,24 @@ function setupSidePanelGrips() {
 }
 
 function setupSettingsSections() {
-    for (const section of document.querySelectorAll('#settings-bar .settings-section')) {
-        const key = 'agentchattr-settings-section-' + section.dataset.section;
-        try {
-            const saved = localStorage.getItem(key);
-            if (saved === 'true' || saved === 'false') section.open = saved === 'true';
-        } catch {}
+    const sections = [...document.querySelectorAll('#settings-bar .settings-section')];
+    const key = 'agentchattr-settings-open-section';
+    try {
+        const saved = localStorage.getItem(key);
+        if (saved !== null) {
+            for (const section of sections) section.open = section.dataset.section === saved;
+        } else {
+            // Older versions saved a separate flag for each subsection.
+            for (const section of sections) {
+                const previous = localStorage.getItem('agentchattr-settings-section-' + section.dataset.section);
+                if (previous !== null) section.open = previous === 'true';
+            }
+        }
+    } catch {}
+    for (const section of sections) {
         section.addEventListener('toggle', () => {
-            try { localStorage.setItem(key, String(section.open)); } catch {}
+            const open = sections.find(candidate => candidate.open);
+            try { localStorage.setItem(key, open?.dataset.section ?? ''); } catch {}
         });
     }
 }
@@ -2773,6 +2792,23 @@ function setupSettingsKeys() {
     // Auto-save on change for selects, escape to close
     // The spinner arrows (stepNumInput) fire `change` without a blur, so save then too.
     document.getElementById('setting-inactive-days')?.addEventListener('change', () => saveSettings());
+
+    const fontSize = document.getElementById('setting-font-size');
+    fontSize.addEventListener('change', () => {
+        if (fontSize.value && fontSize.validity.valid && ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'update_settings', data: { font_size: fontSize.valueAsNumber } }));
+        } else {
+            fontSize.value = parseInt(document.documentElement.style.getPropertyValue('--chat-font-size'), 10)
+                || fontSize.defaultValue;
+        }
+    });
+    fontSize.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            fontSize.blur();
+        }
+        if (e.key === 'Escape') toggleSettings();
+    });
 
     for (const id of ['setting-font', 'setting-history', 'setting-contrast', 'setting-rules-refresh']) {
         const el = document.getElementById(id);

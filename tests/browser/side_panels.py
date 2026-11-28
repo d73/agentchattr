@@ -23,12 +23,13 @@ PANELS = {
 
 def check_panels(page, url, screenshots):
     errors = []
+    sockets = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.route(
         "https://cdn.jsdelivr.net/**",
         lambda route: route.fulfill(body="window.marked = {setOptions() {}, parse: text => text};"),
     )
-    page.route_web_socket(re.compile(r"/ws\?"), lambda _: None)
+    page.route_web_socket(re.compile(r"/ws\?"), lambda socket: sockets.append(socket))
     page.route("**/api/**", lambda route: route.fulfill(
         json=[] if route.request.url.endswith(("/messages", "/roles")) else {},
     ))
@@ -90,30 +91,49 @@ def check_panels(page, url, screenshots):
     alerts = settings.locator('[data-section="alerts"]')
     agents = settings.locator('[data-section="agents"]')
     assert profile.evaluate("section => section.open")
-    for section in (appearance, alerts, agents):
+    sections = (profile, appearance, alerts, agents)
+    for section in sections[1:]:
         assert not section.evaluate("section => section.open")
         assert "▾" in section.locator("summary").evaluate("el => getComputedStyle(el, '::after').content")
         section.locator("summary").press("Enter")
         assert section.evaluate("section => section.open")
+        assert all(not other.evaluate("section => section.open") for other in sections if other is not section)
         assert "▴" in section.locator("summary").evaluate("el => getComputedStyle(el, '::after').content")
 
-    expect(settings.get_by_role("group", name="Per-agent sounds").get_by_label("Codex sound")).to_be_visible()
-    expect(settings.get_by_role("button", name="Reset color")).to_be_visible()
     expect(settings.get_by_role("button", name="Export history")).to_be_visible()
     expect(settings.get_by_role("button", name="Import history")).to_be_visible()
+    alerts.locator("summary").click()
+    expect(settings.get_by_role("group", name="Per-agent sounds").get_by_label("Codex sound")).to_be_visible()
+    profile.locator("summary").click()
+    expect(settings.get_by_role("button", name="Reset color")).to_be_visible()
+    appearance.locator("summary").click()
+    font_size = appearance.get_by_role("spinbutton", name="Font Size")
+    expect(font_size).to_have_value("14")
+    assert font_size.evaluate("el => el.closest('.settings-field').previousElementSibling.querySelector('label').textContent") == "Font"
+    socket_frames = []
+    assert sockets
+    sockets[-1].on_message(lambda frame: socket_frames.append(frame))
+    appearance.get_by_role("button", name="Increase font size").click()
+    page.wait_for_function("document.getElementById('setting-font-size').value === '15'")
+    assert any('"font_size":15' in frame for frame in socket_frames)
+    sockets[-1].send('{"type":"settings","data":{"font_size":15}}')
+    expect(page.locator("#input")).to_have_css("font-size", "15px")
+    font_size.fill("99")
+    font_size.press("Enter")
+    expect(font_size).to_have_value("15")
     if screenshots:
         page.locator("#settings-toggle").focus()
         settings.screenshot(path=screenshots / "settings.png", animations="disabled")
 
-    profile.locator("summary").click()
-    page.wait_for_function("localStorage.getItem('agentchattr-settings-section-profile') === 'false'")
+    page.wait_for_function("localStorage.getItem('agentchattr-settings-open-section') === 'appearance'")
     page.reload()
     page.evaluate("Hub.emit('jobs', {data: [{id: 42, title: 'Review', status: 'open', messages: []}]})")
     page.locator("#settings-toggle").click()
     expect(profile.locator("summary")).to_be_focused()
-    assert not profile.evaluate("section => section.open")
-    for section in (appearance, alerts, agents):
-        assert section.evaluate("section => section.open")
+    assert appearance.evaluate("section => section.open")
+    assert all(not section.evaluate("section => section.open") for section in (profile, alerts, agents))
+    appearance.locator("summary").click()
+    page.wait_for_function("localStorage.getItem('agentchattr-settings-open-section') === ''")
 
     page.evaluate("openJobFromBreadcrumb(42)")
     expect(page.locator("#jobs-conv-title")).to_have_text("Review")

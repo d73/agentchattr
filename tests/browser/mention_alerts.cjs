@@ -13,6 +13,7 @@ function setup(mode = 'browser', permission = 'granted', supported = true) {
     for (const id of ['setting-mention-alerts', 'mention-alerts-status']) {
         controls[id] = { addEventListener(type, fn) { this[type] = fn; } };
     }
+    controls['mention-alerts-field'] = { dataset: { help: 'Mention alert help' } };
     function Notification(title, options) {
         this.title = title; this.options = options;
         this.close = () => { this.closed = true; };
@@ -92,10 +93,22 @@ test('permission is requested only on selection; preference persists and sound i
 
 test('blocked, unsupported, dismissed, and failed notifications show status', async () => {
     const blocked = setup('browser', 'denied');
-    assert.match(blocked.controls['mention-alerts-status'].textContent, /Permission blocked/);
+    const control = blocked.controls['setting-mention-alerts'];
+    assert.equal(control.value, 'off');
+    assert.equal(control.disabled, true);
+    assert.equal(blocked.controls['mention-alerts-status'].textContent, '');
+    assert.equal(blocked.controls['mention-alerts-field'].title, 'Permission blocked in browser settings');
+    await control.change({ target: { value: 'sound' } });
+    assert.equal(blocked.storage['agentchattr-mention-alerts'], 'browser');
     blocked.api.notify(msg(), true, 'Derek');
+    assert.equal(blocked.document.title, 'Team chat');
     assert.equal(blocked.alerts.length, 0);
     assert.equal(blocked.requests(), 0);
+    blocked.Notification.permission = 'granted';
+    blocked.api.render();
+    assert.equal(control.value, 'browser');
+    assert.equal(control.disabled, false);
+    assert.equal(blocked.controls['mention-alerts-field'].title, 'Mention alert help');
     const unsupported = setup('browser', 'default', false);
     assert.equal(unsupported.controls['setting-mention-alerts'].disabled, true);
     assert.match(unsupported.controls['mention-alerts-status'].textContent, /Not supported/);

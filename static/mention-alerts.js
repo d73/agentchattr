@@ -26,18 +26,25 @@
     }
 
     function render() {
+        const field = document.getElementById('mention-alerts-field');
         const control = document.getElementById('setting-mention-alerts');
         const status = document.getElementById('mention-alerts-status');
-        if (!control || !status) return;
-        control.value = mode;
-        control.disabled = pending || !('Notification' in window);
-        status.textContent = !('Notification' in window) ? '(Not supported by browser)'
-            : Notification.permission === 'denied' ? '(Permission blocked in browser settings)'
+        if (!field || !control || !status) return;
+        const supported = 'Notification' in window;
+        const blocked = supported && Notification.permission === 'denied';
+        control.value = blocked ? 'off' : mode;
+        control.disabled = blocked || pending || !supported;
+        field.title = blocked ? 'Permission blocked in browser settings' : field.dataset.help;
+        status.textContent = blocked ? '' : !supported ? '(Not supported by browser)'
             : error || (pending ? '(Waiting for browser permission)'
                 : mode !== 'off' && Notification.permission !== 'granted' ? '(Permission not granted; select an alert option to retry)' : '');
     }
 
     async function changeMode(event) {
+        if (event.target.disabled || ('Notification' in window && Notification.permission === 'denied')) {
+            render();
+            return;
+        }
         mode = modes.includes(event.target.value) ? event.target.value : 'off';
         error = '';
         try { localStorage.setItem(key, mode); } catch (_) { error = '(Preference could not be saved)'; }
@@ -69,6 +76,7 @@
         if (seen.has(msg.id)) return true;
         seen.add(msg.id);
         if (seen.size > 1000) seen.delete(seen.values().next().value);
+        if ('Notification' in window && Notification.permission === 'denied') return false;
         const channel = msg.channel || 'general';
         if (originalTitle === null) originalTitle = document.title;
         document.title = `(${++count}) Mentioned in #${channel} · agentchattr`;
@@ -100,5 +108,9 @@
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('setting-mention-alerts').addEventListener('change', changeMode);
         render();
+        window.navigator?.permissions?.query({ name: 'notifications' }).then(permission => {
+            permission.addEventListener('change', render);
+            render();
+        }).catch(() => {});
     });
 })();
