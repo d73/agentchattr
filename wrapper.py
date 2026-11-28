@@ -904,7 +904,7 @@ def main():
                 active = _activity_checker()
                 known = active is not None
                 needs = bool(getattr(_activity_checker, "needs_input", lambda: False)())
-                now = time.time()
+                now = time.monotonic()
                 # Send on state change, periodically while active (refresh lease),
                 # or periodically while idle (keep presence alive)
                 IDLE_REPORT_INTERVAL = 8  # keep-alive while idle

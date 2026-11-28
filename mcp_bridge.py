@@ -15,6 +15,10 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from atomic_io import atomic_write_text
 
+from attachment_storage import copy_image_attachment
+
+from atomic_io import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 # Shared state — set by run.py before starting
@@ -38,6 +42,7 @@ _presence_lock = threading.Lock()   # guards both _presence and _activity
 _renamed_from: set[str] = set()    # old names from renames — suppress leave messages
 _cursors: dict[str, dict[str, int]] = {}  # agent_name → {channel_name → last_id}
 _cursors_lock = threading.Lock()
+_cursor_save_lock = threading.Lock()
 _empty_read_count: dict[str, int] = {}  # sender → consecutive empty reads
 # Last channel (or job_id) each agent explicitly read from. chat_send
 # falls back to this when the caller omits the channel/job_id, so agents
@@ -294,38 +299,43 @@ def chat_send(
                 or target["identity_id"] != recipient_identity or target["state"] != "active"
                 or not is_online(recipient)):
             return "Error: the bound recipient is no longer present."
-    if job_id and jobs:
+    job_send = bool(job_id and jobs)
+    reply_id = None
+    if job_send:
+        if jobs.get(job_id) is None:
+            return f"Error: job #{job_id} not found."
+    elif reply_to >= 0:
+        if store.get_by_id(reply_to) is None:
+            return f"Message #{reply_to} not found."
+        reply_id = reply_to
+
+    attachments = []
+    attachment_path = None
+    if image_path:
+        try:
+            attachment, attachment_path = copy_image_attachment(image_path, config or {})
+        except ValueError as exc:
+            return str(exc)
+        except OSError:
+            return "Could not read or store the image attachment."
+        attachments.append(attachment)
+
+    if job_send:
         # Detect suggestion type from [suggestion] prefix
         text = message.strip()
         msg_type = "chat"
         if text.lower().startswith("[suggestion]"):
             msg_type = "suggestion"
             text = text[len("[suggestion]"):].strip()
-        # Handle image attachment for job messages
-        job_attachments = None
-        if image_path:
-            import shutil, uuid
-            src = Path(image_path)
-            if not src.exists():
-                return f"Image not found: {image_path}"
-            if src.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'):
-                return f"Unsupported image type: {src.suffix}"
-            raw_dir = "./uploads"
-            if config and "images" in config:
-                raw_dir = config["images"].get("upload_dir", raw_dir)
-            upload_dir = Path(raw_dir)
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
-            shutil.copy2(str(src), str(upload_dir / filename))
-            job_attachments = [{"name": src.name, "url": f"/uploads/{filename}"}]
         msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
-                               attachments=job_attachments,
+                               attachments=attachments or None,
                                sender_identity=sender_identity,
                                recipient_identity=recipient_identity or None, expected_scope=job_scope)
         if msg is None:
+            if attachment_path is not None:
+                attachment_path.unlink(missing_ok=True)
             return f"Error: job #{job_id} not found."
-        with _presence_lock:
-            _presence[sender] = time.time()
+        _touch_presence(sender)
 
         # Route @mentions in job messages to trigger other agents
         if router and agents:
@@ -359,32 +369,6 @@ def chat_send(
         return f"Sent to job #{job_id} (msg_id={msg['id']})" + (
             " [suggestion]" if msg_type == "suggestion" else "")
 
-    attachments = []
-    if image_path:
-        import shutil
-        import uuid
-        from pathlib import Path
-        src = Path(image_path)
-        if not src.exists():
-            return f"Image not found: {image_path}"
-        if src.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'):
-            return f"Unsupported image type: {src.suffix}"
-        
-        # Get upload dir from config (fall back to ./uploads)
-        raw_dir = "./uploads"
-        if config and "images" in config:
-            raw_dir = config["images"].get("upload_dir", raw_dir)
-        upload_dir = Path(raw_dir)
-        
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
-        shutil.copy2(str(src), str(upload_dir / filename))
-        attachments.append({"name": src.name, "url": f"/uploads/{filename}"})
-
-    reply_id = reply_to if reply_to >= 0 else None
-    if reply_id is not None and store.get_by_id(reply_id) is None:
-        return f"Message #{reply_to} not found."
-
     # Determine message type and metadata based on choices
     msg_type = "chat"
     metadata = None
@@ -398,8 +382,7 @@ def chat_send(
                     msg_type=msg_type, metadata=metadata,
                     sender_kind="agent" if authenticated else "human",
                     sender_identity=sender_identity, sender_base=sender_base)
-    with _presence_lock:
-        _presence[sender] = time.time()
+    _touch_presence(sender)
     result = f"Sent (id={msg['id']})"
     if msg.get("persistence_error"):
         result += (f". Warning: message log write failed: {msg['persistence_error']}. "
@@ -440,8 +423,7 @@ def chat_propose_job(
         sender_identity=authenticated["identity_id"] if authenticated else None,
         sender_base=authenticated["base"] if authenticated else None,
     )
-    with _presence_lock:
-        _presence[sender] = time.time()
+    _touch_presence(sender)
     return f"Proposed job (msg_id={msg['id']}): {title}"
 
 
@@ -512,18 +494,17 @@ def _load_cursors():
 
 
 def _save_cursors():
-    """Persist cursor state to disk atomically (write temp + rename)."""
+    """Serialize snapshots through replacement so a late save cannot roll state back."""
     if _CURSORS_FILE is None:
         return
     try:
-        with _cursors_lock:
-            snapshot = dict(_cursors)
-        _CURSORS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CURSORS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(snapshot), "utf-8")
-        os.replace(tmp, _CURSORS_FILE)  # atomic on POSIX
-    except Exception:
-        log.warning("Failed to save cursor state to %s", _CURSORS_FILE)
+        with _cursor_save_lock:
+            with _cursors_lock:
+                snapshot = json.dumps(_cursors)
+            _CURSORS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(_CURSORS_FILE, snapshot)
+    except OSError:
+        log.warning("Failed to save cursor state to %s", _CURSORS_FILE, exc_info=True)
 
 
 def _load_roles():
@@ -839,18 +820,18 @@ def chat_who() -> str:
 def _touch_presence(name: str):
     """Update presence timestamp — called on any MCP tool use."""
     with _presence_lock:
-        _presence[name] = time.time()
+        _presence[name] = time.monotonic()
 
 
 def _get_online() -> list[str]:
-    now = time.time()
+    now = time.monotonic()
     with _presence_lock:
         return [name for name, ts in _presence.items()
                 if now - ts < PRESENCE_TIMEOUT]
 
 
 def is_online(name: str) -> bool:
-    now = time.time()
+    now = time.monotonic()
     with _presence_lock:
         return name in _presence and now - _presence.get(name, 0) < PRESENCE_TIMEOUT
 
@@ -859,7 +840,7 @@ def set_active(name: str, active: bool):
     with _presence_lock:
         _activity[name] = active
         if active:
-            _activity_ts[name] = __import__("time").time()
+            _activity_ts[name] = time.monotonic()
 
 
 def set_activity_known(name: str, known: bool):
@@ -875,26 +856,24 @@ def is_activity_known(name: str) -> bool:
 def set_needs_input(name: str, needs: bool):
     with _presence_lock:
         if needs:
-            _needs_input_ts[name] = __import__("time").time()
+            _needs_input_ts[name] = time.monotonic()
         else:
             _needs_input_ts.pop(name, None)
 
 
 def is_needs_input(name: str) -> bool:
-    import time as _time
     with _presence_lock:
         ts = _needs_input_ts.get(name)
-        return ts is not None and _time.time() - ts <= NEEDS_INPUT_TIMEOUT
+        return ts is not None and time.monotonic() - ts <= NEEDS_INPUT_TIMEOUT
 
 
 def is_active(name: str) -> bool:
-    import time as _time
     with _presence_lock:
         if not _activity.get(name, False):
             return False
         # Auto-expire stale activity
         ts = _activity_ts.get(name, 0)
-        if _time.time() - ts > ACTIVITY_TIMEOUT:
+        if time.monotonic() - ts > ACTIVITY_TIMEOUT:
             _activity[name] = False
             return False
         return True
