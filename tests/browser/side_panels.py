@@ -2,6 +2,7 @@
 """Verify the shared right-side panels in headless Chromium."""
 
 import argparse
+import json
 import os
 import re
 from functools import partial
@@ -146,15 +147,46 @@ def check_panels(page, url, screenshots):
     assert font_size.evaluate("el => el.closest('.settings-field').previousElementSibling.querySelector('label').textContent") == "Font"
     socket_frames = []
     assert sockets
-    sockets[-1].on_message(lambda frame: socket_frames.append(frame))
+    sockets[-1].on_message(lambda frame: socket_frames.append(json.loads(frame)))
+
+    font = appearance.get_by_role("combobox", name="Font")
+    font.select_option("sans")
+    expect(page.locator("body.font-sans")).to_have_count(1)
+    font.select_option("mono")
+    expect(page.locator("body.font-mono")).to_have_count(1)
+    font_updates = [frame for frame in socket_frames if "font" in frame.get("data", {})]
+    assert [frame["data"] for frame in font_updates] == [{"font": "sans"}, {"font": "mono"}]
+
+    sockets[-1].send(json.dumps({
+        "type": "settings", "data": {"font": "sans", "font_size": 14},
+        "typography_request_id": font_updates[0]["typography_request_id"],
+    }))
+    expect(page.locator("body.font-mono")).to_have_count(1)
+    sockets[-1].send(json.dumps({
+        "type": "settings", "data": {"font": "mono", "font_size": 14},
+        "typography_request_id": font_updates[1]["typography_request_id"],
+    }))
+
     appearance.get_by_role("button", name="Increase font size").click()
-    page.wait_for_function("document.getElementById('setting-font-size').value === '15'")
-    assert any('"font_size":15' in frame for frame in socket_frames)
-    sockets[-1].send('{"type":"settings","data":{"font_size":15}}')
+    expect(font_size).to_have_value("15")
     expect(page.locator("#input")).to_have_css("font-size", "15px")
+    font_size.fill("20")
+    expect(page.locator("#input")).to_have_css("font-size", "20px")
+    expect(font_size).to_be_focused()
+    size_updates = [frame for frame in socket_frames if "font_size" in frame.get("data", {})]
+    assert [frame["data"] for frame in size_updates] == [{"font_size": 15}, {"font_size": 20}]
+
+    for update in size_updates:
+        sockets[-1].send(json.dumps({
+            "type": "settings", "data": {"font": "mono", **update["data"]},
+            "typography_request_id": update["typography_request_id"],
+        }))
+        expect(page.locator("#input")).to_have_css("font-size", "20px")
+
     font_size.fill("99")
     font_size.press("Enter")
-    expect(font_size).to_have_value("15")
+    expect(font_size).to_have_value("20")
+    assert sum("font_size" in frame.get("data", {}) for frame in socket_frames) == 2
     if screenshots:
         page.locator("#settings-toggle").focus()
         settings.screenshot(path=screenshots / "settings.png", animations="disabled")
