@@ -39,7 +39,6 @@ let _pendingJobReflowTops = null;
 let _pendingJobReflowTimer = null;
 const _expandedGroups = new Set(['open']); // track which collapsible groups are open across re-renders
 const jobPresentations = new Map();
-let jobGroupFilter = null;
 let orchHistoryRequest = 0;
 const jobPipelineLabels = new Map([
     ['scoping', 'Scoping'],
@@ -48,6 +47,7 @@ const jobPipelineLabels = new Map([
     ['in_review', 'In review'],
     ['done', 'Done'],
 ]);
+const selectedJobStatuses = new Set(jobPipelineLabels.keys());
 const jobPipelineStages = new Map([
     ['orch.drafting', 'scoping'],
     ['orch.awaiting_approval', 'awaiting_approval'],
@@ -658,6 +658,7 @@ function renderJobsList() {
 
     if (pipelineMode) {
         const filters = document.createElement('div');
+        const allSelected = selectedJobStatuses.size === jobPipelineLabels.size;
         filters.className = 'job-group-filters';
         filters.setAttribute('role', 'group');
         filters.setAttribute('aria-label', 'Filter Jobs by status');
@@ -666,9 +667,14 @@ function renderJobsList() {
             filter.type = 'button';
             filter.dataset.filter = key ?? '';
             filter.textContent = label;
-            filter.setAttribute('aria-pressed', String(jobGroupFilter === key));
+            filter.setAttribute('aria-pressed', String(key === null ? allSelected : selectedJobStatuses.has(key)));
             filter.onclick = () => {
-                jobGroupFilter = key;
+                if (key === null) {
+                    if (allSelected) selectedJobStatuses.clear();
+                    else for (const status of jobPipelineLabels.keys()) selectedJobStatuses.add(status);
+                } else if (!selectedJobStatuses.delete(key)) {
+                    selectedJobStatuses.add(key);
+                }
                 renderJobsList();
             };
             filters.appendChild(filter);
@@ -679,8 +685,14 @@ function renderJobsList() {
         }
     }
 
-    // Ghost card only when there are zero jobs total
-    if (channelJobs.length === 0) {
+    const visibleGroups = pipelineMode ? groups.filter(group => selectedJobStatuses.has(group.filter)) : groups;
+    if (pipelineMode && (visibleGroups.length === 0
+        || (channelJobs.length > 0 && !visibleGroups.some(group => group.items.length > 0)))) {
+        const empty = document.createElement('div');
+        empty.className = 'jobs-empty';
+        empty.textContent = visibleGroups.length ? 'No Jobs in the selected statuses.' : 'Select a status to see Jobs.';
+        list.appendChild(empty);
+    } else if (channelJobs.length === 0) {
         const ghost = document.createElement('div');
         ghost.className = 'sb-ghost-card';
         ghost.innerHTML = `
@@ -692,16 +704,9 @@ function renderJobsList() {
             if (btn) btn.click();
         };
         list.appendChild(ghost);
-    } else if (jobGroupFilter && !groups.some(group => group.filter === jobGroupFilter && group.items.length)) {
-        const empty = document.createElement('div');
-        empty.className = 'jobs-empty';
-        empty.textContent = 'No Jobs with this status.';
-        list.appendChild(empty);
     }
 
-    for (const group of groups) {
-        const { filter } = group;
-        if (jobGroupFilter && filter !== jobGroupFilter) continue;
+    for (const group of visibleGroups) {
         if (pipelineMode && !channelJobs.length) continue;
         // Sort by explicit manual order first; fallback to recency.
         group.items.sort(_compareJobsForList);
@@ -800,7 +805,7 @@ function renderJobsList() {
                     <div class="job-card-header">
                         ${attention ? '<span class="job-attention-dot" title="Needs your attention"></span>' : ''}
                         <span class="job-title">${escape(a.title)}</span>
-                        <span class="job-stage-badge" data-stage="${filter}">${escape(group.label)}</span>
+                        <span class="job-stage-badge" data-stage="${group.filter}">${escape(group.label)}</span>
                         ${unreadHtml}
                     </div>
                     ${a.body ? `<div class="job-card-preview">${escape(a.body)}</div>` : ''}

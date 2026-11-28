@@ -55,13 +55,22 @@ test('the Job list uses canonical lifecycle stages when the coordinator is offli
     assert.deepEqual({ ...ctx.jobPresentation({ status: 'open' }) }, { filter: 'scoping', workflow: false, attention: false });
 });
 
-test('manual Jobs and Orch stages share one status list while Orch cards stay read-only for reordering', () => {
+test('status pills select across manual and Orch Jobs while preserving reorder restrictions', () => {
+    const document = { getElementById: () => list, createElement: node };
     function node() {
         const children = [];
+        const attributes = new Map();
         return {
             children, dataset: {}, classList: { add() {}, toggle() {} },
+            set innerHTML(value) { this.html = value; children.length = 0; },
+            get innerHTML() { return this.html; },
             appendChild(child) { children.push(child); },
-            addEventListener() {}, setAttribute() {}, querySelector() { return null; },
+            addEventListener() {},
+            setAttribute(name, value) { attributes.set(name, value); },
+            getAttribute(name) { return attributes.get(name); },
+            querySelector(selector) { return children.find(child => child.className === selector.slice(1)); },
+            contains(child) { return children.includes(child); },
+            focus() { document.activeElement = this; },
         };
     }
     const list = node();
@@ -72,9 +81,9 @@ test('manual Jobs and Orch stages share one status list while Orch cards stay re
             { id: 3, title: 'Ready', status: 'open', lifecycle: { stage_id: 'orch.ready' } },
             { id: 4, title: 'Cancelled', status: 'archived', lifecycle: { stage_id: 'orch.cancelled' } },
         ],
-        jobPresentations: new Map(), _expandedGroups: new Set(), jobUnread: {}, jobGroupFilter: null,
+        jobPresentations: new Map(), _expandedGroups: new Set(), jobUnread: {},
         _compareJobsForList: (a, b) => a.id - b.id,
-        document: { getElementById: () => list, createElement: node },
+        document,
         window: { escapeHtml: value => value },
     });
     vm.runInContext(between(jobs, 'const jobPipelineLabels', '// Message Renderers')
@@ -97,6 +106,39 @@ test('manual Jobs and Orch stages share one status list while Orch cards stay re
     const [cancelled] = list.children[list.children.indexOf(headers[4]) + 1].children[0].children;
     assert.equal(cancelled.draggable, false);
     assert.match(cancelled.innerHTML, />Done<\/span>/);
+
+    const statusButtons = () => list.children[0].children;
+    const pressedLabels = () => statusButtons().filter(button => button.getAttribute('aria-pressed') === 'true')
+        .map(button => button.textContent);
+    const shownGroups = () => list.children.filter(child => child.className?.startsWith('jobs-group-header'))
+        .map(header => header.textContent);
+    const toggle = label => {
+        const button = statusButtons().find(button => button.textContent === label);
+        button.focus();
+        button.onclick();
+        assert.equal(document.activeElement.textContent, label);
+        assert.notEqual(document.activeElement, button);
+    };
+
+    assert.deepEqual(pressedLabels(), ['All', 'Scoping', 'Awaiting approval', 'Active coding', 'In review', 'Done']);
+    toggle('In review');
+    assert.deepEqual(pressedLabels(), ['Scoping', 'Awaiting approval', 'Active coding', 'Done']);
+    toggle('In review');
+    assert.equal(pressedLabels()[0], 'All');
+    toggle('All');
+    assert.deepEqual(pressedLabels(), []);
+    assert.deepEqual(shownGroups(), []);
+    assert.equal(list.querySelector('.jobs-empty').textContent, 'Select a status to see Jobs.');
+    toggle('In review');
+    assert.equal(list.querySelector('.jobs-empty').textContent, 'No Jobs in the selected statuses.');
+    toggle('In review');
+    toggle('Done');
+    toggle('Active coding');
+    assert.deepEqual(pressedLabels(), ['Active coding', 'Done']);
+    assert.deepEqual(shownGroups(), ['Active coding (3)', 'Done (1)']);
+    toggle('All');
+    assert.equal(pressedLabels().length, 6);
+    assert.equal(shownGroups().length, 5);
 });
 
 test('Orch brief messages expose readable fields and keep escaped JSON in a closed disclosure', () => {
