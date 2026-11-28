@@ -649,7 +649,7 @@ def _update_cursor(sender: str, msgs: list[dict], channel: str | None):
 
 def chat_read(
     sender: str = "",
-    since_id: int | None = None,
+    since_id: int = 0,
     limit: int = 20,
     channel: str = "",
     job_id: int = 0,
@@ -660,7 +660,7 @@ def chat_read(
     Smart defaults:
     - First call with sender: returns last `limit` messages (full context).
     - Subsequent calls with same sender: returns up to `limit` unread messages, oldest first.
-    - Pass since_id to page from a specific point without changing the saved cursor.
+    - Pass a nonzero since_id to page from a specific point without changing the saved cursor.
     - Omit sender to always get the last `limit` messages (no cursor).
     - Pass channel to filter by channel name (default: all channels).
     - Pass job_id to read a specific job. Job reads return a header entry first,
@@ -731,7 +731,7 @@ def chat_read(
             _last_read_job_id.pop(sender, None)
     if limit < 1:
         return "Error: limit must be positive."
-    cursor = since_id
+    cursor = since_id or None
     if cursor is None and sender:
         with _cursors_lock:
             cursor = _cursors.get(sender, {}).get(ch or "__all__")
@@ -741,7 +741,7 @@ def chat_read(
         msgs = store.get_since(cursor, channel=ch)[:limit]
 
     serialized = _serialize_messages(msgs)
-    if since_id is None:
+    if not since_id:
         _update_cursor(sender, msgs, ch)
 
     # Escalating empty-read hints to discourage polling loops

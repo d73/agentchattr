@@ -39,13 +39,20 @@ class UnreadCursorTests(unittest.TestCase):
         self.assertTrue(bridge.chat_propose_job("reader", "Job", channel="general").startswith("Proposed"))
         self.assertEqual(unread, self.read(limit=2))
 
-    def test_explicit_paging_from_zero_does_not_move_live_cursor(self):
-        first, second = self.add(2)
-        self.assertEqual([second], self.read(limit=1))
+    def test_nonzero_explicit_paging_does_not_move_live_cursor(self):
+        _, second, third = self.add(3)
+        self.assertEqual([third], self.read(limit=1))
         unread = self.add(3)
-        self.assertEqual([second], self.read(since_id=first, limit=1))
+        self.assertEqual([third], self.read(since_id=second, limit=1))
         self.assertEqual(unread[-1:], self.read(since_id=unread[-2], limit=1))
         self.assertEqual(unread, self.read())
+
+    def test_explicit_zero_uses_and_advances_the_default_cursor(self):
+        initial = self.add(3)
+        self.assertEqual(initial[-1:], self.read(since_id=0, limit=1))
+        unread = self.add(2)
+        self.assertEqual(unread[:1], self.read(since_id=0, limit=1))
+        self.assertEqual(unread[1:], self.read(since_id=0, limit=1))
 
     def test_first_read_and_resync_still_take_most_recent_context(self):
         initial = self.add(3)
