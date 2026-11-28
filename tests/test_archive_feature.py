@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import UploadFile
 
@@ -235,6 +236,44 @@ class ArchiveRoundTripTests(unittest.TestCase):
 
         reloaded = MessageStore(str(self.root / "target" / "messages.jsonl"))
         self.assertEqual(reloaded.get_recent()[0]["metadata"], {"source": "archive"})
+
+    def test_restore_preserves_custom_job_order_and_keeps_local_order(self):
+        first = self.source_jobs.create("First", "job", "general", "ben")
+        second = self.source_jobs.create("Second", "job", "general", "ben")
+        self.source_jobs.reorder("open", [first["id"], second["id"]])
+        local_first = self.target_jobs.create("Local first", "job", "general", "ben")
+        local_second = self.target_jobs.create("Local second", "job", "general", "ben")
+        self.target_jobs.reorder("open", [local_first["id"], local_second["id"]])
+
+        blob = archive.build_export(self.source_store, self.source_jobs, self.source_rules,
+                                    self.source_summaries, app_version="test")
+        for _ in range(2):
+            archive.import_archive(blob, self.target_store, self.target_jobs,
+                                   self.target_rules, self.target_summaries, ["general"])
+
+        jobs = JobStore(str(self.root / "target" / "jobs.json")).list_all(status="open")
+        self.assertEqual([job["title"] for job in sorted(jobs, key=lambda job: -job["sort_order"])],
+                         ["First", "Second", "Local first", "Local second"])
+
+    def test_restore_keeps_suggestion_resolution_from_job_endpoint(self):
+        job = self.source_jobs.create("Review", "job", "general", "ben")
+        resolved = ("dismissed", "accepted")
+        with patch.object(app, "jobs", self.source_jobs):
+            for resolution in resolved:
+                message = self.source_jobs.add_message(job["id"], "codex", resolution, msg_type="suggestion")
+                request = Mock(json=AsyncMock(return_value={"resolution": resolution}))
+                self.assertEqual(asyncio.run(app.resolve_job_message(job["id"], message["id"], request)),
+                                 {"ok": True, "resolution": resolution})
+        self.source_jobs.add_message(job["id"], "codex", "Pending", msg_type="suggestion")
+
+        blob = archive.build_export(self.source_store, self.source_jobs, self.source_rules,
+                                    self.source_summaries, app_version="test")
+        archive.import_archive(blob, self.target_store, self.target_jobs,
+                               self.target_rules, self.target_summaries, ["general"])
+
+        restored = JobStore(str(self.root / "target" / "jobs.json")).list_all()[0]["messages"]
+        self.assertEqual([message.get("resolved") for message in restored], [*resolved, None])
+        self.assertTrue(all(message["type"] == "suggestion" for message in restored))
 
     def test_rejects_newer_schema_version(self):
         buf = io.BytesIO()

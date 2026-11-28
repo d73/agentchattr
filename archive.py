@@ -29,6 +29,13 @@ def _archive_time(record: dict) -> str | None:
         return None
 
 
+def _job_archive_order(job: dict) -> int:
+    try:
+        return max(0, int(job.get("sort_order") or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _fingerprint(record: dict) -> str:
     """Deterministic fingerprint for legacy records without uid."""
     # Use fields that exist on the record type (messages vs jobs vs rules)
@@ -338,7 +345,9 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
     job_report = {"created": 0, "updated": 0, "messages_created": 0, "duplicates": 0, "conflicts": 0}
     _job_id_remap = {}  # old numeric job_id → new local job_id
     if "jobs.json" in zf.namelist() and jobs_store:
-        for job in imported_jobs:
+        # New Jobs get the next local rank in their status. Create the lowest
+        # archived ranks first to restore their order without reordering local Jobs.
+        for job in sorted(imported_jobs, key=_job_archive_order):
             job_uid = job.get("uid") or "fp-" + _fingerprint(job)
             old_id = job.get("id")
             if job_uid in existing_job_ids:
@@ -404,6 +413,7 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                     uid=jm_uid,
                     timestamp=jm.get("timestamp"),
                     time_str=_archive_time(jm),
+                    archived_resolution=jm.get("resolved"),
                 )
                 job_report["messages_created"] += 1
             # Restore original updated_at (add_message bumps it to now)
