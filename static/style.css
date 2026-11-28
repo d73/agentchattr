@@ -1266,8 +1266,8 @@ main#timeline {
     flex-shrink: 0;
 }
 
-.message:hover .msg-actions,
-.message:focus-within .msg-actions {
+.message:hover > .msg-actions,
+.message:focus-within > .msg-actions {
     opacity: 1;
 }
 
@@ -1295,8 +1295,8 @@ main#timeline {
     transition: opacity 0.15s ease;
 }
 
-.message:hover .bubble-actions,
-.message:focus-within .bubble-actions {
+.chat-bubble:is(:hover, :focus-visible, :has(:focus-visible)) > .bubble-actions {
+    opacity: 1;
     pointer-events: auto;
 }
 
