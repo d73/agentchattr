@@ -131,7 +131,7 @@ class JobReopenIntegrationTests(unittest.TestCase):
                                      requester="local-browser", reason="Try again")
 
     def test_orch_reopen_keeps_dispatch_paused_until_correction_is_recorded(self):
-        job = self.jobs.create("Orch work", "job", "general", "operator")
+        job = self.jobs.create("Orch work", "job", "general", "operator", assignee="verified-coordinator")
         for event in ("attach", "submit_brief", "approve_brief", "plan_ready", "start", "pr_ready", "complete"):
             job = self.jobs.transition_job(
                 job["id"], event, actor="verified-coordinator", actor_kind="orch",
@@ -143,6 +143,7 @@ class JobReopenIntegrationTests(unittest.TestCase):
         result = self.decide(self.request())
         self.assertEqual(result["job"]["lifecycle"]["stage_id"], "orch.coding")
         self.assertEqual(result["job"]["lifecycle"]["flags"], ["paused"])
+        self.assertEqual(result["job"]["orch_coordinator"], "verified-coordinator")
         self.assertEqual(result["job"]["lifecycle_events"][-1]["operation_id"], result["request"]["id"])
 
     def test_http_bound_card_requires_loopback_browser_session(self):

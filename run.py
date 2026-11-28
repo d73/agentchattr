@@ -144,19 +144,24 @@ def main():
     mcp_bridge._load_roles()
 
     plugins = None
+    mcp_bridge.orch_job_auth = None
     if config.get("plugins"):
         from copy import deepcopy
         from plugin_host import PluginHost, Services
 
         plugins = PluginHost(data_dir)
+        orch_entry = config["plugins"].get("orch")
+        orch_settings = orch_entry.get("settings", {}) if isinstance(orch_entry, dict) else {}
+        orch_identity = orch_settings.get("assignee") if isinstance(orch_settings, dict) else None
 
-        def transition_plugin_job(job_id, event, *, actor_kind, expected_scope, **details):
+        def transition_plugin_job(job_id, event, *, actor, actor_kind, expected_scope, **details):
             if (actor_kind != "orch" or not isinstance(expected_scope, dict)
-                    or not {"channel", "type", "assignee"}.issubset(expected_scope)):
+                    or not {"channel", "type"}.issubset(expected_scope)
+                    or not isinstance(orch_identity, str) or actor != orch_identity):
                 raise ValueError("Job plugin transitions require a scoped Orch actor")
             if event == "reopen":
                 raise ValueError("Job reopen requires a committed approval request")
-            return jobs.transition_job(job_id, event, actor_kind=actor_kind,
+            return jobs.transition_job(job_id, event, actor=actor, actor_kind=actor_kind,
                                        expected_scope=expected_scope, **details)
 
         services = Services(
@@ -173,6 +178,10 @@ def main():
         )
         plugins.load(config["plugins"], services, core_routes=app.router.routes,
                      core_tools=(tool.__name__ for tool in mcp_bridge._ALL_TOOLS))
+        if isinstance(orch_identity, str) and orch_identity.strip() and any(
+            name == "orch_list_jobs" for name, _ in plugins.tools
+        ):
+            mcp_bridge.orch_job_auth = (orch_identity, data_dir.resolve() / ".orchestrator.env")
         plugins.install_http(app)
         app.state.plugins = plugins
 
