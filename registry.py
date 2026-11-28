@@ -245,6 +245,11 @@ class RuntimeRegistry:
                 self._remember_profile_locked(old)
                 self._reclaimable[old_name] = old
 
+            if requested_name is not None:
+                saved = self._profiles.get(base, {}).get(str(slot))
+                if saved and saved["name"] == requested_name:
+                    profile = saved
+
             default_label = base_cfg.get("label", base.capitalize())
             if profile:
                 lbl = label or profile["label"]
