@@ -2210,11 +2210,7 @@ async def resolve_decision(msg_id: int, request: Request):
     channel = "general"
     sender = ""
     with store._lock:
-        msg = None
-        for m in store._messages:
-            if m["id"] == msg_id:
-                msg = m
-                break
+        position, msg = store._message_row(msg_id)
         if not msg:
             error = ("message not found", 404)
         elif msg.get("type") != "decision":
@@ -2228,7 +2224,7 @@ async def resolve_decision(msg_id: int, request: Request):
                 if valid_choices and chosen not in valid_choices:
                     error = (f"invalid choice. Valid: {valid_choices}", 400)
                 else:
-                    previous_meta = dict(meta)
+                    previous = dict(msg)
                     meta = dict(meta)
                     meta["resolved"] = True
                     meta["chosen"] = chosen
@@ -2236,9 +2232,10 @@ async def resolve_decision(msg_id: int, request: Request):
                     channel = msg.get("channel", "general")
                     sender = msg.get("sender", "")
                     try:
+                        store._save_message(position, msg)
                         store._rewrite()
                     except OSError as exc:
-                        msg["metadata"] = previous_meta
+                        store._save_message(position, previous)
                         raise OSError(exc.errno, f"Could not save decision: {exc}", str(store._path.resolve())) from exc
     if error:
         return JSONResponse({"error": error[0]}, status_code=error[1])

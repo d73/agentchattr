@@ -32,10 +32,10 @@ class ChannelActivityTests(unittest.TestCase):
         self.assertEqual(self.store.channel_activity(), {})
 
     def test_a_message_with_no_channel_counts_for_general(self):
-        self.store.add("a", "x", timestamp=10.0)
-        self.store._messages[-1].pop("channel")
+        log = Path(self.tmp.name) / "legacy.jsonl"
+        log.write_text('{"id": 0, "sender": "a", "text": "x", "timestamp": 10.0}\n', encoding="utf-8")
 
-        self.assertEqual(self.store.channel_activity(), {"general": 10.0})
+        self.assertEqual(MessageStore(str(log)).channel_activity(), {"general": 10.0})
 
 
 class InactiveHoursTests(unittest.TestCase):

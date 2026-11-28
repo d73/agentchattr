@@ -1,11 +1,13 @@
-"""JSONL message persistence for the chat room with observer callbacks."""
+"""JSONL persistence with a disk-backed runtime message index."""
 
 import json
 import logging
 import os
+import sqlite3
 import time
 import threading
 import uuid
+import weakref
 from pathlib import Path
 
 from atomic_io import atomic_write_text
@@ -19,7 +21,19 @@ class MessageStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._todos_path = self._path.parent / "todos.json"
         self._id_path = self._path.with_name(self._path.name + ".next-id")
-        self._messages: list[dict] = []
+        # An unnamed, file-backed SQLite database is deleted when it closes.
+        # The existing JSONL log remains the source of truth across restarts.
+        self._db = sqlite3.connect("", check_same_thread=False, isolation_level=None)
+        weakref.finalize(self, self._db.close)
+        self._db.executescript(
+            "PRAGMA temp_store = FILE;"
+            "PRAGMA cache_size = -2048;"
+            "CREATE TABLE messages (position INTEGER PRIMARY KEY, msg_id INTEGER NOT NULL,"
+            " uid TEXT, channel TEXT, has_channel INTEGER, sender TEXT, activity REAL, payload TEXT NOT NULL);"
+            "CREATE INDEX messages_by_id ON messages(msg_id);"
+            "CREATE INDEX messages_by_uid ON messages(uid);"
+            "CREATE INDEX messages_by_channel ON messages(channel, position);"
+        )
         self._next_id: int = 0  # monotonically increasing, survives deletions
         self._todos: dict[int, str] = {}  # msg_id → "todo" | "done"
         self._lock = threading.Lock()
@@ -46,6 +60,7 @@ class MessageStore:
         if not self._path.exists():
             return
         max_id = -1
+        self._db.execute("BEGIN")
         with open(self._path, "rb") as f:
             for i, raw_line in enumerate(f):
                 if not raw_line.strip():
@@ -56,7 +71,7 @@ class MessageStore:
                         msg["id"] = i
                     if msg["id"] > max_id:
                         max_id = msg["id"]
-                    self._messages.append(msg)
+                    self._insert_message(msg)
                     # A complete JSON record without a newline must be rewritten
                     # before appending the next one.
                     if not raw_line.endswith(b"\n"):
@@ -67,10 +82,11 @@ class MessageStore:
                         self._log_dirty = True
                         self._log_error = (f"Incomplete final record at line {i + 1}: {exc}. "
                                            "The file was left unchanged. Repair the log and restart; "
-                                           "new messages are in memory only until then.")
+                                           "new messages are available only in this running session.")
                         log.warning("Message log %s: %s", self._path.resolve(), self._log_error)
                         break
                     raise ValueError(f"Cannot read message history {self._path.resolve()}, line {i + 1}: {exc}. The file was not changed.") from exc
+        self._db.commit()
         self._next_id = max_id + 1
 
     def on_message(self, callback):
@@ -103,9 +119,11 @@ class MessageStore:
         log_status_changed = False
         with self._lock:
             if once:
-                for existing in self._messages:
-                    if existing.get("uid") == uid:
-                        return existing
+                row = self._db.execute(
+                    "SELECT payload FROM messages WHERE uid = ? ORDER BY position LIMIT 1", (json.dumps(uid),)
+                ).fetchone()
+                if row:
+                    return json.loads(row[0])
             previous_error = self._log_error
             ts = timestamp if timestamp is not None else time.time()
             msg = {
@@ -129,8 +147,8 @@ class MessageStore:
                 msg["sender_base"] = sender_base
             if metadata:
                 msg["metadata"] = metadata
+            position = self._insert_message(msg)
             self._next_id += 1
-            self._messages.append(msg)
             if not _bulk:
                 try:
                     if self._log_repair_required:
@@ -146,13 +164,13 @@ class MessageStore:
                     self._log_error = None
                 except OSError as exc:
                     if once:
-                        self._messages.pop()
+                        self._db.execute("DELETE FROM messages WHERE position = ?", (position,))
                         self._next_id -= 1
                         raise
                     self._log_dirty = True
                     persistence_error = str(exc)
                     self._log_error = persistence_error
-                    log.warning("Message %s delivered in memory but log write failed: %s", msg["id"], exc)
+                    log.warning("Message %s delivered but log write failed: %s", msg["id"], exc)
                 log_status_changed = self._log_error != previous_error
 
         # Fire callbacks outside the lock (skip during bulk import)
@@ -174,71 +192,108 @@ class MessageStore:
         return msg
 
     def flush_bulk(self):
-        """Write all in-memory messages to disk. Call after bulk add operations."""
+        """Flush newly indexed messages to the JSONL log after bulk adds."""
         with self._lock:
             self._rewrite()
+
+    @staticmethod
+    def _message_fields(msg):
+        timestamp = msg.get("timestamp")
+        activity = timestamp if isinstance(timestamp, (int, float)) and timestamp > 0 else None
+        return (
+            msg["id"], json.dumps(msg.get("uid")), json.dumps(msg.get("channel", "general")), "channel" in msg,
+            json.dumps(msg.get("sender")), activity, json.dumps(msg, ensure_ascii=False),
+        )
+
+    def _insert_message(self, msg):
+        return self._db.execute(
+            "INSERT INTO messages (msg_id, uid, channel, has_channel, sender, activity, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            self._message_fields(msg),
+        ).lastrowid
+
+    def _message_row(self, msg_id):
+        row = self._db.execute(
+            "SELECT position, payload FROM messages WHERE msg_id = ? ORDER BY position LIMIT 1", (msg_id,)
+        ).fetchone()
+        return (row[0], json.loads(row[1])) if row else (None, None)
+
+    def _save_message(self, position, msg):
+        self._db.execute(
+            "UPDATE messages SET msg_id = ?, uid = ?, channel = ?, has_channel = ?, sender = ?, activity = ?, payload = ?"
+            " WHERE position = ?",
+            (*self._message_fields(msg), position),
+        )
 
     def update_reply_to(self, msg_id: int, reply_to: int):
         """Set reply_to on an existing message (used by import to rebuild links)."""
         with self._lock:
-            for m in self._messages:
-                if m["id"] == msg_id:
-                    m["reply_to"] = reply_to
-                    self._rewrite()
-                    return
+            position, msg = self._message_row(msg_id)
+            if msg is not None:
+                msg["reply_to"] = reply_to
+                self._save_message(position, msg)
+                self._rewrite()
 
     def _rewrite(self):
-        """Rewrite the full JSONL file from memory (used after bulk edits)."""
+        """Stream the runtime index to the JSONL log before atomically replacing it."""
         if self._log_repair_required:
             raise OSError(self._log_error)
-        atomic_write_text(self._path, "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in self._messages))
+        rows = self._db.execute("SELECT payload FROM messages ORDER BY position")
+        atomic_write_text(self._path, (payload + "\n" for (payload,) in rows))
 
     def get_by_id(self, msg_id: int) -> dict | None:
         with self._lock:
-            for m in self._messages:
-                if m["id"] == msg_id:
-                    return m
-            return None
+            return self._message_row(msg_id)[1]
 
     def get_recent(self, count: int = 50, channel: str | None = None) -> list[dict]:
+        where, parameters = (" WHERE channel = ?", (json.dumps(channel),)) if channel else ("", ())
         with self._lock:
-            msgs = self._messages
-            if channel:
-                msgs = [m for m in msgs if m.get("channel", "general") == channel]
-            return list(msgs[-count:])
+            if count <= 0:
+                rows = self._db.execute(
+                    "SELECT payload FROM messages" + where + " ORDER BY position LIMIT -1 OFFSET ?",
+                    (*parameters, -count),
+                )
+                return [json.loads(payload) for (payload,) in rows]
+            rows = self._db.execute(
+                "SELECT payload FROM messages" + where + " ORDER BY position DESC LIMIT ?", (*parameters, count)
+            )
+            messages = [json.loads(payload) for (payload,) in rows]
+            messages.reverse()
+            return messages
 
     def get_before(self, before_id: int, count: int = 50, channel: str | None = None) -> tuple[list[dict], bool]:
         """Up to `count` messages older than `before_id` (oldest first) and whether more exist."""
+        count = max(1, count)
+        where, parameters = (" AND channel = ?", (json.dumps(channel),)) if channel else ("", ())
         with self._lock:
-            older = [m for m in self._messages if m["id"] < before_id]
-            if channel:
-                older = [m for m in older if m.get("channel", "general") == channel]
-            count = max(1, count)
-            return list(older[-count:]), len(older) > count
+            rows = self._db.execute(
+                "SELECT payload FROM messages WHERE msg_id < ?" + where + " ORDER BY position DESC LIMIT ?",
+                (before_id, *parameters, count + 1),
+            ).fetchall()
+            return [json.loads(payload) for (payload,) in reversed(rows[:count])], len(rows) > count
 
     def count_channel(self, channel: str) -> int:
         with self._lock:
-            return sum(1 for m in self._messages if m.get("channel", "general") == channel)
+            return self._db.execute("SELECT COUNT(*) FROM messages WHERE channel = ?", (json.dumps(channel),)).fetchone()[0]
 
     def channel_activity(self) -> dict[str, float]:
         """Epoch timestamp of the newest message in each channel that has any."""
-        latest: dict[str, float] = {}
         with self._lock:
-            for m in self._messages:
-                ts = m.get("timestamp")
-                if not isinstance(ts, (int, float)):
-                    continue
-                ch = m.get("channel", "general")
-                if ts > latest.get(ch, 0):
-                    latest[ch] = ts
-        return latest
+            return {
+                json.loads(channel): timestamp
+                for channel, timestamp in self._db.execute(
+                    "SELECT channel, MAX(activity) FROM messages WHERE activity IS NOT NULL GROUP BY channel"
+                )
+            }
 
-    def get_since(self, since_id: int = 0, channel: str | None = None) -> list[dict]:
+    def get_since(self, since_id: int = 0, channel: str | None = None, *, limit: int | None = None) -> list[dict]:
+        where, parameters = (" AND channel = ?", (json.dumps(channel),)) if channel else ("", ())
         with self._lock:
-            msgs = [m for m in self._messages if m["id"] > since_id]
-            if channel:
-                msgs = [m for m in msgs if m.get("channel", "general") == channel]
-            return msgs
+            rows = self._db.execute(
+                "SELECT payload FROM messages WHERE msg_id > ?" + where + " ORDER BY position LIMIT ?",
+                (since_id, *parameters, limit if limit is not None else -1),
+            )
+            return [json.loads(payload) for (payload,) in rows]
 
     def delete(self, msg_ids: list[int]) -> list[int]:
         """Delete messages by ID. Returns list of IDs actually deleted."""
@@ -246,19 +301,16 @@ class MessageStore:
         deleted_attachments = []
         with self._lock:
             for mid in msg_ids:
-                for i, m in enumerate(self._messages):
-                    if m["id"] == mid:
-                        # Collect attachment files for cleanup
-                        for att in m.get("attachments", []):
-                            url = att.get("url", "")
-                            if url.startswith("/uploads/"):
-                                deleted_attachments.append(url.split("/")[-1])
-                        # Remove any associated todo
-                        if mid in self._todos:
-                            del self._todos[mid]
-                        self._messages.pop(i)
-                        deleted.append(mid)
-                        break
+                position, msg = self._message_row(mid)
+                if msg is None:
+                    continue
+                for att in msg.get("attachments", []):
+                    url = att.get("url", "")
+                    if url.startswith("/uploads/"):
+                        deleted_attachments.append(url.split("/")[-1])
+                self._todos.pop(mid, None)
+                self._db.execute("DELETE FROM messages WHERE position = ?", (position,))
+                deleted.append(mid)
             if deleted:
                 self._rewrite_jsonl()
                 self._save_todos()
@@ -286,38 +338,49 @@ class MessageStore:
         self._delete_callbacks.append(callback)
 
     def update_message(self, msg_id: int, updates: dict) -> dict | None:
-        """Update fields on a message in-place. Returns the updated message or None."""
+        """Update fields on a message. Returns the updated message or None."""
         with self._lock:
-            for m in self._messages:
-                if m["id"] == msg_id:
-                    m.update(updates)
-                    self._rewrite_jsonl()
-                    return dict(m)
-            return None
+            position, msg = self._message_row(msg_id)
+            if msg is None:
+                return None
+            msg.update(updates)
+            self._save_message(position, msg)
+            self._rewrite_jsonl()
+            return msg
 
     def _rewrite_jsonl(self):
         """Save the ID high-water mark before rewriting messages."""
         if self._log_repair_required:
             raise OSError(self._log_error)
         atomic_write_text(self._id_path, str(self._next_id))
-        atomic_write_text(self._path, "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in self._messages))
+        self._rewrite()
+
+    def _delete_channel_messages(self, channel, *, include_legacy_general, always_rewrite):
+        # Match the normal channel index, but keep channel-less legacy messages
+        # when deleting an explicitly named channel.
+        where = "channel = ?"
+        if not include_legacy_general and channel == "general":
+            where += " AND has_channel"
+        parameters = (json.dumps(channel),)
+        todo_ids = [
+            msg_id for msg_id in self._todos
+            if self._db.execute("SELECT 1 FROM messages WHERE msg_id = ? AND " + where, (msg_id, *parameters)).fetchone()
+        ]
+        removed = self._db.execute("DELETE FROM messages WHERE " + where, parameters).rowcount
+        if removed or always_rewrite:
+            self._rewrite_jsonl()
+        if removed:
+            for msg_id in todo_ids:
+                del self._todos[msg_id]
+            self._save_todos()
 
     def clear(self, channel: str | None = None):
-        """Wipe messages and rewrite the log file.
-        If channel is given, only clear messages in that channel."""
+        """Wipe messages and rewrite the log file."""
         with self._lock:
             if channel:
-                removed_ids = {m["id"] for m in self._messages if m.get("channel", "general") == channel}
-                self._messages = [m for m in self._messages if m.get("channel", "general") != channel]
-                self._rewrite_jsonl()
-                # Clean up todos for cleared messages
-                for tid in list(self._todos.keys()):
-                    if tid in removed_ids:
-                        del self._todos[tid]
-                if removed_ids:
-                    self._save_todos()
+                self._delete_channel_messages(channel, include_legacy_general=True, always_rewrite=True)
             else:
-                self._messages.clear()
+                self._db.execute("DELETE FROM messages")
                 self._rewrite_jsonl()
                 self._todos.clear()
                 self._save_todos()
@@ -325,42 +388,42 @@ class MessageStore:
     def rename_channel(self, old_name: str, new_name: str):
         """Migrate all messages from old_name to new_name."""
         with self._lock:
-            modified = False
-            for m in self._messages:
-                if m.get("channel") == old_name:
-                    m["channel"] = new_name
-                    modified = True
-            if modified:
-                self._rewrite_jsonl()
+            self._rename_field("channel", "channel = ? AND has_channel", old_name, new_name)
 
     def rename_sender(self, old_name: str, new_name: str, identity: str | None = None) -> int:
         """Rename matching agent messages. Legacy history can match only the exact old ID."""
+        def matches_identity(msg):
+            return msg.get("sender_kind") != "human" and (
+                not msg.get("sender_identity") or msg["sender_identity"] == identity
+            )
+
         with self._lock:
-            count = 0
-            for m in self._messages:
-                if m.get("sender") != old_name or m.get("sender_kind") == "human":
-                    continue
-                if not m.get("sender_identity") or m["sender_identity"] == identity:
-                    m["sender"] = new_name
-                    count += 1
-            if count:
-                self._rewrite_jsonl()
-        return count
+            return self._rename_field("sender", "sender = ?", old_name, new_name, matches_identity)
+
+    def _rename_field(self, field, condition, old_name, new_name, include=None):
+        position = updated = 0
+        while True:
+            rows = self._db.execute(
+                "SELECT position, payload FROM messages WHERE position > ? AND " + condition
+                + " ORDER BY position LIMIT 128",
+                (position, json.dumps(old_name)),
+            ).fetchall()
+            if not rows:
+                break
+            for position, payload in rows:
+                msg = json.loads(payload)
+                if include is None or include(msg):
+                    msg[field] = new_name
+                    self._save_message(position, msg)
+                    updated += 1
+        if updated:
+            self._rewrite_jsonl()
+        return updated
 
     def delete_channel(self, name: str):
         """Remove all messages belonging to a deleted channel."""
         with self._lock:
-            original_len = len(self._messages)
-            # Collect IDs of messages being removed so we can clean up their todos
-            removed_ids = {m["id"] for m in self._messages if m.get("channel") == name}
-            self._messages = [m for m in self._messages if m.get("channel") != name]
-            if len(self._messages) != original_len:
-                self._rewrite_jsonl()
-                # Clean up todos that referenced deleted messages
-                for tid in list(self._todos.keys()):
-                    if tid in removed_ids:
-                        del self._todos[tid]
-                self._save_todos()
+            self._delete_channel_messages(name, include_legacy_general=False, always_rewrite=False)
 
     # --- Todos ---
 
@@ -404,7 +467,7 @@ class MessageStore:
 
     def add_todo(self, msg_id: int) -> bool:
         with self._lock:
-            if not any(m["id"] == msg_id for m in self._messages):
+            if not self._db.execute("SELECT 1 FROM messages WHERE msg_id = ?", (msg_id,)).fetchone():
                 return False
             self._todos[msg_id] = "todo"
             self._save_todos()
@@ -469,30 +532,30 @@ class MessageStore:
             status = self._todos.get(msg_id)
             if status is None:
                 return None
-            for m in self._messages:
-                if m["id"] == msg_id:
-                    return self._todo_summary(m, status)
-        return None
+            _, msg = self._message_row(msg_id)
+            return self._todo_summary(msg, status) if msg is not None else None
+
+    def _todo_message_rows(self, status=None):
+        rows = []
+        for msg_id, todo_status in self._todos.items():
+            if not status or status == todo_status:
+                position, msg = self._message_row(msg_id)
+                if msg is not None:
+                    rows.append((position, msg, todo_status))
+        return sorted(rows, key=lambda row: row[0])
 
     def get_todo_summaries(self) -> dict[int, dict]:
-        """{msg_id: summary} for every pinned message that still exists (one pass)."""
+        """Return summaries of pinned messages that still exist."""
         with self._lock:
-            todos = dict(self._todos)
-            return {
-                m["id"]: self._todo_summary(m, todos[m["id"]])
-                for m in self._messages if m["id"] in todos
-            }
+            return {msg["id"]: self._todo_summary(msg, status) for _, msg, status in self._todo_message_rows()}
 
     def get_todo_messages(self, status: str | None = None) -> list[dict]:
         """Get todo messages, optionally filtered by status."""
         with self._lock:
-            if status:
-                ids = {k for k, v in self._todos.items() if v == status}
-            else:
-                ids = set(self._todos.keys())
-            return [m for m in self._messages if m["id"] in ids]
+            return [msg for _, msg, _ in self._todo_message_rows(status)]
 
     @property
     def last_id(self) -> int:
         with self._lock:
-            return self._messages[-1]["id"] if self._messages else -1
+            row = self._db.execute("SELECT msg_id FROM messages ORDER BY position DESC LIMIT 1").fetchone()
+            return row[0] if row else -1

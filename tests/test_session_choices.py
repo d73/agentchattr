@@ -107,7 +107,7 @@ class SessionChoiceTests(unittest.TestCase):
         answer(question)
         result = answer(question)
         assert result.status_code == 400
-        replies = [m for m in messages._messages if m.get('reply_to') == question['id']]
+        replies = [m for m in messages.get_recent() if m.get('reply_to') == question['id']]
         assert len(replies) == 1
         assert sessions.get(1)['state'] == 'waiting'
 

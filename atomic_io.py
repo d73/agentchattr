@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 
 
@@ -37,12 +38,15 @@ def repair_corrupt_json(path: Path, reason: str, recovered: dict) -> None:
     atomic_write_text(path, json.dumps(recovered, indent=2) + "\n")
 
 
-def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
+def atomic_write_text(path, text: str | Iterable[str], encoding: str = "utf-8") -> None:
     path = Path(path)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         with open(tmp, "w", encoding=encoding, newline="") as f:
-            f.write(text)
+            if isinstance(text, str):
+                f.write(text)
+            else:
+                f.writelines(text)
             f.flush()
             os.fsync(f.fileno())
         # On Windows os.replace can briefly fail if another process (antivirus,
