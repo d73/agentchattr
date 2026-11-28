@@ -202,11 +202,11 @@ class AppAuthEndpointTests(unittest.TestCase):
 
 
 class WrapperLaunchTests(unittest.TestCase):
-    def test_named_claude_identity_derives_injection_from_command(self):
+    def test_claude_injection_uses_provider_for_a_renamed_shim(self):
         with tempfile.TemporaryDirectory() as tmp:
             args, _env, inject_env, settings_path = wrapper._build_provider_launch(
-                agent="claude2",
-                agent_cfg={"command": "claude"},
+                agent="codex",
+                agent_cfg={"command": "local-shim", "provider": "claude"},
                 instance_name="claude2",
                 data_dir=Path(tmp),
                 proxy_url=None,
@@ -224,10 +224,10 @@ class WrapperLaunchTests(unittest.TestCase):
                 "Bearer named_claude_token",
             )
 
-    def test_named_codex_identity_derives_injection_from_command_path(self):
+    def test_codex_injection_uses_provider_for_a_named_agent(self):
         args, _env, inject_env, settings_path = wrapper._build_provider_launch(
             agent="codex2",
-            agent_cfg={"command": r"C:\Tools\codex.exe"},
+            agent_cfg={"command": r"C:\Tools\local-shim.exe", "provider": "codex"},
             instance_name="codex2",
             data_dir=Path(tempfile.gettempdir()),
             proxy_url="http://127.0.0.1:7777/mcp",
@@ -240,17 +240,57 @@ class WrapperLaunchTests(unittest.TestCase):
         self.assertEqual(inject_env, {})
         self.assertIsNone(settings_path)
 
-    def test_command_exe_suffix_resolves_provider_defaults(self):
-        resolved = wrapper._resolve_mcp_inject("claude2", {"command": "claude.exe"})
+    def test_config_key_and_command_do_not_select_provider_defaults(self):
+        self.assertEqual(wrapper._resolve_mcp_inject("codex", {"command": "claude.exe"}), {})
 
-        self.assertEqual(resolved["mcp_inject"], "flag")
-        self.assertEqual(resolved["mcp_flag"], "--mcp-config")
+    def test_wrapper_entry_point_uses_same_profile_after_chat_id_changes(self):
+        platform_wrapper = wrapper_windows if sys.platform == "win32" else wrapper_unix
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = {"agents": {"codex": {
+                "command": "local-shim", "provider": "claude", "activity_profile": "kimi",
+            }}}
+            for chat_id in ("codex", "custom-2"):
+                with (
+                    self.subTest(chat_id=chat_id),
+                    mock.patch.object(wrapper, "ROOT", root),
+                    mock.patch.object(sys, "argv", ["wrapper.py", "codex", "--name", chat_id]),
+                    mock.patch.dict(os.environ, {}, clear=True),
+                    mock.patch("config_loader.load_config", return_value=config),
+                    mock.patch.object(wrapper, "_register_at_startup", return_value={
+                        "name": chat_id, "token": "test-token", "base": "codex", "slot": 1,
+                    }),
+                    mock.patch.object(wrapper.shutil, "which", return_value="local-shim"),
+                    mock.patch.object(wrapper.threading, "Thread"),
+                    mock.patch.object(platform_wrapper, "get_activity_checker") as checker,
+                    mock.patch.object(platform_wrapper, "run_agent") as launch,
+                    mock.patch("urllib.request.urlopen"),
+                    mock.patch("builtins.print"),
+                ):
+                    wrapper.main()
+                self.assertEqual(checker.call_args.kwargs["agent_name"], "kimi")
+                self.assertEqual(launch.call_args.kwargs["extra_args"][0], "--mcp-config")
 
-    def test_explicit_mcp_override_precedes_command_provider_defaults(self):
+    def test_unknown_provider_and_invalid_activity_profile_have_config_errors(self):
+        with self.assertRaisesRegex(ValueError, r"\[agents\.worker\] provider"):
+            wrapper._resolve_mcp_inject("worker", {"provider": "unknown"})
+        for profile in ("../codex", "Codex", 1, None):
+            with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, "activity_profile"):
+                wrapper._resolve_activity_profile("worker", {"activity_profile": profile})
+
+    def test_activity_profile_uses_configured_directory_only(self):
+        config = {"command": "codex.exe", "provider": "codex", "activity_profile": "claude-2"}
+        for key in ("worker", "codex", "claude-2"):
+            with self.subTest(key=key):
+                self.assertEqual(wrapper._resolve_activity_profile(key, config), "claude-2")
+                self.assertEqual(wrapper._resolve_activity_profile(key, {"command": "codex.exe"}), "")
+                self.assertEqual(wrapper._resolve_activity_profile(key, {"provider": "codex"}), "")
+
+    def test_explicit_mcp_override_precedes_provider_defaults(self):
         resolved = wrapper._resolve_mcp_inject(
             "claude2",
             {
-                "command": "claude",
+                "provider": "claude",
                 "mcp_inject": "proxy_flag",
                 "mcp_proxy_flag_template": "--server={url}",
             },
@@ -263,7 +303,7 @@ class WrapperLaunchTests(unittest.TestCase):
     def test_named_provider_merges_partial_mcp_overrides(self):
         resolved = wrapper._resolve_mcp_inject(
             "claude2",
-            {"command": "claude", "mcp_transport": "sse", "mcp_flag": "--custom"},
+            {"provider": "claude", "mcp_transport": "sse", "mcp_flag": "--custom"},
         )
 
         self.assertEqual(resolved["mcp_inject"], "flag")
@@ -294,7 +334,7 @@ class WrapperLaunchTests(unittest.TestCase):
 
             args, env, inject_env, _ = wrapper._build_provider_launch(
                 agent="claude",
-                agent_cfg={},
+                agent_cfg={"provider": "claude"},
                 instance_name="claude-2",
                 data_dir=Path(tmp),
                 proxy_url=None,
@@ -332,7 +372,7 @@ class WrapperLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args, env, inject_env, _ = wrapper._build_provider_launch(
                 agent="gemini",
-                agent_cfg={},
+                agent_cfg={"provider": "gemini"},
                 instance_name="gemini-2",
                 data_dir=Path(tmp),
                 proxy_url=None,
@@ -365,7 +405,7 @@ class WrapperLaunchTests(unittest.TestCase):
     def test_build_provider_launch_for_codex_uses_config_override(self):
         args, env, inject_env, _ = wrapper._build_provider_launch(
             agent="codex",
-            agent_cfg={},
+            agent_cfg={"provider": "codex"},
             instance_name="codex-2",
             data_dir=Path(tempfile.gettempdir()),
             proxy_url="http://127.0.0.1:7777/mcp",

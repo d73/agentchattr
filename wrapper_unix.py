@@ -158,12 +158,12 @@ def _without_codex_input_animation(output: bytes) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
-def get_activity_checker(session_name, trigger_flag=None, *, provider="", agent_name=None, pattern_store=None):
+def get_activity_checker(session_name, trigger_flag=None, *, provider="", agent_name="", pattern_store=None):
     """Return a callable that detects tmux pane output by hashing content."""
     last_hash = [None]
     _needs_input = [False]
     _is_active = [False]
-    patterns = pattern_store or PatternStore(agent_name or provider)
+    patterns = pattern_store or PatternStore(agent_name)
 
     def check():
         # External trigger: queue watcher injected a message
