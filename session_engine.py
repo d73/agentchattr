@@ -48,8 +48,8 @@ class SessionEngine:
         log.info("Session %d started: %s in #%s", session["id"],
                  session["template_name"], channel)
 
-        # Trigger the first participant
-        self._trigger_current(session)
+        with self._lock:
+            self._trigger_current(session)
         return session
 
     def emit_current_phase_banner(self, session: dict):
@@ -78,7 +78,8 @@ class SessionEngine:
 
     def end_session(self, session_id: int, reason: str = "ended by user") -> dict | None:
         """End a session early."""
-        session = self._store.interrupt(session_id, reason)
+        with self._lock:
+            session = self._store.interrupt(session_id, reason)
         if session:
             log.info("Session %d interrupted: %s", session_id, reason)
         return session
@@ -107,18 +108,21 @@ class SessionEngine:
         return active
 
     def resume_active_sessions(self):
-        """On server restart, resume any sessions that were in progress.
+        """Resume undispatched turns after restart and leave delivered turns alone."""
+        with self._lock:
+            for session in self._store.list_all():
+                if (session["state"] == "active"
+                        or (session["state"] == "waiting" and session.get("wake_pending"))):
+                    self._trigger_current(session)
 
-        Only re-trigger 'active' sessions. 'waiting' sessions already had
-        their trigger sent before the restart — re-triggering would
-        double-queue the same participant.
-        """
-        for session in self._store.list_all():
-            if session.get("state") == "active":
-                log.info("Resuming session %d (%s) from phase %d, turn %d",
-                         session["id"], session.get("template_name", "?"),
-                         session["current_phase"], session["current_turn"])
-                self._trigger_current(session)
+    def retry_pending_wakes(self, agent: str):
+        """Retry unsent wakes when an authenticated wrapper reports it is ready."""
+        with self._lock:
+            for session in self._store.list_all():
+                if (session["state"] == "waiting" and session.get("wake_pending")
+                        and session.get("waiting_on") == agent
+                        and session.get("choice_message_id") is None):
+                    self._trigger_current(session)
 
     def _is_agent(self, name: str) -> bool:
         """Check if name belongs to a registered agent (not a human)."""
@@ -287,27 +291,33 @@ class SessionEngine:
             self._store.interrupt(session["id"], f"no agent for role '{role}'")
             return
 
+        if session.get("choice_message_id") is not None:
+            return
         if not self._is_agent(agent):
-            # Human's turn - just mark as waiting, don't trigger
-            self._store.set_waiting(session["id"], agent)
+            # An undispatched agent wake stays pending until its wrapper returns.
+            if not session.get("wake_pending"):
+                self._store.set_waiting(session["id"], agent)
             return
 
-        # Mark waiting
-        self._store.set_waiting(session["id"], agent)
+        if not session.get("wake_pending"):
+            if not self._store.set_waiting(session["id"], agent, wake_pending=True):
+                return
 
-        # Assemble the prompt
         prompt = self._assemble_prompt(session, tmpl, phase, role)
-
-        # Trigger the agent
         channel = session.get("channel", "general")
         log.info("Session %d: triggering %s (%s) for phase '%s'",
                  session["id"], agent, role, phase["name"])
-
         try:
             self._trigger.trigger_sync(agent, channel=channel, prompt=prompt)
-        except Exception as exc:
-            log.error("Session %d: failed to trigger %s: %s",
-                      session["id"], agent, exc)
+        except OSError:
+            log.exception("Session %d: wake for %s is pending after a queue write failure",
+                          session["id"], agent)
+            return
+
+        try:
+            self._store.mark_wake_dispatched(session["id"])
+        except OSError:
+            log.exception("Session %d: could not persist wake completion", session["id"])
 
     def _assemble_prompt(self, session: dict, tmpl: dict, phase: dict,
                          role: str) -> str:

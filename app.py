@@ -2746,6 +2746,8 @@ async def heartbeat(agent_name: str, request: Request):
     # Immediately broadcast on activity state change (don't wait for background checker)
     if _activity_changed:
         await broadcast_status()
+    if auth_inst and session_engine:
+        session_engine.retry_pending_wakes(current_name)
     # Return canonical name so wrapper can track renames
     resp = {"ok": True, "name": current_name}
     if auth_inst:
