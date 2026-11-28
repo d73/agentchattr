@@ -24,6 +24,7 @@ from store import MessageStore
 from rules import RuleStore
 from summaries import SummaryStore
 from jobs import JobStore
+from job_reopen import ReopenConflict
 from schedules import ScheduleStore, parse_schedule_spec
 from router import Router, without_code
 from agents import AgentTrigger
@@ -31,6 +32,7 @@ from registry import RuntimeRegistry
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from plugin_host import ASSET_PREFIX
+from operator_auth import configured_operator, prepare_operator_verifier, verify_operator
 
 log = logging.getLogger(__name__)
 
@@ -522,6 +524,11 @@ def configure(cfg: dict, session_token: str = ""):
         log_path = legacy_log_path
 
     store = MessageStore(str(log_path))
+    if configured_operator(cfg):
+        try:
+            prepare_operator_verifier(Path(data_dir))
+        except OSError:
+            log.warning("Could not prepare the local operator verifier file")
     # Initialize store upload dir from config
     raw_upload_dir = cfg.get("images", {}).get("upload_dir", "./uploads")
     store.upload_dir = Path(raw_upload_dir)
@@ -1215,6 +1222,10 @@ async def _handle_new_message(msg: dict):
         else:
             targets.append(t)
     targets = list(dict.fromkeys(targets))  # dedupe, preserve order
+    decision_author_id = (msg.get("metadata") or {}).get("decision_author_identity")
+    if decision_author_id and registry:
+        author = registry.get_active_instance_by_identity(decision_author_id)
+        targets = [author["name"]] if author else []
 
     if _re.match(r"^\s*/ping(?:\s|$)", text, _re.IGNORECASE) and not sender_is_agent:
         if not targets:
@@ -1246,7 +1257,8 @@ async def _handle_new_message(msg: dict):
     # Session turn guard: if a session is active on this channel and the sender
     # is an agent, only allow triggering the agent whose turn it is.
     # Human @mentions are always allowed (the session engine handles pausing).
-    allowed_agent = session_engine.get_allowed_agent(channel) if session_engine and sender_is_agent else None
+    allowed = session_engine.get_allowed_wake_target(channel) if session_engine and sender_is_agent else None
+    target_identity = decision_author_id or (allowed[1] if allowed else None)
 
     import mcp_bridge
     for target in targets:
@@ -1257,13 +1269,16 @@ async def _handle_new_message(msg: dict):
                 continue
             if inst and inst["identity_id"] == sender_identity:
                 continue
+            if target_identity and (not inst or inst["identity_id"] != target_identity):
+                continue
         # Session guard: suppress out-of-turn agent triggers
-        if allowed_agent and target != allowed_agent:
+        if allowed is not None and target != allowed[0]:
             continue
         if not agents.is_available(target):
             continue
         try:
-            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt)
+            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt,
+                                 **({"identity_id": target_identity} if target_identity else {}))
         except OSError:
             log.exception("Failed to queue wake for %s in #%s", target, channel)
             store.add("system", f"Could not queue a wake for @{target}.",
@@ -2243,6 +2258,7 @@ async def resolve_decision(msg_id: int, request: Request):
     error = None
     channel = "general"
     sender = ""
+    sender_identity = None
     with store._lock:
         position, msg = store._message_row(msg_id)
         if not msg:
@@ -2251,7 +2267,11 @@ async def resolve_decision(msg_id: int, request: Request):
             error = ("not a decision message", 400)
         else:
             meta = msg.get("metadata") or {}
-            if meta.get("orch_intake"):
+            if "orch_gate" in meta:
+                error = ("Orch gate decisions require operator approval", 403)
+            elif "job_reopen" in meta:
+                error = ("use the bound Job reopen decision endpoint", 409)
+            elif "orch_intake" in meta:
                 error = ("use the Orch intake endpoint for this card", 409)
             elif meta.get("resolved"):
                 error = ("already resolved", 400)
@@ -2267,6 +2287,8 @@ async def resolve_decision(msg_id: int, request: Request):
                     msg["metadata"] = meta
                     channel = msg.get("channel", "general")
                     sender = msg.get("sender", "")
+                    if msg.get("sender_kind") == "agent":
+                        sender_identity = msg.get("sender_identity")
                     try:
                         store._save_message(position, msg)
                         store._rewrite()
@@ -2277,9 +2299,14 @@ async def resolve_decision(msg_id: int, request: Request):
         return JSONResponse({"error": error[0]}, status_code=error[1])
     # Post the chosen answer as a regular chat message tagged @sender
     username = room_settings.get("username", "user")
+    metadata = None
+    if sender_identity and registry:
+        instance = registry.get_active_instance_by_identity(sender_identity)
+        sender = instance["name"] if instance else ""
+        metadata = {"decision_author_identity": sender_identity}
     reply_text = f"@{sender} {chosen}" if sender else chosen
     try:
-        store.add(username, reply_text, reply_to=msg_id, channel=channel, sender_kind="human")
+        store.add(username, reply_text, reply_to=msg_id, channel=channel, sender_kind="human", metadata=metadata)
     except Exception:
         import traceback; traceback.print_exc()
     # Broadcast updated decision card so the UI swaps buttons to resolved state
@@ -2287,6 +2314,38 @@ async def resolve_decision(msg_id: int, request: Request):
     if updated:
         await _broadcast(json.dumps({"type": "message_update", "message": updated}))
     return {"ok": True, "chosen": chosen}
+
+
+@app.post("/api/jobs/{job_uid}/orch-gates/{decision_id}/resolve")
+async def resolve_orch_gate(job_uid: str, decision_id: int, request: Request):
+    """Record an independently verified operator's choice for the exact current gate."""
+    actor = verify_operator(request, config, session_token)
+    if actor is None:
+        return JSONResponse({"error": "verified operator required"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid gate decision"}, status_code=400)
+    gate, revision, choice = (body.get(key) for key in ("gate", "revision", "choice"))
+    if (not isinstance(gate, str) or not gate or type(revision) is not int or revision < 1
+            or not isinstance(choice, str) or not choice or decision_id < 0):
+        return JSONResponse({"error": "invalid gate decision"}, status_code=400)
+
+    decision = jobs.resolve_orch_gate(job_uid, decision_id=decision_id, gate=gate,
+                                     revision=revision, choice=choice, actor=actor)
+    if decision is None:
+        return JSONResponse({"error": "gate decision is stale, conflicting, or out of scope"}, status_code=409)
+    try:
+        updated = store.project_orch_gate_decision(decision)
+    except OSError:
+        # The Job record is authoritative. A retry can repair the display without reapplying the choice.
+        log.exception("Could not update the Orch gate card %s", decision_id)
+    else:
+        if updated:
+            await _broadcast(json.dumps({"type": "message_update", "message": updated}))
+    return decision
 
 
 @app.post("/api/messages/{msg_id}/resolve_rule_proposal")
@@ -2586,6 +2645,53 @@ async def update_job(job_id: int, request: Request):
     if result is None:
         return JSONResponse({"error": "not found or invalid"}, status_code=404)
     return result
+
+
+@app.post("/api/jobs/{job_id}/reopen-requests")
+async def create_job_reopen_request(job_id: int, request: Request):
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Expected JSON for the reopen request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a reopen request object"}, status_code=400)
+    try:
+        result = jobs.request_reopen(job_id, expected_uid=body.get("job_uid"),
+                                     expected_version=body.get("expected_version"),
+                                     requester="local-browser", reason=body.get("reason"))
+    except ReopenConflict as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    reopen = result["request"]
+    card = store.add(
+        "system", f"Job #{job_id} reopen request: {reopen['reason']}",
+        msg_type="decision", channel=result["job"]["channel"], sender_kind="system",
+        metadata={"choices": ["Approve", "Decline", "Needs clarification"],
+                  "job_reopen": {"job_id": job_id, "job_uid": reopen["job_uid"],
+                                 "expected_version": reopen["job_version"], "request_id": reopen["id"]}},
+        uid=f"job-reopen-{reopen['id']}", once=True,
+    )
+    return {**result, "card_msg_id": card["id"]}
+
+
+@app.post("/api/jobs/{job_id}/reopen-requests/{request_id}/decision")
+async def decide_job_reopen_request(job_id: int, request_id: str, request: Request):
+    actor = verify_operator(request, config, session_token)
+    if actor is None:
+        return JSONResponse({"error": "Verified Job operator required"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Expected JSON for the reopen decision"}, status_code=400)
+    if not isinstance(body, dict) or body.get("decision") not in ("approve", "decline", "clarify"):
+        return JSONResponse({"error": "Invalid reopen decision"}, status_code=400)
+    try:
+        return jobs.decide_reopen(job_id, request_id, expected_uid=body.get("job_uid"),
+                                  expected_version=body.get("expected_version"), actor=actor,
+                                  role="owner", decision=body["decision"])
+    except ReopenConflict as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
 
 
 @app.post("/api/jobs/reorder")
@@ -2941,7 +3047,7 @@ async def heartbeat(agent_name: str, request: Request):
     if _activity_changed:
         await broadcast_status()
     if auth_inst and session_engine:
-        session_engine.retry_pending_wakes(current_name)
+        session_engine.retry_pending_wakes(current_name, auth_inst.get("identity_id"))
     # Return canonical name so wrapper can track renames
     resp = {"ok": True, "name": current_name}
     if auth_inst:

@@ -142,7 +142,7 @@ class SessionStore:
     # --- Session lifecycle ---
 
     def create(self, template_id: str, channel: str, cast: dict,
-               started_by: str, goal: str = "") -> dict | None:
+               started_by: str, goal: str = "", *, cast_identities: dict | None = None) -> dict | None:
         """Create and persist a new session run."""
         tmpl = self._templates.get(template_id)
         if not tmpl:
@@ -170,6 +170,8 @@ class SessionStore:
                 "output_message_id": None,
                 "goal": goal.strip()[:500],
             }
+            if cast_identities is not None:
+                session["cast_identities"] = dict(cast_identities)
             self._next_id += 1
             self._sessions.append(session)
             self._save()

@@ -12,8 +12,15 @@ from typing import Callable
 
 from job_lifecycle import ACTIVE, CLOSED, DRAFTING, LEGACY_STATUS, TODO, core_status
 from job_lifecycle import new_lifecycle, next_lifecycle, validate_lifecycle
+from job_lifecycle import AWAITING_APPROVAL, PLANNING, READY
+from job_reopen import ReopenConflict, create_request, record_decision
 
 log = logging.getLogger(__name__)
+
+_ORCH_GATE_STAGE = {
+    "brief": AWAITING_APPROVAL, "spec": PLANNING, "mockup": PLANNING, "staffing": READY,
+}
+_ORCH_GATE_FIELDS = ("job_uid", "decision_id", "gate", "revision", "choices", "choice", "actor", "decided_at")
 
 
 class JobStore:
@@ -141,9 +148,12 @@ class JobStore:
     @staticmethod
     def _snapshot(job):
         public = dict(job)
+        public.pop("_orch_gates", None)
         public["lifecycle"] = deepcopy(job["lifecycle"])
         if "lifecycle_events" in job:
             public["lifecycle_events"] = deepcopy(job["lifecycle_events"])
+        if "reopen_requests" in job:
+            public["reopen_requests"] = deepcopy(job["reopen_requests"])
         if "imported_lifecycle_events" in job:
             public["imported_lifecycle_events"] = deepcopy(job["imported_lifecycle_events"])
         return public
@@ -202,6 +212,113 @@ class JobStore:
             result = self._snapshot(job)
         self._fire("update", result)
         return result
+
+    def _managed_job_locked(self, uid):
+        return next((job for job in self._jobs
+                     if job.get("uid") == uid and job["lifecycle"]["managed_by"] == "orch"), None)
+
+    @staticmethod
+    def _stage_version(job):
+        for event in reversed(job.get("lifecycle_events", [])):
+            before, after = event["before"], event["after"]
+            if before["stage_id"] != after["stage_id"]:
+                return after["version"]
+        return 0
+
+    @staticmethod
+    def _current_gate(records, gate):
+        if records:
+            revision = records[-1]["revision"]
+            return next((record for record in reversed(records)
+                         if record["gate"] == gate and record["revision"] == revision), None)
+        return None
+
+    @staticmethod
+    def _gate_result(record):
+        return {key: deepcopy(record[key]) for key in _ORCH_GATE_FIELDS}
+
+    def _write_gates_locked(self, job, records):
+        previous = job.get("_orch_gates")
+        job["_orch_gates"] = records
+        try:
+            self._save()
+        except OSError:
+            if previous is None:
+                job.pop("_orch_gates")
+            else:
+                job["_orch_gates"] = previous
+            raise
+
+    def publish_orch_gate(self, job_uid, *, coordinator, gate, revision, choices, text,
+                          operation_id, add_card):
+        """Publish the current card for a trusted coordinator, with retry by operation ID."""
+        if (not all(isinstance(value, str) and value.strip()
+                    for value in (job_uid, coordinator, gate, text, operation_id))
+                or gate not in _ORCH_GATE_STAGE or type(revision) is not int or revision < 1
+                or not isinstance(choices, list) or len(choices) < 2
+                or not all(isinstance(choice, str) and choice.strip() for choice in choices)
+                or len(set(choices)) != len(choices)
+                or (gate == "staffing" and set(choices) != {"Start", "Wait"})):
+            raise ValueError("invalid Orch gate publication")
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            if job is None:
+                return None
+            records = job.get("_orch_gates", [])
+            attachment = next((event for event in reversed(job.get("lifecycle_events", []))
+                               if event["event"] == "attach"), None)
+            if (attachment and attachment["actor"] != coordinator
+                    or records and (records[-1]["coordinator"] != coordinator or records[-1]["revision"] > revision)):
+                return None
+            current = self._current_gate(records, gate)
+            stage_version = self._stage_version(job)
+            existing = next((record for record in records if record["operation_id"] == operation_id), None)
+            if existing is not None:
+                if (existing is not current or existing["revision"] != revision
+                        or existing["choices"] != choices or existing["text"] != text
+                        or (existing["choice"] is None and existing["stage_version"] != stage_version)):
+                    return None
+                return self._gate_result(existing)
+            if job["lifecycle"]["stage_id"] != _ORCH_GATE_STAGE[gate]:
+                return None
+            if (current is not None and current["revision"] == revision
+                    and not (gate == "staffing" and current["choice"] == "Wait")):
+                return None
+            binding = {"job_uid": job_uid, "gate": gate, "revision": revision}
+            decision_id = add_card(job["channel"], binding)
+            record = dict(binding, decision_id=decision_id, choices=list(choices), choice=None,
+                          actor=None, decided_at=None, coordinator=coordinator, operation_id=operation_id,
+                          text=text, stage_version=stage_version)
+            self._write_gates_locked(job, [*records, record])
+            return self._gate_result(record)
+
+    def read_orch_gate(self, job_uid, *, coordinator, decision_id):
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            records = job.get("_orch_gates", []) if job else []
+            record = next((record for record in records if record["decision_id"] == decision_id), None)
+            if (record is None or record["coordinator"] != coordinator
+                    or record is not self._current_gate(records, record["gate"])
+                    or (record["choice"] is None and record["stage_version"] != self._stage_version(job))):
+                return None
+            return self._gate_result(record)
+
+    def resolve_orch_gate(self, job_uid, *, decision_id, gate, revision, choice, actor):
+        with self._lock:
+            job = self._managed_job_locked(job_uid)
+            records = job.get("_orch_gates", []) if job else []
+            current = self._current_gate(records, gate)
+            if (current is None or current["decision_id"] != decision_id or current["revision"] != revision
+                    or choice not in current["choices"]):
+                return None
+            if current["choice"] is not None:
+                return self._gate_result(current) if (current["choice"], current["actor"]) == (choice, actor) else None
+            if (job["lifecycle"]["stage_id"] != _ORCH_GATE_STAGE[gate]
+                    or current["stage_version"] != self._stage_version(job)):
+                return None
+            committed = dict(current, choice=choice, actor=actor, decided_at=time.time())
+            self._write_gates_locked(job, [committed if record is current else record for record in records])
+            return self._gate_result(committed)
 
     def create(self, title: str, job_type: str, channel: str,
                created_by: str, anchor_msg_id: int | None = None,
@@ -358,7 +475,7 @@ class JobStore:
         return result
 
     def _commit_lifecycle_locked(self, job, updated, event, actor, actor_kind,
-                                 operation_id, reason, approved_reopen=False):
+                                 operation_id, reason, approved_reopen=False, *, reopen_requests=None):
         previous = dict(job)
         status = LEGACY_STATUS[updated["core_id"]]
         if status != job["status"]:
@@ -367,6 +484,11 @@ class JobStore:
         record = {"operation_id": operation_id, "event": event, "actor": actor, "actor_kind": actor_kind,
                   "approved_reopen": approved_reopen,
                   "time": now, "reason": reason, "before": deepcopy(job["lifecycle"]), "after": deepcopy(updated)}
+        if reopen_requests is not None:
+            approval = reopen_requests[-1]
+            record["reopen_approval"] = {key: deepcopy(approval[key])
+                                         for key in ("id", "approval_basis", "decisions")}
+            job["reopen_requests"] = reopen_requests
         job.update(status=status, lifecycle=deepcopy(updated), updated_at=now,
                    lifecycle_events=[*job.get("lifecycle_events", []), record])
         try:
@@ -376,6 +498,87 @@ class JobStore:
             job.update(previous)
             raise
         return self._snapshot(job)
+
+    def request_reopen(self, job_id, *, expected_uid, expected_version, requester, reason):
+        """Record a reopen request without changing the Job lifecycle."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("A reopen request requires a reason")
+        reason = reason.strip()
+        with self._lock:
+            job = next((item for item in self._jobs if item["id"] == job_id), None)
+            if job is None or job["uid"] != expected_uid:
+                raise ReopenConflict("Job no longer matches the requested identity")
+            state = job["lifecycle"]
+            if (type(expected_version) is not int or state["version"] != expected_version
+                    or state["core_id"] != CLOSED or state["close_outcome"] != "completed"):
+                raise ReopenConflict("Job is no longer at the requested completed version")
+            requests = job.get("reopen_requests", [])
+            current = requests[-1] if requests else None
+            if current and current["job_version"] == expected_version and current["status"] == "pending":
+                if (current["requester"], current["reason"]) != (requester, reason):
+                    raise ReopenConflict("A reopen request is already pending")
+                return {"request": deepcopy(current), "job": self._snapshot(job)}
+            current = create_request(request_id=str(uuid.uuid4()), job_uid=expected_uid,
+                                     job_version=expected_version, requester=requester,
+                                     reason=reason, now=time.time())
+            self._save_reopen_requests_locked(job, [*requests, current])
+            snapshot = self._snapshot(job)
+        self._fire("update", snapshot)
+        return {"request": deepcopy(current), "job": snapshot}
+
+    def decide_reopen(self, job_id, request_id, *, expected_uid, expected_version, actor, role, decision):
+        """Persist a verified decision and any resulting reopen atomically."""
+        with self._lock:
+            job = next((item for item in self._jobs if item["id"] == job_id), None)
+            if job is None or job["uid"] != expected_uid:
+                raise ReopenConflict("Job no longer matches the requested identity")
+            requests = job.get("reopen_requests", [])
+            current = requests[-1] if requests else None
+            if (not current or current["id"] != request_id or current["job_uid"] != expected_uid
+                    or type(expected_version) is not int or current["job_version"] != expected_version):
+                raise ReopenConflict("Reopen request no longer matches the Job")
+            state = job["lifecycle"]
+            try:
+                updated = record_decision(current, actor=actor, role=role, decision=decision, now=time.time())
+            except ValueError as exc:
+                raise ReopenConflict(str(exc)) from exc
+            if updated is current:
+                if current["status"] == "pending" and state["version"] != expected_version:
+                    raise ReopenConflict("Job has changed since the reopen request")
+                return {"request": deepcopy(current), "job": self._snapshot(job)}
+            if state["version"] != expected_version:
+                raise ReopenConflict("Job has changed since the reopen request")
+            replacement = [*requests[:-1], updated]
+            if updated["status"] == "approved":
+                next_state = next_lifecycle(state, "reopen", "human",
+                                            reason=updated["reason"], approved_reopen=True)
+                if next_state is None:
+                    raise ReopenConflict("Job can no longer be reopened")
+                if next_state["managed_by"] == "orch":
+                    # Orch clears this gate after persisting the fresh corrective task.
+                    next_state["flags"] = ["paused"]
+                kind = "human" if role == "owner" else "agent"
+                snapshot = self._commit_lifecycle_locked(
+                    job, next_state, "reopen", actor, kind, request_id, updated["reason"],
+                    approved_reopen=True, reopen_requests=replacement,
+                )
+            else:
+                self._save_reopen_requests_locked(job, replacement)
+                snapshot = self._snapshot(job)
+        self._fire("update", snapshot)
+        return {"request": deepcopy(updated), "job": snapshot}
+
+    def _save_reopen_requests_locked(self, job, requests):
+        original = job.get("reopen_requests")
+        job["reopen_requests"] = requests
+        try:
+            self._save()
+        except OSError:
+            if original is None:
+                job.pop("reopen_requests")
+            else:
+                job["reopen_requests"] = original
+            raise
 
     def update_title(self, job_id: int, title: str) -> dict | None:
         with self._lock:
