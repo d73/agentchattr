@@ -572,6 +572,7 @@ body.archive-no-select * {
 .job-event summary span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .job-event summary::after { content: '›'; margin-inline-start: auto; }
 .job-event[open] summary::after { transform: rotate(90deg); }
+.job-event:not([open]) .job-event-json { display: none; }
 
 .job-event-json {
     margin: 0;
