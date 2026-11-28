@@ -197,10 +197,10 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
     for m in store.get_recent(count=999_999_999):
         existing_msg_uids.add(_ensure_uid(m))
 
-    existing_job_uids = set()
+    existing_job_ids = {}
     if jobs_store:
         for j in jobs_store.list_all():
-            existing_job_uids.add(_ensure_uid(j))
+            existing_job_ids[_ensure_uid(j)] = j["id"]
 
     existing_rule_uids = set()
     if rules_store:
@@ -294,7 +294,10 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
             warnings.append("jobs.json was malformed; skipped")
         for job in imported_jobs:
             job_uid = job.get("uid") or "fp-" + _fingerprint(job)
-            if job_uid in existing_job_uids:
+            old_id = job.get("id")
+            if job_uid in existing_job_ids:
+                if old_id is not None:
+                    _job_id_remap[old_id] = existing_job_ids[job_uid]
                 job_report["duplicates"] += 1
                 continue
             channel = resolve_channel(job.get("channel", "general"))
@@ -335,10 +338,9 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                             jobs_store._save()
                             break
             # Track old→new ID mapping for breadcrumb remap
-            old_id = job.get("id")
             if old_id is not None:
                 _job_id_remap[old_id] = new_job["id"]
-            existing_job_uids.add(job_uid)
+            existing_job_ids[job_uid] = new_job["id"]
             job_report["created"] += 1
         # Remap job_created breadcrumb messages to point at new job IDs
         # Only touch imported messages (by uid), not pre-existing local ones

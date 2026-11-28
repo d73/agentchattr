@@ -192,6 +192,30 @@ class ArchiveRoundTripTests(unittest.TestCase):
         self.assertEqual(second_report["sections"]["rules"]["duplicates"], 2)
         self.assertEqual(self.target_rules.epoch, epoch_before)
 
+    def test_remaps_imported_breadcrumb_for_existing_job_uuid(self):
+        source_job = self.source_jobs.create("Shared", "job", "general", "ben", uid="shared-job")
+        unrelated = self.target_jobs.create("Unrelated", "job", "general", "ben")
+        target_job = self.target_jobs.create("Shared", "job", "general", "ben", uid="shared-job")
+        self.assertEqual(unrelated["id"], source_job["id"])
+        self.assertNotEqual(target_job["id"], source_job["id"])
+        self.source_store.add("system", "Shared job", "job_created", uid="shared-breadcrumb",
+                              metadata={"job_id": source_job["id"]})
+        self.target_store.add("system", "Local job", "job_created", uid="local-breadcrumb",
+                              metadata={"job_id": unrelated["id"]})
+
+        blob = archive.build_export(self.source_store, self.source_jobs, self.source_rules,
+                                    self.source_summaries, app_version="test")
+        report = archive.import_archive(blob, self.target_store, self.target_jobs,
+                                        self.target_rules, self.target_summaries, ["general"])
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["sections"]["jobs"]["duplicates"], 1)
+        self.assertEqual(len(self.target_jobs.list_all()), 2)
+        reloaded = MessageStore(str(self.root / "target" / "messages.jsonl"))
+        links = {msg["uid"]: msg["metadata"]["job_id"] for msg in reloaded.get_recent()}
+        self.assertEqual(links, {"local-breadcrumb": unrelated["id"],
+                                 "shared-breadcrumb": target_job["id"]})
+
     def test_rejects_newer_schema_version(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
