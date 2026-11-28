@@ -28,6 +28,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from agents import take_identity_trigger
+
 ROOT = Path(__file__).parent
 
 
@@ -114,7 +116,8 @@ def main():
 
     # Thread-safe identity state (can change via heartbeat rename)
     _lock = threading.Lock()
-    _state = {"name": name, "token": token, "working": False}
+    _state = {"name": name, "token": token, "working": False,
+              "identity_id": registration.get("identity_id", "")}
 
     def get_name():
         with _lock:
@@ -124,12 +127,18 @@ def main():
         with _lock:
             return _state["token"]
 
-    def set_identity(new_name=None, new_token=None):
+    def get_identity_id():
+        with _lock:
+            return _state["identity_id"]
+
+    def set_identity(new_name=None, new_token=None, new_identity_id=None):
         with _lock:
             if new_name:
                 _state["name"] = new_name
             if new_token:
                 _state["token"] = new_token
+            if new_identity_id is not None:
+                _state["identity_id"] = new_identity_id
 
     def set_working(val):
         with _lock:
@@ -161,7 +170,8 @@ def main():
                 if exc.code == 409:
                     try:
                         replacement = _register_instance(server_port, agent, args.label, get_name() if args.name else None)
-                        set_identity(replacement["name"], replacement["token"])
+                        set_identity(replacement["name"], replacement["token"],
+                                     replacement.get("identity_id", ""))
                         print(f"  Re-registered as: {replacement['name']}")
                     except Exception:
                         pass
@@ -323,11 +333,16 @@ def main():
                 current_name = get_name()
                 qf = data_dir / f"{current_name}_queue.jsonl"
 
-                if qf.exists() and qf.stat().st_size > 0:
+                identity_trigger = take_identity_trigger(data_dir, get_identity_id())
+                lines = []
+                if identity_trigger is not None:
+                    lines = [identity_trigger]
+                elif qf.exists() and qf.stat().st_size > 0:
                     with open(qf, "r", encoding="utf-8") as f:
                         lines = f.readlines()
                     qf.write_text("", "utf-8")
 
+                if lines:
                     channels_triggered = set()
                     for line in lines:
                         line = line.strip()

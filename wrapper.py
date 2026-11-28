@@ -26,6 +26,8 @@ import threading
 import time
 from pathlib import Path
 
+from agents import take_identity_trigger
+
 ROOT = Path(__file__).parent
 
 SERVER_NAME = "agentchattr"
@@ -534,7 +536,7 @@ def _report_rule_sync(server_port: int, agent_name: str, epoch: int, token: str 
 
 def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = False, trigger_flag=None,
                    server_port: int = 8300, agent_name: str = "", get_token_fn=None,
-                   refresh_interval: int = 10):
+                   refresh_interval: int = 10, get_identity_id_fn=None):
     """Poll queue file and inject an MCP read task when triggered."""
     first_mention = True
     last_rules_epoch = 0  # 0 = unknown/cold start — will inject on first trigger
@@ -542,11 +544,17 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
     while True:
         try:
             _, queue_file = get_identity_fn()
-            if queue_file.exists() and queue_file.stat().st_size > 0:
+            identity_trigger = (take_identity_trigger(queue_file.parent, get_identity_id_fn())
+                                if get_identity_id_fn else None)
+            lines = []
+            if identity_trigger is not None:
+                lines = [identity_trigger]
+            elif queue_file.exists() and queue_file.stat().st_size > 0:
                 with open(queue_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                 queue_file.write_text("", "utf-8")
 
+            if lines:
                 has_trigger = False
                 channel = "general"
                 for line in lines:
@@ -587,6 +595,8 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
 
                     if custom_prompt:
                         prompt = custom_prompt
+                    elif identity_trigger is not None and job_id:
+                        prompt = f"use mcp to read job_id={job_id} - your suggestion was accepted, take appropriate action and respond"
                     elif job_id:
                         prompt = f"use mcp to read job_id={job_id} - you're mentioned in a job thread, take appropriate action and respond"
                     else:
@@ -737,6 +747,7 @@ def main():
         "name": assigned_name,
         "queue": data_dir / f"{assigned_name}_queue.jsonl",
         "token": assigned_token,
+        "id": registration.get("identity_id", ""),
     }
 
     def get_identity():
@@ -746,6 +757,10 @@ def main():
     def get_token():
         with _identity_lock:
             return _identity["token"]
+
+    def get_identity_id():
+        with _identity_lock:
+            return _identity["id"]
 
     # Rewrite MCP config when token/name changes (e.g. after 409 re-register).
     # Most CLIs won't re-read mid-session, but the file is correct for next restart.
@@ -761,7 +776,8 @@ def main():
         except Exception:
             pass
 
-    def set_runtime_identity(new_name: str | None = None, new_token: str | None = None):
+    def set_runtime_identity(new_name: str | None = None, new_token: str | None = None,
+                             new_identity_id: str | None = None):
         with _identity_lock:
             old_name = _identity["name"]
             old_token = _identity["token"]
@@ -773,6 +789,8 @@ def main():
             if new_token and new_token != old_token:
                 _identity["token"] = new_token
                 changed = True
+            if new_identity_id is not None:
+                _identity["id"] = new_identity_id
             current_name = _identity["name"]
             current_token = _identity["token"]
 
@@ -854,7 +872,8 @@ def main():
                 if exc.code == 409:
                     try:
                         replacement = _register_instance(server_port, agent, args.label, current_name if args.name else None)
-                        set_runtime_identity(replacement["name"], replacement["token"])
+                        set_runtime_identity(replacement["name"], replacement["token"],
+                                             replacement.get("identity_id", ""))
                         _notify_recovery(data_dir, replacement["name"])
                     except Exception:
                         pass
@@ -882,7 +901,8 @@ def main():
             args=(get_identity, inject_fn),
             kwargs={"is_multi_instance": _is_multi_instance, "trigger_flag": _trigger_flag,
                     "server_port": server_port, "agent_name": assigned_name,
-                    "get_token_fn": get_token, "refresh_interval": _refresh_interval},
+                    "get_token_fn": get_token, "refresh_interval": _refresh_interval,
+                    "get_identity_id_fn": get_identity_id},
             daemon=True,
         )
         _watcher_thread.start()
@@ -897,7 +917,8 @@ def main():
                     args=(get_identity, _watcher_inject_fn),
                     kwargs={"is_multi_instance": _is_multi_instance, "trigger_flag": _trigger_flag,
                             "server_port": server_port, "agent_name": assigned_name,
-                            "get_token_fn": get_token, "refresh_interval": _refresh_interval},
+                            "get_token_fn": get_token, "refresh_interval": _refresh_interval,
+                            "get_identity_id_fn": get_identity_id},
                     daemon=True,
                 )
                 _watcher_thread.start()
