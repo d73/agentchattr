@@ -28,7 +28,7 @@ from job_reopen import ReopenConflict
 from schedules import ScheduleStore, parse_schedule_spec
 from router import Router, without_code
 from agents import AgentTrigger, PROPOSAL_WRITER_BASES
-from registry import RuntimeRegistry
+from registry import RuntimeRegistry, sanitize_chat_id
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from plugin_host import ASSET_PREFIX
@@ -1802,11 +1802,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 agent_name = (event.get("name") or "").strip()
                 new_label = (event.get("label") or "").strip()
                 if agent_name and new_label and registry:
-                    # Derive a sanitized sender ID from the label
-                    import re as _re
-                    new_id = _re.sub(r'[^a-z0-9-]', '', new_label.lower().replace(' ', '-')).strip('-')
-                    if not new_id:
-                        new_id = agent_name  # fallback: keep old name, just change label
+                    new_id = sanitize_chat_id(new_label) or agent_name
                     if new_id == agent_name:
                         # Same ID — label-only change
                         registry.set_label(agent_name, new_label)
@@ -1840,10 +1836,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Accept default name
                         registry.confirm_pending(agent_name)
                     else:
-                        import re as _re
-                        new_id = _re.sub(r'[^a-z0-9-]', '', new_label.lower().replace(' ', '-')).strip('-')
-                        if not new_id:
-                            new_id = agent_name
+                        new_id = sanitize_chat_id(new_label) or agent_name
                         if new_id == agent_name:
                             # Same ID — just update label and confirm
                             registry.set_label(agent_name, new_label)
@@ -3107,10 +3100,7 @@ async def rename_agent_label(name: str, request: Request):
     if not label:
         return JSONResponse({"error": "label is required"}, status_code=400)
 
-    import re as _re
-    new_id = _re.sub(r'[^a-z0-9-]', '', label.lower().replace(' ', '-')).strip('-')
-    if not new_id:
-        new_id = name
+    new_id = sanitize_chat_id(label) or name
 
     if new_id == name:
         # Same ID — label-only change

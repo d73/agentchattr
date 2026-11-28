@@ -23,6 +23,11 @@ from atomic_io import atomic_write_text, repair_corrupt_json
 log = logging.getLogger(__name__)
 
 
+def sanitize_chat_id(value: str) -> str:
+    """Derive a candidate chat ID from a display name."""
+    return re.sub(r"[^a-z0-9-]", "", value.lower().replace(" ", "-")).strip("-")
+
+
 @dataclass
 class Instance:
     """A live agent instance."""

@@ -64,7 +64,7 @@ def main():
     parser.add_argument("agent", choices=api_agents,
                         help=f"API agent to run ({', '.join(api_agents)})")
     parser.add_argument("--label", type=str, default=None, help="Custom display label")
-    parser.add_argument("--name", type=str, default=None, help="Requested chat identity (lowercase letters, digits and hyphens)")
+    parser.add_argument("--name", type=str, default=None, help="Requested name (converted to a lowercase chat ID)")
     # Per-project isolation flags (consumed by apply_cli_overrides above;
     # listed here so --help shows them and argparse doesn't error on them).
     parser.add_argument("--data-dir",      default=None, help="Override server.data_dir (path)")
