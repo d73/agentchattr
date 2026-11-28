@@ -121,7 +121,13 @@ def drag_before(page, source, target, screenshot=None, cancel=False, row="#menti
     wait_for_preview_grip(page, start, (x, y), (target_x, y))
     expect(page.locator(".reorder-origin")).to_have_count(1)
     expect(page.locator(".reorder-preview")).to_be_visible()
-    expect(page.locator(".reorder-drop-indicator")).to_be_visible()
+    marker = page.locator(".reorder-drop-indicator")
+    expect(marker).to_be_visible()
+    marker_box = marker.bounding_box()
+    target_box = pill(target).bounding_box()
+    assert marker_box and target_box
+    assert abs(marker_box["y"] - target_box["y"]) < 1
+    assert abs(marker_box["height"] - target_box["height"]) < 1
     if screenshot:
         left = max(0, min(start["x"], end["x"]) - 105)
         top = max(0, y - 60)

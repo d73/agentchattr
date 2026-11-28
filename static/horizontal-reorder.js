@@ -73,8 +73,8 @@ function setupHorizontalReorder(row, { move, status, label, canDrag = () => true
         const rightEdge = target.after === (horizontalDirection === 1);
         const left = rightEdge ? rect.right + 3 : rect.left - 3;
         indicator.style.left = `${Math.max(bounds.left + 2, Math.min(bounds.right - 2, left))}px`;
-        indicator.style.top = `${bounds.top}px`;
-        indicator.style.height = `${bounds.height}px`;
+        indicator.style.top = `${rect.top}px`;
+        indicator.style.height = `${rect.height}px`;
     }
 
     function finishDrag(commit) {
