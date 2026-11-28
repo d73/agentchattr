@@ -53,7 +53,7 @@ function registerJobPresentation(id, stages) {
     document.getElementById('jobs-panel')?.classList.add('has-job-presentation');
     renderJobsList();
     return (rows, status) => {
-        if (status?.coordinator === 'orch') {
+        if (status?.kind === 'workflow-coordinator' && status.pluginId === id) {
             presentation.orchOnline = status.online === true;
             const picker = document.querySelector('#convert-job-modal .convert-job-agent');
             if (picker) updateOrchWriterAvailability(picker);

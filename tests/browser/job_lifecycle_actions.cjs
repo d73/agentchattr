@@ -10,18 +10,24 @@ const between = (source, start, end) => source.slice(source.indexOf(start), sour
 
 test('the picker contains only the four approved types and uses Orch presence', () => {
     const jobPresentations = new Map();
-    const ctx = vm.createContext({ jobPresentations });
+    const picker = { options: [{}], value: 'orch' };
+    const ctx = vm.createContext({
+        jobPresentations, renderJobsList() {},
+        document: { getElementById: () => null, querySelector: () => picker },
+    });
     vm.runInContext(
-        between(jobs, 'const proposalWriterOptions', 'function registerJobPresentation')
+        between(jobs, 'const proposalWriterOptions', 'function jobPresentation(job)')
         + between(jobs, 'function updateOrchWriterAvailability', 'function showConvertToJobModal'), ctx,
     );
     assert.deepEqual(Array.from(vm.runInContext('proposalWriterOptions.map(([key]) => key)', ctx)),
         ['orch', 'antigravity', 'claude', 'codex']);
-    const picker = { options: [{}], value: 'orch' };
     assert.equal(ctx.updateOrchWriterAvailability(picker), false);
     assert.equal(picker.options[0].disabled, true);
     assert.equal(picker.value, 'antigravity');
-    jobPresentations.set('custom-orch-id', { orchOnline: true, rows: new Map() });
+    const update = ctx.registerJobPresentation('custom-orch-id', {});
+    update([], { kind: 'workflow-coordinator', pluginId: 'different-id', online: true });
+    assert.equal(picker.options[0].disabled, true);
+    update([], { kind: 'workflow-coordinator', pluginId: 'custom-orch-id', online: true });
     assert.equal(ctx.updateOrchWriterAvailability(picker), true);
     assert.equal(picker.options[0].disabled, false);
 });
