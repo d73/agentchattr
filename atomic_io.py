@@ -16,6 +16,34 @@ from collections.abc import Iterable
 from pathlib import Path
 
 
+def write_backup_once(path: Path, data: bytes) -> bool:
+    """Publish a complete backup without replacing a previous backup."""
+    if path.is_file():
+        return False
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            if os.name == "nt":
+                temporary.rename(path)
+            else:
+                os.link(temporary, path)
+        except FileExistsError:
+            if not path.is_file():
+                raise
+            return False
+        return True
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def repair_corrupt_json(path: Path, reason: str, recovered: dict) -> None:
     """Save the original bytes and atomically replace the primary with recovered state."""
     backup = path.with_name(f"{path.name}.corrupt-{uuid.uuid4().hex}")

@@ -207,9 +207,7 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
     }
 
     # Collect existing UIDs for dedup
-    existing_msg_uids = set()
-    for m in store.get_recent(count=999_999_999):
-        existing_msg_uids.add(_ensure_uid(m))
+    message_ids_by_uid = {_ensure_uid(m): m["id"] for m in store.get_recent(count=999_999_999)}
 
     existing_job_ids = {}
     if jobs_store:
@@ -262,7 +260,7 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                 msg_report["skipped"] += 1
                 continue
             msg_uid = msg.get("uid") or "fp-" + _fingerprint(msg)
-            if msg_uid in existing_msg_uids:
+            if msg_uid in message_ids_by_uid:
                 msg_report["duplicates"] += 1
                 continue
             channel = resolve_channel(msg.get("channel", "general"))
@@ -292,19 +290,14 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
             reply_to_uid = msg.get("reply_to_uid")
             if reply_to_uid:
                 pending_replies.append((new_msg["id"], reply_to_uid))
-            existing_msg_uids.add(msg_uid)
+            message_ids_by_uid[msg_uid] = new_msg["id"]
             msg_report["created"] += 1
         # Flush bulk-added messages and rebuild reply links (single rewrite)
         if msg_report["created"] > 0:
             if pending_replies:
-                uid_to_id = dict(imported_uid_to_local_id)
-                for m in store.get_recent(count=999_999_999):
-                    uid = m.get("uid")
-                    if uid:
-                        uid_to_id[uid] = m["id"]
                 with store._lock:
                     for local_id, reply_uid in pending_replies:
-                        target_id = uid_to_id.get(reply_uid)
+                        target_id = message_ids_by_uid.get(reply_uid)
                         if target_id is not None:
                             position, msg = store._message_row(local_id)
                             if msg is not None:
@@ -327,18 +320,34 @@ def _do_import(zip_bytes, store, jobs_store, rules_store,
                 job_report["duplicates"] += 1
                 continue
             channel = resolve_channel(job.get("channel", "general"))
-            new_job = jobs_store.create(
-                title=job.get("title", "Imported job"),
-                job_type=job.get("type", "job"),
-                channel=channel,
-                created_by=job.get("created_by", "import"),
-                body=job.get("body"),
-                assignee=job.get("assignee"),
-                uid=job_uid,
-                status=job.get("status"),
-                created_at=job.get("created_at"),
-                updated_at=job.get("updated_at"),
-            )
+            history = []
+            for key in ("imported_lifecycle_events", "lifecycle_events"):
+                records = job.get(key, [])
+                if isinstance(records, list):
+                    history.extend(record for record in records if isinstance(record, dict))
+            anchor_uid = job.get("anchor_message_uid")
+            anchor_id = message_ids_by_uid.get(anchor_uid) if isinstance(anchor_uid, str) else None
+            try:
+                new_job = jobs_store.create(
+                    title=job.get("title", "Imported job"),
+                    job_type=job.get("type", "job"),
+                    channel=channel,
+                    created_by=job.get("created_by", "import"),
+                    body=job.get("body"),
+                    assignee=job.get("assignee"),
+                    uid=job_uid,
+                    status=job.get("status"),
+                    created_at=job.get("created_at"),
+                    updated_at=job.get("updated_at"),
+                    anchor_msg_id=anchor_id,
+                    proposal_author=job.get("proposal_author"),
+                    proposal_author_identity=job.get("proposal_author_identity"),
+                    archived_lifecycle=job.get("lifecycle"),
+                    archived_lifecycle_events=history,
+                )
+            except ValueError:
+                job_report["conflicts"] += 1
+                continue
             # Import job messages with preserved identity
             for jm in job.get("messages", []):
                 jm_uid = jm.get("uid") or "fp-" + hashlib.sha256(

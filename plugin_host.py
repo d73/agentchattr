@@ -45,6 +45,7 @@ class Services:
     agent_status: Callable
     online_agents: Callable
     get_message: Callable | None = None
+    transition_job: Callable | None = None
 
 
 @dataclass(frozen=True)

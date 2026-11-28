@@ -19,6 +19,7 @@ INCLUDE_FILES = [
     "agents.py",
     "config_loader.py",
     "jobs.py",
+    "job_lifecycle.py",
     "mcp_bridge.py",
     "attachment_storage.py",
     "mcp_proxy.py",

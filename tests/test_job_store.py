@@ -37,17 +37,19 @@ class JobStoreTests(unittest.TestCase):
             created_by="ben",
         )
 
-        self.assertEqual(first["status"], "done")
+        self.assertEqual(first["status"], "open")
+        self.assertEqual(first["lifecycle"]["core_id"], "core.todo")
         self.assertEqual(first["sort_order"], 1)
         self.assertEqual(second["sort_order"], 2)
         self.assertEqual(len(first["title"]), 120)
         self.assertEqual(len(first["body"]), 1000)
-        self.assertEqual(len(self.store.list_all(status="done")), 2)
+        self.assertEqual(len(self.store.list_all(status="core.todo")), 2)
+        self.assertEqual(len(self.store.list_all(status="open")), 2)
         self.assertEqual(len(self.store.list_all(channel="debug")), 1)
 
     def test_update_status_assigns_order_in_target_group(self):
-        a = self.store.create("A", "job", "general", "ben")
-        b = self.store.create("B", "job", "general", "ben")
+        a = self.store.create("A", "job", "general", "ben", status="done")
+        b = self.store.create("B", "job", "general", "ben", status="done")
 
         moved_a = self.store.update_status(a["id"], "open")
         moved_b = self.store.update_status(b["id"], "open")
@@ -102,10 +104,12 @@ class JobStoreTests(unittest.TestCase):
             attachments=[{"url": "/uploads/a.png", "name": "a.png"}],
             msg_type="suggestion",
         )
+        self.assertIsNone(self.store.delete(job["id"]))
+        self.store.update_status(job["id"], "archived")
         deleted = self.store.delete(job["id"])
 
         actions = [action for action, _ in events]
-        self.assertEqual(actions, ["create", "update", "message", "delete"])
+        self.assertEqual(actions, ["create", "update", "message", "update", "delete"])
         self.assertEqual(msg["job_id"], job["id"])
         self.assertEqual(msg["type"], "suggestion")
         self.assertEqual(msg["attachments"][0]["name"], "a.png")
@@ -125,6 +129,7 @@ class JobStoreTests(unittest.TestCase):
 
     def test_permanent_delete_does_not_reuse_highest_id_after_restart(self):
         created = self.store.create("Old", "job", "general", "ben")
+        self.store.update_status(created["id"], "archived")
         self.store.delete(created["id"])
 
         reloaded = JobStore(str(self.path))

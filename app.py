@@ -2386,24 +2386,33 @@ async def create_job(request: Request):
     anchor_msg_id = body.get("anchor_msg_id")
     assignee = body.get("assignee", "")
     job_body = body.get("body", "")
+    anchor = store.get_by_id(anchor_msg_id) if type(anchor_msg_id) is int and anchor_msg_id >= 0 else None
+    proposal = anchor if isinstance(anchor, dict) and anchor.get("type") == "job_proposal" else None
+    if proposal and proposal.get("channel", "general") != channel:
+        return JSONResponse({"error": "proposal is in a different channel"}, status_code=409)
+    meta = dict(proposal.get("metadata") or {}) if proposal else {}
+    if meta.get("status") == "accepted":
+        existing = jobs.get_for_proposal(anchor_msg_id)
+        if existing is not None:
+            return existing
+        return JSONResponse({"error": "the proposal's Job was already accepted"}, status_code=409)
     result = jobs.create(
         title=title, job_type=job_type, channel=channel,
         created_by=created_by, anchor_msg_id=anchor_msg_id,
         assignee=assignee, body=job_body,
+        from_proposal=bool(proposal),
+        proposal_author=proposal.get("sender") if proposal else None,
+        proposal_author_identity=proposal.get("sender_identity") if proposal else None,
     )
-    # Mark the proposal message as accepted so it persists across refresh
-    if anchor_msg_id:
-        anchor_msg = store.get_by_id(anchor_msg_id)
-        if anchor_msg and anchor_msg.get("type") == "job_proposal":
-            meta = dict(anchor_msg.get("metadata", {}))
-            meta["status"] = "accepted"
-            updated_msg = store.update_message(anchor_msg_id, {"metadata": meta})
-            if updated_msg:
-                payload = json.dumps({"type": "edit", "message": updated_msg})
-                await _broadcast(payload)
+    updated_msg = None
+    if proposal:
+        meta["status"] = "accepted"
+        updated_msg = store.update_message(anchor_msg_id, {"metadata": meta})
     # Post breadcrumb in main timeline with job_id for clickable link
-    store.add(created_by, f"Job created: {title}", msg_type="job_created",
+    store.add(created_by, f"Job created: {result['title']}", msg_type="job_created",
               channel=channel, metadata={"job_id": result["id"]}, sender_kind="human")
+    if updated_msg:
+        await _broadcast(json.dumps({"type": "edit", "message": updated_msg}))
     return result
 
 
@@ -2414,6 +2423,8 @@ async def update_job(job_id: int, request: Request):
     result = None
     if "status" in body:
         result = jobs.update_status(job_id, body["status"])
+        if result is None:
+            return JSONResponse({"error": "not found or invalid transition"}, status_code=404)
     if "title" in body:
         result = jobs.update_title(job_id, body["title"])
     if "assignee" in body:
@@ -2524,7 +2535,7 @@ async def delete_job(job_id: int, request: Request):
     if permanent:
         result = jobs.delete(job_id)
     else:
-        result = jobs.update_status(job_id, "archived")
+        result = jobs.update_status(job_id, "archived", cancel=True)
     if result is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     return result

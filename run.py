@@ -126,6 +126,14 @@ def main():
         from plugin_host import PluginHost, Services
 
         plugins = PluginHost(data_dir)
+
+        def transition_plugin_job(job_id, event, *, actor_kind, expected_scope, **details):
+            if (actor_kind != "orch" or not isinstance(expected_scope, dict)
+                    or not {"channel", "type", "assignee"}.issubset(expected_scope)):
+                raise ValueError("Job plugin transitions require a scoped Orch actor")
+            return jobs.transition_job(job_id, event, actor_kind=actor_kind,
+                                       expected_scope=expected_scope, **details)
+
         services = Services(
             list_jobs=lambda **filters: deepcopy(jobs.list_all(**filters)),
             get_job=lambda job_id: deepcopy(jobs.get(job_id)),
@@ -134,6 +142,7 @@ def main():
             agent_status=lambda: deepcopy(app_agents.get_status()),
             online_agents=mcp_bridge._get_online,
             get_message=lambda message_id: deepcopy(store.get_by_id(message_id)),
+            transition_job=transition_plugin_job,
         )
         plugins.load(config["plugins"], services, core_routes=app.router.routes,
                      core_tools=(tool.__name__ for tool in mcp_bridge._ALL_TOOLS))
