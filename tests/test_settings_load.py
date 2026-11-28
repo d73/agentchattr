@@ -73,6 +73,21 @@ class SettingsLoadTests(unittest.TestCase):
                 app._load_settings()
                 self.assertEqual(app.room_settings["font"], expected)
 
+    def test_toolbar_order_loads_only_a_complete_permutation(self):
+        default = list(app.DEFAULT_TOOLBAR_ORDER)
+        custom = list(reversed(default))
+        for saved, expected in (
+            (custom, custom),
+            (default[:-1], default),
+            ([default[0]] * len(default), default),
+            ([None, *default[1:]], default),
+            (["unknown", *default[1:]], default),
+        ):
+            with self.subTest(saved=saved):
+                self.path.write_text(json.dumps({"toolbar_order": saved}), "utf-8")
+                app._load_settings()
+                self.assertEqual(app.room_settings["toolbar_order"], expected)
+
     def test_chat_font_size_is_restored_or_defaults(self):
         for stored, expected in (
             ({}, 13),
@@ -230,6 +245,19 @@ class SettingsLoadTests(unittest.TestCase):
         self.assertEqual(responses[1]["data"]["theme_palette"], "amber")
         saved = json.loads(self.path.read_text("utf-8"))
         self.assertEqual((saved["theme_mode"], saved["theme_palette"]), ("light", "amber"))
+
+    def test_toolbar_order_writes_and_validates_without_changing_other_settings(self):
+        default = list(app.DEFAULT_TOOLBAR_ORDER)
+        custom = list(reversed(default))
+        app.room_settings.update(font_size=19, theme_mode="light")
+        frames = self.exchange_settings_frames([
+            {"type": "update_settings", "data": {"toolbar_order": custom}, "typography_request_id": "toolbar-1"},
+            {"type": "update_settings", "data": {"toolbar_order": []}, "typography_request_id": "toolbar-2"},
+        ])
+        responses = [frame for frame in frames if "typography_request_id" in frame]
+        self.assertEqual([frame["data"]["toolbar_order"] for frame in responses], [custom, custom])
+        saved = json.loads(self.path.read_text("utf-8"))
+        self.assertEqual((saved["toolbar_order"], saved["font_size"], saved["theme_mode"]), (custom, 19, "light"))
 
     def test_approved_chat_fonts_round_trip_and_invalid_fonts_keep_the_selection(self):
         fonts = ("roboto", "helvetica", "montserrat", "avenir", "mono", "sans", "open-sans", "montserrat")

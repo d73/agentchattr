@@ -75,6 +75,10 @@ THEME_MODES = (DEFAULT_THEME_MODE, "light", "auto")
 THEME_PALETTES = (DEFAULT_THEME_PALETTE, "green", "blue", "amber")
 _AGENT_IDENTITY_RE = _re.compile(r"[0-9a-f]{32}")
 _MAX_AGENT_PILL_ORDER = 4096
+DEFAULT_TOOLBAR_ORDER = (
+    "jobs-toggle", "schedules-toggle", "rules-toggle",
+    "pins-toggle", "settings-toggle", "help-btn",
+)
 
 # Room settings (persisted to data/settings.json)
 room_settings: dict = {
@@ -95,6 +99,7 @@ room_settings: dict = {
     "inactive_hours": 24,
     "history_limit": 50,
     "contrast": "normal",
+    "toolbar_order": list(DEFAULT_TOOLBAR_ORDER),
     "custom_roles": [],
 }
 # "ui_prefs" follows the same rule as "agent_colors" below.
@@ -291,6 +296,17 @@ def apply_room_subtitle(new: dict):
         room_settings["subtitle"] = cleaned
 
 
+def _normalize_toolbar_order(value: object) -> list[str] | None:
+    if (
+        isinstance(value, list)
+        and len(value) == len(DEFAULT_TOOLBAR_ORDER)
+        and all(isinstance(button, str) for button in value)
+        and set(value) == set(DEFAULT_TOOLBAR_ORDER)
+    ):
+        return value
+    return None
+
+
 def _load_settings():
     global room_settings
     p = _settings_path()
@@ -334,6 +350,9 @@ def _load_settings():
     if room_settings.get("theme_palette") not in THEME_PALETTES:
         room_settings["theme_palette"] = DEFAULT_THEME_PALETTE
     room_settings["agent_pill_order"] = _clean_agent_pill_order(room_settings.get("agent_pill_order")) or []
+    room_settings["toolbar_order"] = (
+        _normalize_toolbar_order(room_settings.get("toolbar_order")) or list(DEFAULT_TOOLBAR_ORDER)
+    )
     # Ensure "general" always exists and is first
     if "channels" not in room_settings or not room_settings["channels"]:
         room_settings["channels"] = ["general"]
@@ -1821,6 +1840,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         pass
                 if "contrast" in new and new["contrast"] in ("normal", "high"):
                     room_settings["contrast"] = new["contrast"]
+                toolbar_order = _normalize_toolbar_order(new.get("toolbar_order"))
+                if toolbar_order is not None:
+                    room_settings["toolbar_order"] = toolbar_order
                 if isinstance(new.get("ui_prefs"), dict):
                     room_settings["ui_prefs"] = _clean_ui_prefs(new["ui_prefs"])
                 if "agent_colors" not in room_settings and isinstance(new.get("agent_colors"), dict):
